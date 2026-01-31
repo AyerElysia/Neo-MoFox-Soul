@@ -2345,3 +2345,17 @@ prompt = prompt_manager.get_prompt_template("knowledge_base_query")
 ### core/transport
 transport模块负责管理和处理核心与适配器或外界系统之间的通信和数据传输。
 
+`message_receive`:
+它负责接受标准的MessageEnvlope格式的消息，并将其转换为标准Message对象，供核心系统进一步处理。
+
+`message_send`:
+它负责将核心系统生成的Message对象转换为MessageEnvlope格式的消息，并发送出去。
+
+`router`:
+router模块负责管理和处理HTTP请求的路由，将外部请求映射到核心系统的相应处理逻辑。
+
+`sink`:
+sink模块负责与适配器建立连接，包括插件形式的core sink，以及独立进程形式的core sink，同时保留ws连接，确保核心系统能够与适配器进行有效的通信和数据交换。
+
+### core/utils
+utils模块提供了各种辅助工具和函数，支持核心系统的各项功能和操作。此处不再赘述。
