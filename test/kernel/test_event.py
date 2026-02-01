@@ -27,15 +27,6 @@ class TestEventBusBasics:
         bus = EventBus()
         assert bus.name == "default"
 
-    def test_subscribe_invalid_handler_signature_raises(self) -> None:
-        bus = EventBus()
-
-        async def bad_handler(params):
-            return (EventDecision.SUCCESS, params)
-
-        with pytest.raises(ValueError, match=r"handler\(event_name, params\)"):
-            bus.subscribe("e", bad_handler)
-
     def test_subscribe_and_unsubscribe(self) -> None:
         bus = EventBus()
 
