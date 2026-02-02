@@ -195,28 +195,38 @@ class LLMResponse:
         buffer_len = 0
         tool_acc = _ToolCallAccumulator()
 
-        async for event in self._stream:
-            if event.text_delta:
-                full_content.append(event.text_delta)
-                buffer.append(event.text_delta)
-                buffer_len += len(event.text_delta)
+        stream_error: Exception | None = None
+        try:
+            async for event in self._stream:
+                if event.text_delta:
+                    full_content.append(event.text_delta)
+                    buffer.append(event.text_delta)
+                    buffer_len += len(event.text_delta)
 
-                if buffer_len >= buffer_size:
-                    buffered = "".join(buffer)
-                    yield buffered
-                    buffer.clear()
-                    buffer_len = 0
+                    if buffer_len >= buffer_size:
+                        buffered = "".join(buffer)
+                        yield buffered
+                        buffer.clear()
+                        buffer_len = 0
 
-            if event.tool_name or event.tool_args_delta or event.tool_call_id:
-                tool_acc.apply(event)
+                if event.tool_name or event.tool_args_delta or event.tool_call_id:
+                    tool_acc.apply(event)
+        except Exception as e:  # noqa: BLE001
+            # 有些 provider/SDK 会在流尾抛出“连接关闭”等异常。
+            # 对于带 buffer 的消费方式，这会导致最后未 flush 的片段丢失。
+            # 这里先记录异常，确保尾段 flush，再把异常抛出。
+            stream_error = e
 
-        # 剩余内容
+        # 剩余内容（无论正常结束还是异常结束，都尽量 flush）
         if buffer:
             yield "".join(buffer)
 
         self.message = "".join(full_content)
         self.call_list = tool_acc.finalize()
         self._maybe_append_response_to_context()
+
+        if stream_error is not None:
+            raise stream_error
 
 
 class _ToolCallAccumulator:

@@ -159,9 +159,20 @@ async def demo_stream_with_buffer() -> None:
 
     logger.info("流式输出（缓冲 20 字符）:")
     chunk_count = 0
+    buffered_chunks: list[str] = []
     async for buffered_chunk in resp.stream_with_buffer(buffer_size=20):
         chunk_count += 1
+        buffered_chunks.append(buffered_chunk)
         logger.info(f"[Chunk {chunk_count}] {buffered_chunk}")
+
+    # 验证：缓冲输出拼接后应等于最终 message
+    buffered_full = "".join(buffered_chunks)
+    final_message = resp.message or ""
+    if buffered_full != final_message:
+        logger.warning(
+            "检测到缓冲流式输出与最终 message 不一致（可能有尾段被吞或含不可见字符）"
+        )
+        logger.warning(f"buffered_full_len={len(buffered_full)}, message_len={len(final_message)}")
 
 
 async def demo_tool_registry_and_executor() -> None:

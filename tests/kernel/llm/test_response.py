@@ -28,6 +28,16 @@ async def mock_text_stream() -> AsyncIterator[StreamEvent]:
         yield StreamEvent(text_delta=chunk)
 
 
+async def mock_text_stream_end_error() -> AsyncIterator[StreamEvent]:
+    """Mock stream that raises after emitting final text.
+
+    用于模拟部分 provider/SDK 在流尾抛出“连接关闭”等异常的情况。
+    """
+    yield StreamEvent(text_delta="Hello")
+    yield StreamEvent(text_delta=" world")
+    raise RuntimeError("stream closed")
+
+
 async def mock_tool_call_stream() -> AsyncIterator[StreamEvent]:
     """Mock streaming response with tool calls."""
     # Text first
@@ -645,6 +655,29 @@ class TestLLMResponseStreamWithBuffer:
         assert len(buffers) > 0
         assert response._consumed is True
         assert response.message == "Hello there! How can I help?"
+
+    @pytest.mark.asyncio
+    async def test_stream_with_buffer_flushes_tail_on_stream_error(
+        self, mock_model_set: list[dict[str, Any]], sample_payloads: list[LLMPayload]
+    ) -> None:
+        """stream_with_buffer should flush remaining buffer even if stream ends with an error."""
+        response = LLMResponse(
+            _stream=mock_text_stream_end_error(),
+            _upper=LLMRequest(mock_model_set, "test"),
+            _auto_append_response=False,
+            payloads=list(sample_payloads),
+            model_set=mock_model_set,
+            message=None,
+            call_list=[],
+        )
+
+        buffers: list[str] = []
+        with pytest.raises(RuntimeError):
+            async for buffer in response.stream_with_buffer(buffer_size=100):
+                buffers.append(buffer)
+
+        assert buffers == ["Hello world"]
+        assert response.message == "Hello world"
 
     @pytest.mark.asyncio
     async def test_stream_with_buffer_no_stream(
