@@ -205,7 +205,7 @@ class BaseAction(ABC, LLMUsable):
     ) -> bool:
         """LLM 判断激活工具函数。
 
-        使用 action manager 中的 action modifier 来统一判断是否应该激活此 Action。
+        使用 llm 判断是否应该激活此 Action。
 
         Args:
             judge_prompt: 判断用提示词
@@ -217,7 +217,7 @@ class BaseAction(ABC, LLMUsable):
         Note:
             此方法需要 action_manager 支持，当前返回 False
         """
-        # TODO: 实现与 action_manager 的集成
+        # TODO: 实现与 llm 的集成
         return False
 
     async def _send_to_stream(

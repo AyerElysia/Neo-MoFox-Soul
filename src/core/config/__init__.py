@@ -12,6 +12,15 @@
     # 获取配置实例
     config = get_core_config()
     print(config.database.database_type)
+    
+    # 初始化模型配置
+    from src.core.config import init_model_config, get_model_config
+    init_model_config("config/models.toml")
+    
+    # 获取模型配置
+    model_config = get_model_config()
+    task = model_config.model_tasks.replyer
+    print(task.model_list)
     ```
 """
 
@@ -20,9 +29,27 @@ from .core_config import (
     get_core_config,
     init_core_config,
 )
+from .model_config import (
+    ModelConfig,
+    get_model_config,
+    init_model_config,
+    APIProviderSection,
+    ModelInfoSection,
+    TaskConfigSection,
+    ModelTasksSection,
+)
 
 __all__ = [
+    # Core 配置
     "CoreConfig",
     "get_core_config",
     "init_core_config",
+    # Model 配置
+    "ModelConfig",
+    "get_model_config",
+    "init_model_config",
+    "APIProviderSection",
+    "ModelInfoSection",
+    "TaskConfigSection",
+    "ModelTasksSection",
 ]
