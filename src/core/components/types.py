@@ -50,6 +50,7 @@ class EventType(str, Enum):
     ON_MESSAGE_RECEIVED = "on_message_received"
     ON_MESSAGE_SENT = "on_message_sent"
     ON_NOTICE_RECEIVED = "on_notice_received"
+    ON_RECEIVED_OTHER_MESSAGE = "on_received_other_message"
     ON_ALL_PLUGIN_LOADED = "on_all_plugin_loaded"
     ON_PLUGIN_UNLOADED = "on_plugin_unloaded"
     ON_COMPONENT_LOADED = "on_component_loaded"

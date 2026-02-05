@@ -1,35 +1,86 @@
 """消息转换器。
 
-负责 MessageEnvelope 和 Message 之间的双向转换。
-参考 old/chat/message_receive/message_processor.py 的转换逻辑。
+负责 ``MessageEnvelope``（wire 层传输格式）与 ``Message``（核心业务模型）之间的
+双向转换。核心解析逻辑在 ``_parse_segments`` 中实现递归的 ``SegPayload`` 展开。
+
+设计原则：
+- 适配器传入的媒体数据（图片、语音等）**已经是 base64 编码**，转换器不做下载。
+- 嵌套 seglist 最多递归 3 层，超出以占位符替代。
+- 单个段解析失败不影响整体，用占位符保留位置。
 """
 
-import re
-import time
-from typing import Any
+from __future__ import annotations
 
-from mofox_wire import MessageEnvelope
-from mofox_wire.types import SegPayload
-from src.kernel.logger import get_logger
+import time
+from typing import Any, Dict, List
+
+from mofox_wire import MessageEnvelope, MessageInfoPayload, SegPayload
+
 from src.core.models.message import Message, MessageType
+from src.core.transport.message_receive.utils import (
+    extract_stream_id,
+    infer_chat_type,
+    normalize_base64,
+    safe_json_loads,
+)
+from src.kernel.logger import get_logger
 
 logger = get_logger("message_converter")
 
-# 预编译正则表达式
-_AT_PATTERN = re.compile(r"^([^:]+):(.+)$")
+# 递归深度硬上限
+_MAX_NESTING_DEPTH: int = 3
 
-# 常量定义：段类型集合
-RECURSIVE_SEGMENT_TYPES = frozenset(["seglist"])
-MEDIA_SEGMENT_TYPES = frozenset(["image", "emoji", "voice", "video"])
-METADATA_SEGMENT_TYPES = frozenset(["mention_bot", "priority_info"])
-SPECIAL_SEGMENT_TYPES = frozenset(["at", "reply", "file"])
+
+# ──────────────────────────────────────────────
+#  段解析返回结构
+# ──────────────────────────────────────────────
+
+class _ParseResult:
+    """段解析的聚合结果。
+
+    Attributes:
+        text_parts: 纯文本片段列表，最终用空字符串拼接
+        media: 媒体资源列表，每项为 ``{"type": str, "data": Any}``
+        reply_to: 被回复消息的 ID（仅第一个 reply 段生效）
+        at_users: 被 @ 用户列表 ``[{"nickname": str, "user_id": str}]``
+        unknown_segments: 无法识别的段类型记录
+    """
+
+    __slots__ = ("text_parts", "media", "reply_to", "at_users", "unknown_segments")
+
+    def __init__(self) -> None:
+        self.text_parts: list[str] = []
+        self.media: list[dict[str, Any]] = []
+        self.reply_to: str | None = None
+        self.at_users: list[dict[str, str]] = []
+        self.unknown_segments: list[dict[str, Any]] = []
+
+    # ---- 便捷方法 ----
+
+    @property
+    def plain_text(self) -> str:
+        """拼接所有文本片段。"""
+        return "".join(self.text_parts)
+
+    def merge(self, other: "_ParseResult") -> None:
+        """将另一个解析结果合并到自身。"""
+        self.text_parts.extend(other.text_parts)
+        self.media.extend(other.media)
+        if other.reply_to and not self.reply_to:
+            self.reply_to = other.reply_to
+        self.at_users.extend(other.at_users)
+        self.unknown_segments.extend(other.unknown_segments)
+
+
+# ──────────────────────────────────────────────
+#  MessageConverter
+# ──────────────────────────────────────────────
 
 
 class MessageConverter:
-    """消息转换器。
+    """MessageEnvelope ↔ Message 双向转换器。
 
-    负责在 MessageEnvelope 和 Message 之间进行转换。
-    Adapter使用MessageEnvelope，Core使用Message。
+    实例无状态，可以作为单例在整个应用中复用。
 
     Examples:
         >>> converter = MessageConverter()
@@ -37,413 +88,391 @@ class MessageConverter:
         >>> envelope = await converter.message_to_envelope(message)
     """
 
+    # ─── envelope → message ───────────────────
+
     async def envelope_to_message(self, envelope: MessageEnvelope) -> Message:
         """将 MessageEnvelope 转换为 Message。
 
         Args:
-            envelope: 消息信封
+            envelope: mofox-wire 消息信封
 
         Returns:
-            Message: 标准消息对象
+            Message: 核心业务消息对象
 
         Raises:
-            ValueError: 如果消息信封格式不正确
+            ValueError: envelope 缺少必要字段（message_info / message_segment）
         """
-        # 提取消息信息
-        message_info = envelope.get("message_info", {})
-        message_segment = envelope.get("message_segment", [])
+        message_info: MessageInfoPayload = envelope.get("message_info")  # type: ignore[assignment]
+        if message_info is None:
+            raise ValueError("MessageEnvelope 缺少 message_info 字段")
 
-        if not message_info:
-            raise ValueError("消息信封缺少 message_info")
+        raw_segments = envelope.get("message_segment")  # type: ignore[arg-type]
+        if raw_segments is None:
+            # 尝试 message_chain 别名
+            raw_segments = envelope.get("message_chain")  # type: ignore[arg-type]
 
-        # 解析用户和群组信息
-        user_info = message_info.get("user_info", {})
-        group_info = message_info.get("group_info", {})
+        if raw_segments is None:
+            raise ValueError("MessageEnvelope 缺少 message_segment/message_chain 字段")
 
-        # 生成 stream_id
-        platform = message_info.get("platform", "")
-        stream_id = self._generate_stream_id(platform, user_info, group_info)
+        # 规范化：单个 SegPayload → 列表
+        segments: list[SegPayload]
+        if isinstance(raw_segments, dict):
+            segments = [raw_segments]  # type: ignore[list-item]
+        else:
+            segments = list(raw_segments)
 
-        # 解析消息类型和内容
-        message_type, content, processed_text = self._parse_message_segment(message_segment)
+        # 递归解析段列表
+        result = self._parse_segments(segments, depth=0)
 
-        # 提取 reply_to
-        reply_to = self._extract_reply_from_segment(message_segment)
+        # 确定消息类型
+        message_type = self._infer_message_type(result)
 
-        # 处理时间戳
-        message_time = message_info.get("time", time.time())
-        if isinstance(message_time, int):
-            message_time = float(message_time / 1000)
+        # 构建内容
+        content = self._build_content(result, message_type)
 
-        # 提取 additional_config 信息
-        additional_config = message_info.get("additional_config", {})
-        is_notify = False
-        is_public_notice = False
-        notice_type = None
-        
-        if isinstance(additional_config, dict):
-            is_notify = additional_config.get("is_notice", False)
-            is_public_notice = additional_config.get("is_public_notice", False)
-            notice_type = additional_config.get("notice_type")
+        # 提取用户信息
+        user_info = message_info.get("user_info") or {}
+        group_info = message_info.get("group_info")
 
-        # 创建 Message 对象
-        message = Message(
+        return Message(
             message_id=message_info.get("message_id", ""),
-            time=message_time,
-            stream_id=stream_id,
-            reply_to=reply_to,
+            time=message_info.get("time", time.time()),
+            reply_to=result.reply_to,
             content=content,
-            processed_plain_text=processed_text,
+            processed_plain_text=result.plain_text or None,
             message_type=message_type,
-            sender_id=str(user_info.get("user_id", "")),
+            sender_id=user_info.get("user_id", ""),
             sender_name=user_info.get("user_nickname", ""),
             sender_cardname=user_info.get("user_cardname"),
-            platform=platform,
-            chat_type=self._determine_chat_type(group_info),
+            platform=message_info.get("platform", ""),
+            chat_type=infer_chat_type(message_info),
+            stream_id=extract_stream_id(message_info),
             raw_data=envelope.get("raw_message"),
+            media=result.media,
+            at_users=result.at_users,
+            unknown_segments=result.unknown_segments,
         )
 
-        # 设置运行时属性（不是 Message 的核心字段）
-        if is_notify:
-            setattr(message, "is_notify", True)
-            setattr(message, "is_public_notice", is_public_notice)
-            setattr(message, "notice_type", notice_type)
-
-        # 从 message_segment 中提取的状态信息
-        # 注：这些信息已经在 _parse_message_segment 中记录到 state 中，
-        # 但是因为没有返回，所以我们需要重新解析
-        state = {}
-        self._process_segments_recursive(message_segment, state)
-        
-        if state.get("is_mentioned"):
-            setattr(message, "is_mentioned", True)
-        if state.get("is_at"):
-            setattr(message, "is_at", True)
-
-        logger.debug(f"转换信封为消息: {message.message_id}")
-        return message
+    # ─── message → envelope ───────────────────
 
     async def message_to_envelope(self, message: Message) -> MessageEnvelope:
-        """将 Message 转换为 MessageEnvelope。
+        """将 Message 转换为 MessageEnvelope（用于向适配器发送）。
 
         Args:
-            message: 标准消息对象
+            message: 核心业务消息对象
 
         Returns:
-            MessageEnvelope: 消息信封
-
-        Raises:
-            ValueError: 如果消息对象缺少必要字段
+            MessageEnvelope: mofox-wire 消息信封
         """
-        from mofox_wire import MessageDirection
+        seg_list: list[SegPayload] = []
 
-        # 验证必要字段
-        if not message.message_id:
-            raise ValueError("消息缺少 message_id")
-
-        if not message.platform:
-            raise ValueError("消息缺少 platform")
-
-        if not message.sender_id:
-            raise ValueError("消息缺少 sender_id")
-
-        # 构建消息信封
-        envelope = MessageEnvelope(
-            direction="outgoing",
-            message_info={
-                "platform": message.platform,
-                "message_id": message.message_id,
-                "time": message.time,
-                "user_id": message.sender_id,
-                "stream_id": message.stream_id,
-            },
-            message_segment=self._build_message_segment(message),
-            raw_message=message.raw_data,
+        # 构建文本段
+        text = message.processed_plain_text or (
+            message.content if isinstance(message.content, str) else ""
         )
+        if text:
+            seg_list.append({"type": "text", "data": text})
 
-        logger.debug(f"转换消息为信封: {message.message_id}")
-        return envelope
+        # 构建媒体段
+        media_list: list[dict[str, Any]] = message.extra.get("media", [])
+        for m in media_list:
+            seg_list.append({"type": m.get("type", "unknown"), "data": m.get("data", "")})
 
-    def _generate_stream_id(self, platform: str, user_info: dict, group_info: dict) -> str:
-        """生成 stream_id。
+        if not seg_list:
+            seg_list.append({"type": "text", "data": ""})
 
-        使用 ChatStream.generate_stream_id() 生成符合规范的 stream_id。
-
-        Args:
-            platform: 平台标识
-            user_info: 用户信息字典
-            group_info: 群组信息字典
-
-        Returns:
-            str: 聊天流ID，使用 SHA-256 哈希
-
-        Raises:
-            ValueError: 如果既没有 user_id 也没有 group_id
-        """
-        from src.core.models.stream import ChatStream
-
-        # 提取 user_id 和 group_id
-        user_id = str(user_info.get("user_id", "")) if user_info else ""
-        group_id = str(group_info.get("group_id", "")) if group_info else ""
-
-        # 使用 ChatStream.generate_stream_id() 生成 stream_id
-        return ChatStream.generate_stream_id(
-            platform=platform,
-            user_id=user_id,
-            group_id=group_id,
-        )
-
-    def _parse_message_segment(self, segments: SegPayload | list[SegPayload]) -> tuple[MessageType, Any, str]:
-        """解析消息段（递归处理）。
-
-        Args:
-            segments: 消息段或消息段列表
-
-        Returns:
-            tuple[MessageType, Any, str]: (消息类型, 消息内容, 处理后的纯文本)
-        """
-        if not segments:
-            return MessageType.TEXT, "", ""
-
-        # 初始化解析状态
-        state = {
-            "message_type": MessageType.TEXT,
-            "has_image": False,
-            "has_voice": False,
-            "has_video": False,
-            "has_emoji": False,
-            "has_file": False,
-            "is_at": False,
-            "is_mentioned": False,
+        # 构建 message_info
+        msg_info: MessageInfoPayload = {
+            "platform": message.platform,
+            "message_id": message.message_id,
+            "time": message.time if isinstance(message.time, float) else time.time(),
         }
 
-        # 递归解析消息段
-        processed_text = self._process_segments_recursive(segments, state)
+        user_info_dict: dict[str, Any] = {
+            "platform": message.platform,
+            "user_id": message.sender_id,
+            "user_nickname": message.sender_name,
+        }
+        if message.sender_cardname:
+            user_info_dict["user_cardname"] = message.sender_cardname
+        msg_info["user_info"] = user_info_dict  # type: ignore[typeddict-unknown-key]
 
-        # 确定主消息类型（优先级：video > voice > image > emoji > file > text）
-        if state["has_video"]:
-            message_type = MessageType.VIDEO
-        elif state["has_voice"]:
-            message_type = MessageType.VOICE
-        elif state["has_image"]:
-            message_type = MessageType.IMAGE
-        elif state["has_emoji"]:
-            message_type = MessageType.EMOJI
-        elif state["has_file"]:
-            message_type = MessageType.FILE
-        else:
-            message_type = state["message_type"]
+        if message.chat_type == "group" and message.stream_id:
+            # 从 stream_id 提取 group_id（格式：platform:group:group_id）
+            parts = message.stream_id.split(":")
+            group_id = parts[2] if len(parts) >= 3 else ""
+            msg_info["group_info"] = {  # type: ignore[typeddict-unknown-key]
+                "platform": message.platform,
+                "group_id": group_id,
+                "group_name": "",
+            }
 
-        return message_type, processed_text, processed_text
+        envelope: MessageEnvelope = {
+            "direction": "outgoing",
+            "message_info": msg_info,
+            "message_segment": seg_list,  # type: ignore[typeddict-item]
+        }
 
-    def _build_message_segment(self, message: Message) -> list:
-        """构建消息段。
+        return envelope
 
-        Args:
-            message: 消息对象
+    # ──────────────────────────────────────────
+    # 内部方法
+    # ──────────────────────────────────────────
 
-        Returns:
-            list: 消息段列表
-        """
-        if message.message_type == MessageType.TEXT:
-            return [{"type": "text", "data": message.content}]
-        elif message.message_type == MessageType.IMAGE:
-            return [{"type": "image", "data": message.content}]
-        elif message.message_type == MessageType.VOICE:
-            return [{"type": "voice", "data": message.content}]
-        elif message.message_type == MessageType.VIDEO:
-            return [{"type": "video", "data": message.content}]
-        elif message.message_type == MessageType.FILE:
-            return [{"type": "file", "data": message.content}]
-        elif message.message_type == MessageType.EMOJI:
-            return [{"type": "emoji", "data": message.content}]
-        elif message.message_type == MessageType.NOTICE:
-            return [{"type": "notice", "data": message.content}]
-        else:
-            # 未知类型，默认为文本
-            return [{"type": "text", "data": str(message.content)}]
-
-    def _process_segments_recursive(
+    def _parse_segments(
         self,
-        segment: SegPayload | list[SegPayload],
-        state: dict[str, Any],
-    ) -> str:
-        """递归处理消息段，转换为文字描述。
+        segments: list[SegPayload],
+        depth: int = 0,
+    ) -> _ParseResult:
+        """递归解析 SegPayload 列表。
 
         Args:
-            segment: 要处理的消息段（单个或列表）
-            state: 处理状态字典（用于记录消息类型标记）
+            segments: 待解析的段列表
+            depth: 当前递归深度
 
         Returns:
-            str: 处理后的文本
+            _ParseResult: 解析聚合结果
         """
-        # 如果是列表，遍历处理
-        if isinstance(segment, list):
-            segments_text = []
-            for seg in segment:
-                processed = self._process_segments_recursive(seg, state)
-                if processed:
-                    segments_text.append(processed)
-            return " ".join(segments_text)
+        result = _ParseResult()
 
-        # 如果是单个段
-        if isinstance(segment, dict):
-            seg_type = segment.get("type", "")
-            seg_data = segment.get("data")
+        if depth >= _MAX_NESTING_DEPTH:
+            logger.warning(f"SegPayload 嵌套深度超过 {_MAX_NESTING_DEPTH} 层，截断")
+            result.text_parts.append("[嵌套内容过深]")
+            return result
 
-            # 处理 seglist 类型（递归）
-            if seg_type == "seglist" and isinstance(seg_data, list):
-                segments_text = []
-                for sub_seg in seg_data:
-                    processed = self._process_segments_recursive(sub_seg, state)
-                    if processed:
-                        segments_text.append(processed)
-                return " ".join(segments_text)
+        for seg in segments:
+            try:
+                self._parse_single_segment(seg, result, depth)
+            except Exception as e:
+                seg_type = seg.get("type", "unknown") if isinstance(seg, dict) else "invalid"
+                logger.warning(f"解析消息段失败 (type={seg_type}): {e}")
+                result.text_parts.append(f"[解析失败:{seg_type}]")
 
-            # 处理其他类型
-            return self._process_single_segment(segment, state)
+        return result
 
-        return ""
-
-    def _process_single_segment(self, segment: SegPayload, state: dict[str, Any]) -> str:
-        """处理单个消息段。
+    def _parse_single_segment(
+        self,
+        seg: SegPayload,
+        result: _ParseResult,
+        depth: int,
+    ) -> None:
+        """解析单个 SegPayload 并写入 result。
 
         Args:
-            segment: 消息段
-            state: 处理状态字典
-
-        Returns:
-            str: 处理后的文本
+            seg: 消息段
+            result: 聚合结果（原地修改）
+            depth: 当前递归深度
         """
-        seg_type = segment.get("type", "")
-        seg_data = segment.get("data")
+        if not isinstance(seg, dict):
+            logger.warning(f"非法消息段类型: {type(seg)}")
+            return
 
-        try:
-            if seg_type == "text":
-                return str(seg_data) if seg_data else ""
+        seg_type: str = seg.get("type", "")
+        data = seg.get("data", "")
 
-            elif seg_type == "at":
-                state["is_at"] = True
-                # 处理at消息，格式为"@<昵称:QQ号>"
-                if isinstance(seg_data, str):
-                    match = _AT_PATTERN.match(seg_data)
-                    if match:
-                        nickname, qq_id = match.groups()
-                        return f"@<{nickname}:{qq_id}>"
-                    logger.warning(f"[at处理] 无法解析格式: '{seg_data}'")
-                    return f"@{seg_data}"
-                logger.warning(f"[at处理] 数据类型异常: {type(seg_data)}")
-                return f"@{seg_data}" if isinstance(seg_data, str) else "@未知用户"
+        match seg_type:
+            case "text":
+                self._handle_text(data, result)
+            case "image":
+                self._handle_image(data, result)
+            case "emoji":
+                self._handle_emoji(data, result)
+            case "voice":
+                self._handle_voice(data, result)
+            case "file":
+                self._handle_file(data, result)
+            case "at":
+                self._handle_at(data, result)
+            case "reply":
+                self._handle_reply(data, seg, result, depth)
+            case "seglist":
+                self._handle_seglist(data, result, depth)
+            case _:
+                self._handle_unknown(seg_type, data, result)
 
-            elif seg_type == "image":
-                state["has_image"] = True
-                # 图片消息简化描述
-                return "[图片]"
+    # ─── 段处理器 ─────────────────────────────
 
-            elif seg_type == "emoji":
-                state["has_emoji"] = True
-                return "[表情包]"
+    @staticmethod
+    def _handle_text(data: Any, result: _ParseResult) -> None:
+        """处理文本段。"""
+        if isinstance(data, str):
+            result.text_parts.append(data)
+        elif isinstance(data, list):
+            # 理论上 text 的 data 是 str，但防御性处理
+            result.text_parts.append(str(data))
+        else:
+            result.text_parts.append(str(data))
 
-            elif seg_type == "voice":
-                state["has_voice"] = True
-                return "[语音]"
+    @staticmethod
+    def _handle_image(data: Any, result: _ParseResult) -> None:
+        """处理图片段（适配器已编码为 base64）。"""
+        if isinstance(data, str):
+            result.media.append({
+                "type": "image",
+                "data": normalize_base64(data),
+            })
+            result.text_parts.append("[图片]")
+        elif isinstance(data, list):
+            # data 是嵌套段 — 不常见，但规范允许
+            result.media.append({"type": "image", "data": str(data)})
+            result.text_parts.append("[图片]")
 
-            elif seg_type == "video":
-                state["has_video"] = True
-                return "[视频]"
+    @staticmethod
+    def _handle_emoji(data: Any, result: _ParseResult) -> None:
+        """处理表情包段（适配器已编码为 base64）。"""
+        if isinstance(data, str):
+            result.media.append({
+                "type": "emoji",
+                "data": normalize_base64(data),
+            })
+            result.text_parts.append("[表情包]")
+        elif isinstance(data, list):
+            result.media.append({"type": "emoji", "data": str(data)})
+            result.text_parts.append("[表情包]")
 
-            elif seg_type == "file":
-                state["has_file"] = True
-                if isinstance(seg_data, dict):
-                    file_name = seg_data.get("name", "未知文件")
-                    file_size = seg_data.get("size", "未知大小")
-                    return f"[文件：{file_name} ({file_size}字节)]"
-                return "[文件]"
+    @staticmethod
+    def _handle_voice(data: Any, result: _ParseResult) -> None:
+        """处理语音段（适配器已编码为 base64）。"""
+        if isinstance(data, str):
+            result.media.append({
+                "type": "voice",
+                "data": normalize_base64(data),
+            })
+            result.text_parts.append("[语音]")
 
-            elif seg_type == "mention_bot":
-                # 机器人被@提及
-                if isinstance(seg_data, (int, float)):
-                    state["is_mentioned"] = seg_data != 0
-                return ""
+    @staticmethod
+    def _handle_file(data: Any, result: _ParseResult) -> None:
+        """处理文件段。
 
-            elif seg_type == "priority_info":
-                # 优先级信息，不显示在文本中
-                return ""
+        data 可能是 JSON 字符串或已解析的字典。
+        """
+        parsed = data
+        if isinstance(data, str):
+            parsed = safe_json_loads(data)
 
-            elif seg_type == "reply":
-                # 回复消息，不显示在文本中（reply_to 已单独处理）
-                return ""
+        if isinstance(parsed, dict):
+            result.media.append({
+                "type": "file",
+                "data": {
+                    "name": parsed.get("name") or parsed.get("file", ""),
+                    "size": parsed.get("size") or parsed.get("file_size"),
+                    "id": parsed.get("id") or parsed.get("file_id"),
+                },
+            })
+            file_name = parsed.get("name") or parsed.get("file", "文件")
+            result.text_parts.append(f"[文件:{file_name}]")
+        else:
+            # 无法解析结构，保留原始信息
+            result.media.append({"type": "file", "data": parsed})
+            result.text_parts.append("[文件]")
 
-            elif seg_type == "location":
-                state["message_type"] = MessageType.LOCATION
-                if isinstance(seg_data, dict):
-                    lat = seg_data.get("lat", "")
-                    lon = seg_data.get("lon", "")
-                    title = seg_data.get("title", "某个位置")
-                    return f"[位置：{title} ({lat}, {lon})]"
-                return "[位置]"
+    @staticmethod
+    def _handle_at(data: Any, result: _ParseResult) -> None:
+        """处理 @ 段。
 
-            elif seg_type == "notice":
-                state["message_type"] = MessageType.NOTICE
-                return str(seg_data) if seg_data else "[通知]"
+        data 格式约定: ``nickname:user_id``，或 ``user_id``。
+        """
+        if not isinstance(data, str):
+            result.text_parts.append(f"@{data}")
+            return
 
+        if ":" in data:
+            parts = data.split(":", 1)
+            nickname = parts[0]
+            user_id = parts[1]
+        else:
+            nickname = data
+            user_id = data
+
+        result.at_users.append({"nickname": nickname, "user_id": user_id})
+        result.text_parts.append(f"@{nickname} ")
+
+    def _handle_reply(
+        self,
+        data: Any,
+        seg: SegPayload,
+        result: _ParseResult,
+        depth: int,
+    ) -> None:
+        """处理回复段。
+
+        reply 段的 data 可以是：
+        1. 字符串 — 被回复消息的 ID
+        2. 嵌套段列表 — 回复内容的结构化表示
+        """
+        if isinstance(data, str):
+            # data 是消息 ID
+            if not result.reply_to:
+                result.reply_to = data
+            result.text_parts.append(f"[回复:{data}]")
+        elif isinstance(data, list):
+            # 嵌套段：递归解析
+            inner = self._parse_segments(data, depth + 1)
+            if not result.reply_to:
+                result.reply_to = inner.reply_to
+            inner_text = inner.plain_text
+            if inner_text:
+                result.text_parts.append(f"「回复：{inner_text}」")
             else:
-                logger.warning(f"未知的消息段类型: {seg_type}")
-                return f"[{seg_type}]"
+                result.text_parts.append("[回复]")
+            # 合并媒体等内容
+            result.media.extend(inner.media)
+            result.at_users.extend(inner.at_users)
 
-        except Exception as e:
-            logger.error(f"处理消息段失败: {e!s}, 类型: {seg_type}, 数据: {seg_data}")
-            return f"[处理失败的{seg_type}消息]"
+    def _handle_seglist(
+        self,
+        data: Any,
+        result: _ParseResult,
+        depth: int,
+    ) -> None:
+        """处理 seglist 段（嵌套段列表）。"""
+        if isinstance(data, list):
+            inner = self._parse_segments(data, depth + 1)
+            result.merge(inner)
+        else:
+            logger.warning(f"seglist 的 data 不是列表: {type(data)}")
+            result.text_parts.append(str(data))
 
-    def _determine_chat_type(self, group_info: dict) -> str:
-        """确定聊天类型。
+    @staticmethod
+    def _handle_unknown(seg_type: str, data: Any, result: _ParseResult) -> None:
+        """处理未知类型的段。"""
+        result.unknown_segments.append({"type": seg_type, "data": data})
+        result.text_parts.append(f"[{seg_type}]")
 
-        Args:
-            group_info: 群组信息字典
+    # ─── 辅助方法 ─────────────────────────────
 
-        Returns:
-            str: 聊天类型，"group" 或 "private"
+    @staticmethod
+    def _infer_message_type(result: _ParseResult) -> MessageType:
+        """根据解析结果推断 MessageType。
+
+        优先级：如果有媒体，按第一个媒体类型决定；否则为 TEXT。
         """
-        return "group" if group_info else "private"
+        if not result.media:
+            return MessageType.TEXT
 
-    def _extract_reply_from_segment(self, segment: SegPayload | list[SegPayload]) -> str | None:
-        """从消息段中提取 reply_to 信息。
+        first_media_type = result.media[0].get("type", "")
 
-        Args:
-            segment: 消息段（单个或列表）
+        type_mapping: dict[str, MessageType] = {
+            "image": MessageType.IMAGE,
+            "emoji": MessageType.EMOJI,
+            "voice": MessageType.VOICE,
+            "file": MessageType.FILE,
+        }
 
-        Returns:
-            str | None: 回复的消息 ID，如果没有则返回 None
+        return type_mapping.get(first_media_type, MessageType.UNKNOWN)
+
+    @staticmethod
+    def _build_content(result: _ParseResult, message_type: MessageType) -> str | Any:
+        """构建 Message.content 字段。
+
+        - TEXT 类型: 返回纯文本
+        - 含媒体: 返回结构化字典
         """
-        try:
-            # 如果是列表，遍历查找
-            if isinstance(segment, list):
-                for seg in segment:
-                    reply_id = self._extract_reply_from_segment(seg)
-                    if reply_id:
-                        return reply_id
-                return None
+        if message_type == MessageType.TEXT:
+            return result.plain_text
 
-            # 如果是字典
-            if isinstance(segment, dict):
-                seg_type = segment.get("type", "")
-                seg_data = segment.get("data")
-
-                # 如果是 seglist，递归搜索
-                if seg_type == "seglist" and isinstance(seg_data, list):
-                    for sub_seg in seg_data:
-                        reply_id = self._extract_reply_from_segment(sub_seg)
-                        if reply_id:
-                            return reply_id
-
-                # 如果是 reply 段，返回 message_id
-                elif seg_type == "reply":
-                    return str(seg_data) if seg_data else None
-
-        except Exception as e:
-            logger.warning(f"提取 reply_to 信息失败: {e}")
-
-        return None
-
-
-__all__ = ["MessageConverter"]
+        # 含媒体时返回结构化内容
+        return {
+            "text": result.plain_text,
+            "media": result.media,
+        }

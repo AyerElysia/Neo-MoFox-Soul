@@ -11,8 +11,8 @@
 from src.core.transport.message_receive import (
     MessageConverter,
     MessageReceiver,
-    MessageRouter,
     get_message_receiver,
+    init_message_receiver,
 )
 
 # 消息发送模块
@@ -37,8 +37,8 @@ __all__ = [
     # 消息接收
     "MessageReceiver",
     "MessageConverter",
-    "MessageRouter",
     "get_message_receiver",
+    "init_message_receiver",
     # 消息发送
     "MessageSender",
     "get_message_sender",

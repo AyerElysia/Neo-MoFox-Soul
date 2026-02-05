@@ -4,10 +4,11 @@
 """
 
 from src.kernel.db.core.engine import (
-    configure_engine,
     close_engine,
+    configure_engine,
     get_engine,
     get_engine_info,
+    init_database_from_config,
     reset_engine_state,
 )
 from src.kernel.db.core.exceptions import (
@@ -31,6 +32,7 @@ Base = Any
 __all__ = [
     # 引擎
     "configure_engine",
+    "init_database_from_config",
     "get_engine",
     "close_engine",
     "get_engine_info",

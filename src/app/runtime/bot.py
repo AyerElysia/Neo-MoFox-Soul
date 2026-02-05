@@ -168,17 +168,26 @@ class Bot:
         self.ui.update_phase_status("事件总线", "已启动")
 
         # Step 4: Database
-        from src.kernel.db import configure_engine
+        from src.kernel.db import init_database_from_config
 
-        db_type = self.config.database.database_type
-        if db_type == "sqlite":
-            # 确保 data 目录存在
-            Path("data").mkdir(exist_ok=True)
-            url = "sqlite+aiosqlite:///data/mofox.db"
-        else:
-            url = self.config.database.url
-
-        configure_engine(url)  # 同步函数，不需要 await
+        db_cfg = self.config.database
+        await init_database_from_config(
+            database_type=db_cfg.database_type,
+            sqlite_path=db_cfg.sqlite_path,
+            postgresql_host=db_cfg.postgresql_host,
+            postgresql_port=db_cfg.postgresql_port,
+            postgresql_database=db_cfg.postgresql_database,
+            postgresql_user=db_cfg.postgresql_user,
+            postgresql_password=db_cfg.postgresql_password,
+            postgresql_schema=db_cfg.postgresql_schema,
+            postgresql_ssl_mode=db_cfg.postgresql_ssl_mode,
+            postgresql_ssl_ca=db_cfg.postgresql_ssl_ca,
+            postgresql_ssl_cert=db_cfg.postgresql_ssl_cert,
+            postgresql_ssl_key=db_cfg.postgresql_ssl_key,
+            connection_pool_size=db_cfg.connection_pool_size,
+            connection_timeout=db_cfg.connection_timeout,
+            echo=db_cfg.echo,
+        )
         self._stats["db_connected"] = True
         self.ui.update_phase_status("数据库", "已连接")
 

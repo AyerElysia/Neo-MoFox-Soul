@@ -87,18 +87,80 @@ class CoreConfig(ConfigBase):
         """数据库配置节
 
         配置数据库连接和类型相关的参数。
+        支持 SQLite 和 PostgreSQL 两种数据库类型。
         """
 
+        # ========== 数据库类型配置 ==========
         database_type: str = Field(
             default="sqlite",
-            description="数据库类型：sqlite 或 postgresql"
+            description='数据库类型，支持 "sqlite" 或 "postgresql"',
         )
 
-        # 其他数据库配置可以在这里添加
-        # url: str = Field(default="", description="数据库连接 URL")
-        # echo: bool = Field(default=False, description="是否打印 SQL 语句")
-        # pool_size: int = Field(default=5, description="连接池大小")
-        # max_overflow: int = Field(default=10, description="连接池最大溢出数")
+        # ========== SQLite 配置（当 database_type = "sqlite" 时使用）==========
+        sqlite_path: str = Field(
+            default="data/MoFox.db",
+            description="SQLite 数据库文件路径",
+        )
+
+        # ========== PostgreSQL 配置（当 database_type = "postgresql" 时使用）==========
+        postgresql_host: str = Field(
+            default="localhost",
+            description="PostgreSQL 服务器地址",
+        )
+        postgresql_port: int = Field(
+            default=5432,
+            description="PostgreSQL 服务器端口",
+        )
+        postgresql_database: str = Field(
+            default="mofox",
+            description="PostgreSQL 数据库名",
+        )
+        postgresql_user: str = Field(
+            default="postgres",
+            description="PostgreSQL 用户名",
+        )
+        postgresql_password: str = Field(
+            default="",
+            description="PostgreSQL 密码",
+        )
+        postgresql_schema: str = Field(
+            default="public",
+            description="PostgreSQL 模式名（schema）",
+        )
+
+        # ========== PostgreSQL SSL 配置 ==========
+        postgresql_ssl_mode: str = Field(
+            default="prefer",
+            description='SSL 模式: disable, allow, prefer, require, verify-ca, verify-full',
+        )
+        postgresql_ssl_ca: str = Field(
+            default="",
+            description="SSL CA 证书路径",
+        )
+        postgresql_ssl_cert: str = Field(
+            default="",
+            description="SSL 客户端证书路径",
+        )
+        postgresql_ssl_key: str = Field(
+            default="",
+            description="SSL 客户端密钥路径",
+        )
+
+        # ========== 连接池配置（PostgreSQL 有效）==========
+        connection_pool_size: int = Field(
+            default=10,
+            description="连接池大小",
+        )
+        connection_timeout: int = Field(
+            default=10,
+            description="连接超时时间（秒）",
+        )
+
+        # ========== 通用数据库配置 ==========
+        echo: bool = Field(
+            default=False,
+            description="是否打印 SQL 语句（用于调试）",
+        )
 
     database: DatabaseSection = Field(default_factory=DatabaseSection)
 

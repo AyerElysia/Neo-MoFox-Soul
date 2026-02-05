@@ -15,11 +15,12 @@ API 层 (api/)：
 # 核心
 from src.kernel.db.core import (
     Base,
-    configure_engine,
     close_engine,
+    configure_engine,
     get_db_session,
     get_engine,
     get_engine_info,
+    init_database_from_config,
     get_session_factory,
     reset_engine_state,
     reset_session_factory,
@@ -52,6 +53,7 @@ __all__ = [
     "get_engine_info",
     "reset_engine_state",
     "reset_session_factory",
+    "init_database_from_config",
     # API
     "CRUDBase",
     "QueryBuilder",

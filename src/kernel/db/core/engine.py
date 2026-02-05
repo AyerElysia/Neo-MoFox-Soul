@@ -183,11 +183,15 @@ async def get_engine() -> AsyncEngine:
             raise DatabaseInitializationError(f"引擎初始化失败: {e}") from e
 
 
-def _build_sqlite_config(db_path: str) -> tuple[str, dict]:
+def _build_sqlite_config(
+    db_path: str,
+    echo: bool = False,
+) -> tuple[str, dict]:
     """构建 SQLite 配置
 
     Args:
         db_path: SQLite 数据库文件路径
+        echo: 是否打印 SQL 语句（用于调试）
 
     Returns:
         (url, engine_kwargs) 元组
@@ -199,7 +203,7 @@ def _build_sqlite_config(db_path: str) -> tuple[str, dict]:
     url = f"sqlite+aiosqlite:///{db_file.absolute()}"
 
     engine_kwargs = {
-        "echo": False,
+        "echo": echo,
         "future": True,
         "connect_args": {
             "check_same_thread": False,
@@ -217,6 +221,14 @@ def _build_postgresql_config(
     user: str,
     password: str,
     database: str,
+    schema: str = "public",
+    echo: bool = False,
+    pool_size: int = 10,
+    connection_timeout: int = 10,
+    ssl_mode: str = "prefer",
+    ssl_ca: str = "",
+    ssl_cert: str = "",
+    ssl_key: str = "",
 ) -> tuple[str, dict]:
     """构建 PostgreSQL 配置
 
@@ -226,6 +238,14 @@ def _build_postgresql_config(
         user: 数据库用户
         password: 数据库密码
         database: 数据库名称
+        schema: 模式名（schema），默认为 public
+        echo: 是否打印 SQL 语句（用于调试）
+        pool_size: 连接池大小
+        connection_timeout: 连接超时时间（秒）
+        ssl_mode: SSL 模式 (disable/allow/prefer/require/verify-ca/verify-full)
+        ssl_ca: SSL CA 证书路径
+        ssl_cert: SSL 客户端证书路径
+        ssl_key: SSL 客户端密钥路径
 
     Returns:
         (url, engine_kwargs) 元组
@@ -233,24 +253,182 @@ def _build_postgresql_config(
     encoded_user = quote_plus(user)
     encoded_password = quote_plus(password)
 
-    # 构建 URL
+    # 构建带有 SSL 参数的 URL
     url = (
         f"postgresql+asyncpg://{encoded_user}:{encoded_password}"
         f"@{host}:{port}/{database}"
     )
 
+    # 构建 SSL 配置
+    ssl_config = {}
+
+    # 根据 ssl_mode 设置 SSL 参数
+    if ssl_mode == "disable":
+        # 禁用 SSL
+        ssl_dict: dict[str, str | bool] = {"ssl": False}
+        ssl_config = {"connect_args": ssl_dict}
+    elif ssl_mode == "allow":
+        # 尝试 SSL，失败则降级到非 SSL
+        ssl_dict = {"ssl": "allow"}
+        ssl_config = {"connect_args": ssl_dict}
+    elif ssl_mode == "prefer":
+        # 优先 SSL（asyncpg 默认行为）
+        # 不设置 ssl 参数，让 asyncpg 自动协商
+        pass
+    elif ssl_mode == "require":
+        # 要求 SSL，但不验证证书
+        ssl_dict = {"ssl": True}
+        ssl_config = {"connect_args": ssl_dict}
+    elif ssl_mode == "verify-ca":
+        # 验证 CA 证书
+        if ssl_ca:
+            ssl_dict = {"ssl": True, "sslrootcert": ssl_ca}
+            ssl_config = {"connect_args": ssl_dict}
+        else:
+            # 如果没有提供 CA 证书，降级为 require
+            ssl_dict = {"ssl": True}
+            ssl_config = {"connect_args": ssl_dict}
+    elif ssl_mode == "verify-full":
+        # 完全验证
+        ssl_dict = {"ssl": True}
+        if ssl_ca:
+            ssl_dict["sslrootcert"] = ssl_ca
+        if ssl_cert:
+            ssl_dict["sslcert"] = ssl_cert
+        if ssl_key:
+            ssl_dict["sslkey"] = ssl_key
+        ssl_config = {"connect_args": ssl_dict}
+    else:
+        # 未知模式，使用默认行为
+        pass
+
     engine_kwargs = {
-        "echo": False,
+        "echo": echo,
         "future": True,
-        "pool_size": 10,
-        "max_overflow": 20,
-        "pool_timeout": 30,
-        "pool_recycle": 3600,
-        "pool_pre_ping": True,
+        "pool_size": pool_size,
+        "max_overflow": pool_size * 2,  # 溢出大小为池大小的2倍
+        "pool_timeout": connection_timeout,
+        "pool_recycle": 3600,  # 1小时回收连接
+        "pool_pre_ping": True,  # 连接前 ping 检查
+        **ssl_config,
     }
 
-    logger.debug(f"PostgreSQL 配置: {user}@{host}:{port}/{database}")
+    logger.debug(
+        f"PostgreSQL 配置: {user}@{host}:{port}/{database} "
+        f"(schema: {schema}, pool: {pool_size}, ssl: {ssl_mode})"
+    )
     return url, engine_kwargs
+
+
+async def init_database_from_config(
+    database_type: str,
+    *,
+    # SQLite 配置
+    sqlite_path: str = "data/MaiBot.db",
+    # PostgreSQL 配置
+    postgresql_host: str = "localhost",
+    postgresql_port: int = 5432,
+    postgresql_database: str = "maibot",
+    postgresql_user: str = "postgres",
+    postgresql_password: str = "",
+    postgresql_schema: str = "public",
+    # PostgreSQL SSL 配置
+    postgresql_ssl_mode: str = "prefer",
+    postgresql_ssl_ca: str = "",
+    postgresql_ssl_cert: str = "",
+    postgresql_ssl_key: str = "",
+    # 连接池配置
+    connection_pool_size: int = 10,
+    connection_timeout: int = 10,
+    # 通用配置
+    echo: bool = False,
+) -> AsyncEngine:
+    """从配置对象初始化数据库引擎
+
+    这是应用层使用的便捷函数，直接从 CoreConfig 的 database 配置节初始化数据库。
+
+    Args:
+        database_type: 数据库类型 ("sqlite" 或 "postgresql")
+        sqlite_path: SQLite 数据库文件路径
+        postgresql_host: PostgreSQL 服务器地址
+        postgresql_port: PostgreSQL 服务器端口
+        postgresql_database: PostgreSQL 数据库名
+        postgresql_user: PostgreSQL 用户名
+        postgresql_password: PostgreSQL 密码
+        postgresql_schema: PostgreSQL 模式名（schema）
+        postgresql_ssl_mode: SSL 模式
+        postgresql_ssl_ca: SSL CA 证书路径
+        postgresql_ssl_cert: SSL 客户端证书路径
+        postgresql_ssl_key: SSL 客户端密钥路径
+        connection_pool_size: 连接池大小
+        connection_timeout: 连接超时时间（秒）
+        echo: 是否打印 SQL 语句（用于调试）
+
+    Returns:
+        AsyncEngine: 已初始化的数据库引擎
+
+    Raises:
+        ValueError: 如果数据库类型不支持
+        RuntimeError: 如果引擎已初始化
+
+    Examples:
+        从 CoreConfig 初始化：
+        ```python
+        from src.core.config import get_core_config
+
+        config = get_core_config()
+        db_cfg = config.database
+
+        await init_database_from_config(
+            database_type=db_cfg.database_type,
+            sqlite_path=db_cfg.sqlite_path,
+            postgresql_host=db_cfg.postgresql_host,
+            postgresql_port=db_cfg.postgresql_port,
+            postgresql_database=db_cfg.postgresql_database,
+            postgresql_user=db_cfg.postgresql_user,
+            postgresql_password=db_cfg.postgresql_password,
+            postgresql_schema=db_cfg.postgresql_schema,
+            postgresql_ssl_mode=db_cfg.postgresql_ssl_mode,
+            postgresql_ssl_ca=db_cfg.postgresql_ssl_ca,
+            postgresql_ssl_cert=db_cfg.postgresql_ssl_cert,
+            postgresql_ssl_key=db_cfg.postgresql_ssl_key,
+            connection_pool_size=db_cfg.connection_pool_size,
+            connection_timeout=db_cfg.connection_timeout,
+            echo=db_cfg.echo,
+        )
+        ```
+    """
+    if database_type == "sqlite":
+        url, engine_kwargs = _build_sqlite_config(
+            db_path=sqlite_path,
+            echo=echo,
+        )
+        configure_engine(url, engine_kwargs=engine_kwargs, db_type="sqlite")
+    elif database_type == "postgresql":
+        url, engine_kwargs = _build_postgresql_config(
+            host=postgresql_host,
+            port=postgresql_port,
+            user=postgresql_user,
+            password=postgresql_password,
+            database=postgresql_database,
+            schema=postgresql_schema,
+            echo=echo,
+            pool_size=connection_pool_size,
+            connection_timeout=connection_timeout,
+            ssl_mode=postgresql_ssl_mode,
+            ssl_ca=postgresql_ssl_ca,
+            ssl_cert=postgresql_ssl_cert,
+            ssl_key=postgresql_ssl_key,
+        )
+        configure_engine(url, engine_kwargs=engine_kwargs, db_type="postgresql")
+    else:
+        raise ValueError(
+            f"不支持的数据库类型: {database_type}. "
+            f"仅支持 'sqlite' 或 'postgresql'"
+        )
+
+    # 立即初始化引擎（不延迟到第一次使用）
+    return await get_engine()
 
 
 async def close_engine() -> None:

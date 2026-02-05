@@ -202,7 +202,11 @@ class Logger:
             text.append(" | ", style="dim")
             text.append(f"{level}", style=level_color)
             text.append(" | ", style="dim")
-            text.append(message)
+            try:
+                text.append(Text.from_markup(message))
+            except Exception:
+                # 如果 markup 解析失败（例如含有未闭合并非意图作为 markup 的方括号），回退到普通文本
+                text.append(message)
 
             # 输出到控制台
             self.console.print(text)
