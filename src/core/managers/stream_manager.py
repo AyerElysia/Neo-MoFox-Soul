@@ -180,7 +180,7 @@ class StreamManager:
         chat_stream.last_active_time = stream_record.last_active_time
 
         # 加载上下文
-        chat_stream.context = await self.load_stream_context(stream_id)
+        chat_stream.context = await self.load_stream_context(stream_id, max_messages=100)
 
         logger.debug(f"从数据库构建流: {stream_id}")
 
@@ -489,7 +489,11 @@ class StreamManager:
                 user_id=user_id,
             )
         else:
-            person_id = None
+            # 群聊流无特定用户，使用 group_id 生成 person_id 占位
+            person_id = get_user_query_helper().generate_person_id(
+                platform=platform,
+                user_id=group_id or "unknown",
+            )
 
         # 创建数据库记录
         now = time.time()

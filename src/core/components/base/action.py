@@ -11,6 +11,7 @@ from typing import Annotated, Any, TYPE_CHECKING
 from src.core.components.types import ChatType
 from src.core.components.utils import parse_function_signature
 from src.kernel.llm.payload.tooling import LLMUsable
+from src.core.models.message import Message, MessageType
 
 if TYPE_CHECKING:
     from src.core.components.base.plugin import BasePlugin
@@ -317,25 +318,71 @@ class BaseAction(ABC, LLMUsable):
 
     async def _send_to_stream(
         self,
-        content: Any,
+        content: Message | str,
         stream_id: str | None = None,
     ) -> bool:
         """发送任意内容到指定聊天流。
 
         Args:
-            content: 要发送的内容
+            content: 要发送的内容（支持 Message 对象、字符串、或其他类型）
             stream_id: 要发送的聊天流 ID，留空则使用当前聊天流
 
         Returns:
             bool: 发送是否成功
 
         Examples:
-            >>> from src.core.models.message import TextContent
-            >>> await self._send_to_stream(TextContent("Hello"))
+            >>> # 发送文本消息
+            >>> await self._send_to_stream("Hello, world!")
+            >>> True
+            >>>
+            >>> # 发送 Message 对象
+            >>> from src.core.models.message import Message
+            >>> msg = Message(content="Hi", platform="qq", stream_id="xxx")
+            >>> await self._send_to_stream(msg)
             >>> True
 
         Note:
-            此方法需要 transport 层支持，当前为占位实现
+            此方法通过 transport 层的 MessageSender 发送消息
         """
-        # TODO: 实现与 transport 层的集成
-        return False
+        from src.core.transport.message_send import get_message_sender
+        from src.core.managers.adapter_manager import get_adapter_manager
+        try:
+            # 如果传入的是 Message 对象，直接发送
+            if isinstance(content, Message):
+                message = content
+            else:
+                # 否则构建新的 Message 对象
+                # 从当前 chat_stream 获取上下文信息
+                target_stream_id = stream_id or self.chat_stream.stream_id
+                platform = self.chat_stream.platform
+                chat_type = self.chat_stream.chat_type
+
+                bot_info =await get_adapter_manager().get_bot_info_by_platform(platform)
+
+                # 转换 content 为字符串
+                content_str = str(content) if not isinstance(content, str) else content
+
+                message = Message(
+                    message_id=f"action_{self.action_name}_{id(self)}",
+                    content=content_str,
+                    message_type=MessageType.TEXT,
+                    sender_id=bot_info.get("bot_id", "") if bot_info else "",
+                    sender_name=bot_info.get("bot_nickname", "Bot") if bot_info else "Bot",
+                    platform=platform,
+                    chat_type=chat_type,
+                    stream_id=target_stream_id,
+                )
+
+            # 获取 MessageSender 并发送消息
+            sender = get_message_sender()
+            return await sender.send_message(message)
+
+        except Exception as e:
+            from src.kernel.logger import get_logger
+
+            logger = get_logger("action")
+            logger.error(
+                f"Action {self.action_name} 发送消息失败: {e}",
+                exc_info=True,
+            )
+            return False

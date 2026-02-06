@@ -106,7 +106,7 @@ class EventManager:
                     # 将处理器添加到每个订阅事件的映射表中
                     for event in subscribed_events:
                         # 支持 EventType 枚举和字符串事件名称
-                        event_name = str(event)
+                        event_name = event.value if isinstance(event, EventType) else str(event)
                         # 创建包装函数适配 EventBus 协议
                         unsubscribe = self._event_bus.subscribe(
                             event_name,
@@ -212,7 +212,10 @@ class EventManager:
         logger.debug(f"发布事件: {event}")
 
         # 通过 EventBus 发布事件
-        decision, final_params = await self._event_bus.publish(str(event), kwargs)
+        # 注意：不能使用 str(event)，Python 3.11 中 str(StrEnum.member) 返回
+        # "EnumName.member" 而非 value，会导致与直接用枚举订阅的 key 不匹配
+        event_name = event.value if isinstance(event, EventType) else str(event)
+        decision, final_params = await self._event_bus.publish(event_name, kwargs)
 
         logger.debug(f"事件 {event} 发布完成，最终决策: {decision}")
 
@@ -240,7 +243,7 @@ class EventManager:
             # 将处理器注册到 EventBus
             for event in subscribed_events:
                 # 支持 EventType 枚举和字符串事件名称
-                event_name = str(event)
+                event_name = event.value if isinstance(event, EventType) else str(event)
                 unsubscribe = self._event_bus.subscribe(
                     event_name,
                     self._create_handler_wrapper(handler, signature),

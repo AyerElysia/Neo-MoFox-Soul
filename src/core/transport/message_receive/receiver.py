@@ -27,9 +27,9 @@ from src.core.transport.message_receive.utils import (
     extract_stream_id,
     infer_chat_type,
 )
-from src.kernel.logger import get_logger
+from src.kernel.logger import get_logger, COLOR
 
-logger = get_logger("message_receiver")
+logger = get_logger("message_receiver", display="消息接收器", color=COLOR.CYAN)
 
 
 class MessageReceiver:

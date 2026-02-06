@@ -3,6 +3,7 @@
 本模块提供聊天流相关的数据模型，包括 StreamContext 和 ChatStream 类。
 """
 
+import asyncio
 import hashlib
 import time
 from collections import deque
@@ -50,6 +51,12 @@ class StreamContext:
     # 消息缓存系统
     message_cache: deque["Message"] = field(default_factory=deque)
     is_cache_enabled: bool = False
+
+    # 对话冷却：stop_conversation 设置此时间戳，冷却期间不触发新对话轮次
+    cooldown_until: float = 0.0
+
+    # 流循环任务引用
+    stream_loop_task: asyncio.Task | None = field(default=None, repr=False)
 
 
     def add_unread_message(self, message: "Message") -> None:

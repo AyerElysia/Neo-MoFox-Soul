@@ -11,36 +11,50 @@ from mofox_wire import MessageInfoPayload
 
 
 def extract_stream_id(message_info: MessageInfoPayload) -> str:
-    """根据 MessageInfoPayload 生成聊天会话 stream_id。
+    """根据 MessageInfoPayload 生成聊天会话 stream_id（标准哈希格式）。
+
+    使用 ChatStream.generate_stream_id 生成 SHA-256 哈希 ID，确保与数据库存储格式一致。
 
     规则：
-    - 含 group_info → ``{platform}:group:{group_id}``
-    - 仅 user_info → ``{platform}:private:{user_id}``
-    - 均缺失 → ``{platform}:unknown:no_id``
+    - 含 group_info → 使用 group_id 生成哈希
+    - 仅 user_info → 使用 user_id 生成哈希
+    - 均缺失 → 使用 "no_id" 生成哈希
 
     Args:
         message_info: 消息信息字典
 
     Returns:
-        str: 聊天会话唯一标识
+        str: SHA-256 哈希的 stream_id（标准格式）
 
     Examples:
         >>> info = {"platform": "qq", "message_id": "1",
         ...         "group_info": {"platform": "qq", "group_id": "123", "group_name": "g"}}
         >>> extract_stream_id(info)
-        'qq:group:123'
+        'a1b2c3...  # SHA-256 哈希值
     """
+    from src.core.models.stream import ChatStream
+
     platform: str = message_info.get("platform", "unknown")
 
     group_info = message_info.get("group_info")
     if group_info:
-        return f"{platform}:group:{group_info['group_id']}"
+        return ChatStream.generate_stream_id(
+            platform=platform,
+            group_id=group_info["group_id"],
+        )
 
     user_info = message_info.get("user_info")
     if user_info:
-        return f"{platform}:private:{user_info['user_id']}"
+        return ChatStream.generate_stream_id(
+            platform=platform,
+            user_id=user_info["user_id"],
+        )
 
-    return f"{platform}:unknown:no_id"
+    # 兜底：使用 "no_id" 作为 user_id
+    return ChatStream.generate_stream_id(
+        platform=platform,
+        user_id="no_id",
+    )
 
 
 def infer_chat_type(message_info: MessageInfoPayload) -> str:

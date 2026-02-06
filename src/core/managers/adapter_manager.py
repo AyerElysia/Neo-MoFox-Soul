@@ -39,9 +39,7 @@ class AdapterManager:
 
     def __init__(self) -> None:
         """初始化适配器管理器。"""
-        # 说明：子进程适配器会以代理对象形式保存，因此这里不强制 BaseAdapter 类型。
-        self._active_adapters: dict[str, object] = {}
-        logger.info("适配器管理器初始化完成")
+        self._active_adapters: dict[str, BaseAdapter] = {}
 
     async def start_adapter(self, signature: str) -> bool:
         """启动适配器。
@@ -288,7 +286,24 @@ class AdapterManager:
 
         return results
 
+    async def get_bot_info_by_platform(self, platform: str) -> dict[str, str] | None:
+        """根据平台获取 Bot 信息。
 
+        Args:
+            platform: 平台名称
+
+        Returns:
+            dict[str, str] | None: 包含 'bot_id' 和 'bot_nickname' 的字典，如果未找到则返回 None
+
+        Examples:
+            >>> bot_info = await manager.get_bot_info_by_platform("napcat")
+            >>> {'bot_id': '12345678', 'bot_nickname': 'MyBot'}
+        """
+        for adapter in self._active_adapters.values():
+            if hasattr(adapter, "platform") and getattr(adapter, "platform") == platform:
+                return await adapter.get_bot_info()
+        return None
+    
 # 全局适配器管理器实例
 _global_adapter_manager: "AdapterManager | None" = None
 

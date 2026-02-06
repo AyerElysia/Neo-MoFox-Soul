@@ -266,6 +266,9 @@ class ActionManager:
         # 创建 Action 实例
         action_instance = action_cls(chat_stream=chat_stream, plugin=plugin)
 
+        # 剥离 LLM 自动注入的 reason 参数，避免传入 execute() 时签名不匹配
+        kwargs.pop("reason", None)
+
         # 执行 Action
         try:
             result = await action_instance.execute(**kwargs)

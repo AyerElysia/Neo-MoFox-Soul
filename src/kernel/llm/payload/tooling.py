@@ -32,8 +32,28 @@ class Tool:
         # 1) 已经是 OpenAI tools 格式：{"type":"function","function":{...}}
         # 2) 仅 function schema：{"name":...,"description":...,"parameters":...}
         if schema.get("type") == "function" and "function" in schema:
-            return schema
-        return {"type": "function", "function": schema}
+            result = schema
+        else:
+            result = {"type": "function", "function": schema}
+
+        # 为所有 LLMUsable 自动注入 reason 必填参数
+        func = result.get("function", {})
+        params = func.get("parameters", {})
+        props = params.get("properties", {})
+        if "reason" not in props:
+            props["reason"] = {
+                "type": "string",
+                "description": "说明你选择此动作/工具的原因",
+            }
+            params["properties"] = props
+            required = params.get("required", [])
+            if "reason" not in required:
+                required.append("reason")
+            params["required"] = required
+            func["parameters"] = params
+            result["function"] = func
+
+        return result
 
 
 @dataclass(frozen=True, slots=True)

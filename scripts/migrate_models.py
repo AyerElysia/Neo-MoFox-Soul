@@ -383,6 +383,7 @@ async def migrate_chat_streams():
             old_fields = [
                 "create_time",  # 已被 created_at 替代
                 "user_id",
+                "user_platform",  # 旧版用户平台字段，已整合到 person_id
                 "user_nickname",
                 "user_cardname",
                 "energy_value",
@@ -603,18 +604,62 @@ async def migrate_messages():
             """)
         )
 
-        # 6. 设置 content（优先使用 processed_plain_text，其次 display_message）
-        await session.execute(
-            text("""
-                UPDATE messages
-                SET content = COALESCE(
-                    processed_plain_text,
-                    display_message,
-                    ''
+        # 6. 设置 content（优先使用 processed_plain_text，其次 display_message）- 检查源字段是否存在
+        if db_type == "postgresql":
+            # 检查 display_message 是否存在
+            check_result = await session.execute(
+                text("""
+                    SELECT COUNT(*)
+                    FROM information_schema.columns
+                    WHERE table_name = 'messages'
+                    AND column_name = 'display_message'
+                """)
+            )
+            display_message_exists = (check_result.scalar() or 0) > 0
+
+            if display_message_exists:
+                await session.execute(
+                    text("""
+                        UPDATE messages
+                        SET content = COALESCE(
+                            processed_plain_text,
+                            display_message,
+                            ''
+                        )
+                        WHERE content IS NULL OR content = ''
+                    """)
                 )
-                WHERE content IS NULL OR content = ''
-            """)
-        )
+            else:
+                # display_message 不存在，只使用 processed_plain_text
+                await session.execute(
+                    text("""
+                        UPDATE messages
+                        SET content = COALESCE(processed_plain_text, '')
+                        WHERE content IS NULL OR content = ''
+                    """)
+                )
+        else:  # SQLite
+            try:
+                await session.execute(
+                    text("""
+                        UPDATE messages
+                        SET content = COALESCE(
+                            processed_plain_text,
+                            display_message,
+                            ''
+                        )
+                        WHERE content IS NULL OR content = ''
+                    """)
+                )
+            except Exception:
+                # display_message 不存在，只使用 processed_plain_text
+                await session.execute(
+                    text("""
+                        UPDATE messages
+                        SET content = COALESCE(processed_plain_text, '')
+                        WHERE content IS NULL OR content = ''
+                    """)
+                )
 
         # 7. 添加 platform 字段（从 chat_info_platform）- 检查源字段是否存在
         if db_type == "postgresql":

@@ -273,3 +273,26 @@ class BaseAdapter(AdapterBase):
             raise NotImplementedError(
                 f"适配器 {self.adapter_name} 未配置自动传输，必须重写 _send_platform_message 方法"
             )
+
+    @abstractmethod
+    async def get_bot_info(self) -> dict[str, Any]:
+        """获取 Bot 信息。
+
+        子类可重写以返回平台特定的 Bot 信息。
+
+        Returns:
+            dict[str, Any]: 包含 bot_id、bot_name、platform 等信息的字典
+
+        Examples:
+            >>> async def get_bot_info(self) -> dict:
+            ...     return {
+            ...         "bot_id": "123456",
+            ...         "bot_name": "MyBot",
+            ...         "platform": self.platform,
+            ...     }
+        """
+        return {
+            "bot_id": "unknown_bot",
+            "bot_name": "Unknown Bot",
+            "platform": self.platform,
+        }

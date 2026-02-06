@@ -238,12 +238,14 @@ class Bot:
         from src.core.managers import (
             initialize_adapter_manager,
             initialize_router_manager,
-            initialize_event_manager     
+            initialize_event_manager,
+            initialize_distribution,
         )
 
         initialize_adapter_manager()
         initialize_router_manager()
         initialize_event_manager()
+        initialize_distribution()
 
         self.ui.update_phase_status("核心管理器", "已初始化")
 

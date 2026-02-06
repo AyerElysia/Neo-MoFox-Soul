@@ -14,6 +14,10 @@ from src.core.managers.permission_manager import get_permission_manager
 from src.core.managers.stream_manager import get_stream_manager
 from src.core.managers.event_manager import get_event_manager, initialize_event_manager
 from src.core.managers.router_manager import get_router_manager, initialize_router_manager
+from src.core.transport.distribution import (
+    get_stream_loop_manager,
+    initialize_distribution,
+)
 
 
 __all__ = [
@@ -28,8 +32,10 @@ __all__ = [
     "get_stream_manager",
     "get_event_manager",
     "get_router_manager",
+    "get_stream_loop_manager",
     # 初始化函数
     "initialize_adapter_manager",
     "initialize_event_manager",
     "initialize_router_manager",
+    "initialize_distribution",
 ]

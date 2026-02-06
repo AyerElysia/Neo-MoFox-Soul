@@ -260,13 +260,61 @@ class TestBaseAction:
             # 超时时应该默认激活
             assert result is True
 
-    def test_send_to_stream_placeholder(self, mock_chat_stream, mock_plugin):
-        """测试 _send_to_stream 占位实现。"""
+    @patch("src.core.transport.message_send.get_message_sender")
+    def test_send_to_stream_with_string(self, mock_get_sender, mock_chat_stream, mock_plugin):
+        """测试 _send_to_stream 发送字符串内容。"""
         import asyncio
+
+        # Mock MessageSender
+        mock_sender = MagicMock()
+        mock_sender.send_message = AsyncMock(return_value=True)
+        mock_get_sender.return_value = mock_sender
 
         action = ConcreteAction(mock_chat_stream, mock_plugin)
         result = asyncio.run(action._send_to_stream("test content"))
-        # 当前是占位实现，应该返回 False
+
+        assert result is True
+        mock_sender.send_message.assert_called_once()
+
+    @patch("src.core.transport.message_send.get_message_sender")
+    def test_send_to_stream_with_message(self, mock_get_sender, mock_chat_stream, mock_plugin):
+        """测试 _send_to_stream 发送 Message 对象。"""
+        import asyncio
+        from src.core.models.message import Message, MessageType
+
+        # Mock MessageSender
+        mock_sender = MagicMock()
+        mock_sender.send_message = AsyncMock(return_value=True)
+        mock_get_sender.return_value = mock_sender
+
+        # 创建 Message 对象
+        message = Message(
+            message_id="test_msg",
+            content="Hello",
+            message_type=MessageType.TEXT,
+            platform="test",
+            stream_id="test_stream",
+        )
+
+        action = ConcreteAction(mock_chat_stream, mock_plugin)
+        result = asyncio.run(action._send_to_stream(message))
+
+        assert result is True
+        mock_sender.send_message.assert_called_once_with(message)
+
+    @patch("src.core.transport.message_send.get_message_sender")
+    def test_send_to_stream_failure(self, mock_get_sender, mock_chat_stream, mock_plugin):
+        """测试 _send_to_stream 发送失败的情况。"""
+        import asyncio
+
+        # Mock MessageSender 返回 False
+        mock_sender = MagicMock()
+        mock_sender.send_message = AsyncMock(return_value=False)
+        mock_get_sender.return_value = mock_sender
+
+        action = ConcreteAction(mock_chat_stream, mock_plugin)
+        result = asyncio.run(action._send_to_stream("test content"))
+
         assert result is False
 
 

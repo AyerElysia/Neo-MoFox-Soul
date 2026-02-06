@@ -126,6 +126,9 @@ class ToolUse:
 
         # 执行 Tool
         try:
+            # 剥离 LLM 自动注入的 reason 参数，避免传入 execute() 时签名不匹配
+            kwargs.pop("reason", None)
+
             # 记录开始执行
             logger.debug(f"开始执行工具: {tool_instance.tool_name}, 参数: {kwargs}")
 

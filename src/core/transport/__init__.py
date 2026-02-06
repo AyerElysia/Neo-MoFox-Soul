@@ -33,6 +33,13 @@ from src.core.transport.router import (
     get_http_server,
 )
 
+# 消息分发模块
+from src.core.transport.distribution import (
+    StreamLoopManager,
+    get_stream_loop_manager,
+    initialize_distribution,
+)
+
 __all__ = [
     # 消息接收
     "MessageReceiver",
@@ -48,5 +55,8 @@ __all__ = [
     # HTTP 服务
     "HTTPServer",
     "get_http_server",
-
+    # 消息分发
+    "StreamLoopManager",
+    "get_stream_loop_manager",
+    "initialize_distribution",
 ]
