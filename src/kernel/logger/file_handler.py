@@ -11,6 +11,7 @@ from enum import Enum
 from pathlib import Path
 from threading import Lock
 from typing import TextIO
+from uuid import uuid4
 
 
 class RotationMode(Enum):
@@ -57,6 +58,9 @@ class FileHandler:
         self.max_size = max_size
         self._current_file: TextIO | None = None
         self._current_date: str | None = None
+        self._startup_session_id = (
+            f"{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}_{uuid4().hex[:8]}"
+        )
         self._lock = Lock()
 
         # 确保日志目录存在
@@ -72,9 +76,11 @@ class FileHandler:
             Path: 日志文件完整路径
         """
         if self.rotation_mode == RotationMode.DATE:
-            # 按日期轮转：app_2025-01-31.log
+            # 按日期轮转（包含启动会话标识）：app_20250131_143000_123456_2025-01-31.log
             date_str = datetime.now().strftime("%Y-%m-%d")
-            filename = f"{self.base_filename}_{date_str}{suffix}.log"
+            filename = (
+                f"{self.base_filename}_{self._startup_session_id}_{date_str}{suffix}.log"
+            )
         else:
             # 其他模式：app.log 或 app_1.log
             filename = f"{self.base_filename}{suffix}.log"

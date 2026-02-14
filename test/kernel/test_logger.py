@@ -291,6 +291,100 @@ class TestIntegration:
 class TestFileOutput:
     """测试文件输出功能"""
 
+    def test_date_rotation_separate_file_per_initialize(self) -> None:
+        """测试 DATE 模式下每次初始化写入独立文件"""
+        from src.kernel.logger import initialize_logger_system, shutdown_logger_system
+
+        temp_dir = tempfile.mkdtemp()
+
+        try:
+            console = Console(file=StringIO())
+
+            initialize_logger_system(
+                log_dir=temp_dir,
+                enable_file=True,
+                file_rotation=RotationMode.DATE,
+                log_filename="startup_isolation",
+            )
+            logger = get_logger(
+                "startup_isolation_logger",
+                enable_file=True,
+                console=console,
+            )
+            logger.info("first run")
+            shutdown_logger_system()
+            clear_all_loggers()
+
+            initialize_logger_system(
+                log_dir=temp_dir,
+                enable_file=True,
+                file_rotation=RotationMode.DATE,
+                log_filename="startup_isolation",
+            )
+            logger = get_logger(
+                "startup_isolation_logger",
+                enable_file=True,
+                console=console,
+            )
+            logger.info("second run")
+
+            log_files = list(Path(temp_dir).glob("startup_isolation*.log"))
+            assert len(log_files) == 2
+
+            all_content = "\n".join(
+                file.read_text(encoding="utf-8") for file in log_files
+            )
+            assert "first run" in all_content
+            assert "second run" in all_content
+
+        finally:
+            shutdown_logger_system()
+            clear_all_loggers()
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_file_output_ignores_log_level_filter(self) -> None:
+        """测试文件输出忽略日志级别过滤，控制台仍按级别过滤"""
+        from src.kernel.logger import (
+            initialize_logger_system,
+            shutdown_logger_system,
+        )
+
+        temp_dir = tempfile.mkdtemp()
+
+        try:
+            console_output = StringIO()
+            console = Console(file=console_output)
+
+            initialize_logger_system(
+                log_dir=temp_dir,
+                enable_file=True,
+                log_level="CRITICAL",
+                file_rotation=RotationMode.NEVER,
+                log_filename="force_debug",
+            )
+
+            logger = get_logger(
+                "force_debug_logger",
+                enable_file=True,
+                console=console,
+                log_level="CRITICAL",
+            )
+            logger.debug("debug should be logged")
+
+            # 控制台应被级别过滤（CRITICAL 下不显示 DEBUG）
+            assert "debug should be logged" not in console_output.getvalue()
+
+            log_files = list(Path(temp_dir).glob("force_debug*.log"))
+            assert len(log_files) == 1
+            content = log_files[0].read_text(encoding="utf-8")
+            assert "DEBUG" in content
+            assert "debug should be logged" in content
+
+        finally:
+            shutdown_logger_system()
+            clear_all_loggers()
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
     def test_enable_file_output(self) -> None:
         """测试启用文件输出"""
         from src.kernel.logger import initialize_logger_system, shutdown_logger_system

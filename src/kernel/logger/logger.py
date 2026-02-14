@@ -106,7 +106,7 @@ class Logger:
         self._lock = threading.Lock()
         self._enable_file = enable_file
         self._enable_event_broadcast = enable_event_broadcast
-        
+
         # 设置日志等级（优先使用传入的，否则使用全局配置）
         with _config_lock:
             self._log_level = (log_level or _global_config["log_level"]).upper()
@@ -182,10 +182,8 @@ class Logger:
             color: 日志颜色
             **metadata: 额外的元数据
         """
-        # 检查日志等级过滤
-        if not self._should_log(level):
-            return
-            
+        should_output = self._should_log(level)
+
         with self._lock:
             # 合并元数据
             all_metadata = {**self.metadata, **metadata}
@@ -196,28 +194,7 @@ class Logger:
             timestamp_short = now.strftime("%H:%M:%S")
             timestamp_iso = now.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3]
             level_color = get_rich_color(color)
-
-            # 使用 rich.Text 构建彩色输出
-            text = Text()
-            text.append(f"[{timestamp_short}] ", style="dim")
-            text.append(f"{self.display}", style=self.color)
-            text.append(" | ", style="dim")
-            text.append(f"{level}", style=level_color)
-            text.append(" | ", style="dim")
-            try:
-                text.append(Text.from_markup(message))
-            except Exception:
-                # 如果 markup 解析失败（例如含有未闭合并非意图作为 markup 的方括号），回退到普通文本
-                text.append(message)
-
-            # 输出到控制台
-            self.console.print(text)
-
-            # 如果有元数据，显示在下方
-            if all_metadata:
-                metadata_str = " | ".join([f"{k}={v}" for k, v in all_metadata.items()])
-                metadata_text = Text(metadata_str, style="dim")
-                self.console.print(metadata_text)
+            exc_lines: list[str] = []
 
             if exc_info:
                 import traceback
@@ -226,15 +203,42 @@ class Logger:
                     exc_type, exc_val, exc_tb = sys.exc_info()
                     exc_lines = traceback.format_exception(exc_type, exc_val, exc_tb)
                 elif isinstance(exc_info, BaseException):
-                    exc_lines = traceback.format_exception(type(exc_info), exc_info, exc_info.__traceback__)
+                    exc_lines = traceback.format_exception(
+                        type(exc_info),
+                        exc_info,
+                        exc_info.__traceback__,
+                    )
                 else:
                     exc_lines = [str(exc_info)]
+
+            # 输出到控制台（按日志级别过滤）
+            if should_output:
+                # 使用 rich.Text 构建彩色输出
+                text = Text()
+                text.append(f"[{timestamp_short}] ", style="dim")
+                text.append(f"{self.display}", style=self.color)
+                text.append(" | ", style="dim")
+                text.append(f"{level}", style=level_color)
+                text.append(" | ", style="dim")
+                try:
+                    text.append(Text.from_markup(message))
+                except Exception:
+                    # 如果 markup 解析失败（例如含有未闭合并非意图作为 markup 的方括号），回退到普通文本
+                    text.append(message)
+
+                self.console.print(text)
+
+                # 如果有元数据，显示在下方
+                if all_metadata:
+                    metadata_str = " | ".join([f"{k}={v}" for k, v in all_metadata.items()])
+                    metadata_text = Text(metadata_str, style="dim")
+                    self.console.print(metadata_text)
 
                 if exc_lines:
                     exc_text = Text("".join(exc_lines), style="dim")
                     self.console.print(exc_text)
 
-            # 输出到文件（如果启用）
+            # 输出到文件（如果启用，不受日志级别过滤）
             if self._enable_file:
                 global _global_file_handler
                 if _global_file_handler is not None:
@@ -243,7 +247,7 @@ class Logger:
                     if all_metadata:
                         metadata_str = " | ".join([f"{k}={v}" for k, v in all_metadata.items()])
                         log_line += f"\n  {metadata_str}"
-                    if exc_info:
+                    if exc_lines:
                         log_line += "\n" + "".join(exc_lines)
                     log_line += "\n"
 
