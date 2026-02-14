@@ -536,10 +536,8 @@ class Bot:
         try:
             while self._running:
                 try:
-                    # 等待命令输入（带超时，以便可以检查其他状态）
-                    should_continue = await asyncio.wait_for(
-                        command_parser.read_and_execute(), timeout=1.0
-                    )
+                    # 读取并执行命令（内部使用短超时轮询）
+                    should_continue = await command_parser.read_and_execute()
 
                     if not should_continue:
                         break
@@ -547,18 +545,14 @@ class Bot:
                     # 更新仪表盘统计
                     if self.ui.level == UILevel.VERBOSE:
                         await self._update_runtime_stats()
-
-                except asyncio.TimeoutError:
-                    # 超时是正常的，继续循环
-                    if self.ui.level == UILevel.VERBOSE:
-                        await self._update_runtime_stats()
-                    continue
                 except asyncio.CancelledError:
                     break
                 except Exception as e:
                     self.logger.error(f"主循环错误: {e}", exc_info=e)
 
         finally:
+            command_parser.close()
+
             # 停止实时仪表盘
             if self.ui.level == UILevel.VERBOSE:
                 self.ui.stop_live_dashboard()

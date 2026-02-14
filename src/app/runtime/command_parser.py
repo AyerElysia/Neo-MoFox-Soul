@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import asyncio
+import queue
+import threading
 from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
@@ -46,9 +48,46 @@ class CommandParser:
         self.bot = bot
         self.commands: dict[str, Callable[[list[str]], Any]] = {}
         self._help_texts: dict[str, str] = {}
+        self._input_queue: queue.Queue[str | BaseException] = queue.Queue()
+        self._input_stop_event = threading.Event()
+        self._input_thread = threading.Thread(
+            target=self._input_worker,
+            name="command_input_reader",
+            daemon=True,
+        )
+        self._input_thread.start()
 
         # 注册默认命令
         self._register_default_commands()
+
+    def _input_worker(self) -> None:
+        """后台读取标准输入并写入队列。"""
+        while not self._input_stop_event.is_set():
+            try:
+                line = input("")
+                self._input_queue.put(line)
+            except EOFError as exc:
+                self._input_queue.put(exc)
+                break
+            except KeyboardInterrupt:
+                # 在 Windows 上 Ctrl+C 通常由主线程处理，此处忽略并继续等待。
+                continue
+            except Exception as exc:
+                self._input_queue.put(exc)
+                break
+
+    def close(self) -> None:
+        """关闭命令解析器资源。"""
+        self._input_stop_event.set()
+
+    async def _get_next_input(
+        self, timeout: float = 0.2
+    ) -> str | BaseException | None:
+        """异步获取下一条输入。"""
+        try:
+            return await asyncio.to_thread(self._input_queue.get, True, timeout)
+        except queue.Empty:
+            return None
 
     def _register_default_commands(self) -> None:
         """注册默认命令"""
@@ -87,10 +126,18 @@ class CommandParser:
             CommandExecutionError: 命令执行失败
         """
         try:
-            # 读取用户输入
-            line = await asyncio.get_event_loop().run_in_executor(
-                None, input, ""
-            )
+            input_item = await self._get_next_input()
+            if input_item is None:
+                return True
+
+            if isinstance(input_item, BaseException):
+                if isinstance(input_item, EOFError):
+                    return False
+                if isinstance(input_item, KeyboardInterrupt):
+                    return False
+                raise input_item
+
+            line = input_item
 
             if not line:
                 return True
@@ -134,7 +181,7 @@ class CommandParser:
             return False
         except KeyboardInterrupt:
             # 用户中断（如 Ctrl+C）
-            return True
+            return False
         except Exception as e:
             raise CommandExecutionError(
                 f"Failed to execute command: {e}"
