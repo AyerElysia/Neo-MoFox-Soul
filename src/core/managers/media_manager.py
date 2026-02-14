@@ -279,11 +279,12 @@ class MediaManager:
             else:
                 prompt = "请简要描述这张图片的内容，用一句话概括。"
 
-            # 处理 base64 数据
-            if not base64_data.startswith("data:"):
-                image_value = f"base64|{base64_data}"
-            else:
-                image_value = base64_data
+            # 处理 base64 数据：提取纯净的 base64 内容
+            clean_base64 = self._extract_clean_base64(base64_data)
+            
+            # 使用标准的 data URL 格式（大多数 VLM API 都支持）
+            # 假设是 PNG 图片，如果需要可以根据实际情况调整
+            image_value = f"data:image/png;base64,{clean_base64}"
 
             # 添加 payload 并发送请求
             request.add_payload(LLMPayload(ROLE.USER, [Text(prompt), Image(image_value)]))
@@ -379,14 +380,14 @@ class MediaManager:
             logger.error(f"保存描述缓存失败: {e}", exc_info=True)
 
     @staticmethod
-    def _compute_hash(data: str) -> str:
-        """计算数据的 SHA256 哈希值。
+    def _extract_clean_base64(data: str) -> str:
+        """提取纯净的 base64 数据（移除前缀和多余字符）。
         
         Args:
-            data: 待哈希的数据（base64 字符串）
+            data: 可能包含前缀的 base64 字符串
             
         Returns:
-            十六进制哈希字符串
+            纯净的 base64 字符串
         """
         # 移除可能的 data URL 前缀
         if data.startswith("data:"):
@@ -396,7 +397,24 @@ class MediaManager:
         elif data.startswith("base64|"):
             data = data[7:]
         
-        return hashlib.sha256(data.encode()).hexdigest()
+        # 移除可能的换行符和空格
+        data = data.replace("\n", "").replace("\r", "").replace(" ", "")
+        
+        return data
+    
+    @staticmethod
+    def _compute_hash(data: str) -> str:
+        """计算数据的 SHA256 哈希值。
+        
+        Args:
+            data: 待哈希的数据（base64 字符串）
+            
+        Returns:
+            十六进制哈希字符串
+        """
+        # 使用提取的纯净 base64 数据计算哈希
+        clean_data = MediaManager._extract_clean_base64(data)
+        return hashlib.sha256(clean_data.encode()).hexdigest()
 
 
 # ──────────────────────────────────────────
