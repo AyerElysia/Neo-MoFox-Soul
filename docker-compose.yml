@@ -1,6 +1,9 @@
 services:
   mofox:
-    build: .
+    # 默认拉取 main 分支的构建镜像
+    # 如果需要 dev 分支，请修改为 ikun11451/neo-mofox-dev:latest
+    image: ikun11451/neo-mofox-main:latest
+    # build: .
     container_name: mofox-bot
     restart: unless-stopped
     volumes:
