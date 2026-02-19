@@ -680,7 +680,7 @@ class PluginManager:
                     component_cls, base_cls
                 ):
                     component_name = getattr(component_cls, name_attr, None)
-                    dependencies = component_cls.dependencies  # type: ignore[attr-defined]
+                    dependencies = getattr(component_cls, "dependencies", [])
                     return comp_type, component_name, dependencies
             except TypeError:
                 # component_cls 不是类
