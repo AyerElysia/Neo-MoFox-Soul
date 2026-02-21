@@ -31,7 +31,6 @@ class ComponentType(Enum):
     ADAPTER = "adapter"
     CHATTER = "chatter"
     COMMAND = "command"
-    COLLECTION = "collection"
     CONFIG = "config"
     EVENT_HANDLER = "event_handler"
     SERVICE = "service"

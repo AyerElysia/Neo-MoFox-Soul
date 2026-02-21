@@ -200,7 +200,6 @@ class TestComponentRegistry:
             ComponentType.ADAPTER,
             ComponentType.CHATTER,
             ComponentType.COMMAND,
-            ComponentType.COLLECTION,
             ComponentType.CONFIG,
             ComponentType.EVENT_HANDLER,
             ComponentType.SERVICE,

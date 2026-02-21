@@ -130,28 +130,6 @@ class PluginManager:
                 f"调用插件 '{plugin_name}' 的 on_plugin_loaded 钩子时出错: {e}"
             )
 
-        # 7.1 门控 Collection 内部组件：未解包前默认不可用
-        try:
-            from src.core.managers.collection_manager import get_collection_manager
-            from src.core.components.registry import get_global_registry
-            from src.core.components.state_manager import get_global_state_manager
-            from src.core.components.types import ComponentType
-
-            registry = get_global_registry()
-            collections = registry.get_by_plugin_and_type(
-                plugin_name, ComponentType.COLLECTION
-            )
-            if collections:
-                collection_manager = get_collection_manager()
-                for collection_sig in collections.keys():
-                    await collection_manager.seal_collection_components(
-                        collection_sig,
-                        plugin=plugin_instance,
-                        recursive=True,
-                    )
-        except Exception as e:
-            logger.warning(f"插件 '{plugin_name}' Collection 门控初始化失败: {e}")
-
         # 8. 记录并更新状态
         self._loaded_plugins[plugin_name] = plugin_instance
         self._manifests[plugin_name] = manifest
@@ -648,7 +626,6 @@ class PluginManager:
         from src.core.components.base.action import BaseAction
         from src.core.components.base.adapter import BaseAdapter
         from src.core.components.base.chatter import BaseChatter
-        from src.core.components.base.collection import BaseCollection
         from src.core.components.base.command import BaseCommand
         from src.core.components.base.config import BaseConfig
         from src.core.components.base.event_handler import BaseEventHandler
@@ -666,7 +643,6 @@ class PluginManager:
             ComponentType.ADAPTER: (BaseAdapter, "adapter_name"),
             ComponentType.CHATTER: (BaseChatter, "chatter_name"),
             ComponentType.COMMAND: (BaseCommand, "command_name"),
-            ComponentType.COLLECTION: (BaseCollection, "collection_name"),
             ComponentType.CONFIG: (BaseConfig, "config_name"),
             ComponentType.EVENT_HANDLER: (BaseEventHandler, "handler_name"),
             ComponentType.SERVICE: (BaseService, "service_name"),

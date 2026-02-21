@@ -36,7 +36,6 @@ class TestComponentType:
         assert ComponentType.ADAPTER.value == "adapter"
         assert ComponentType.CHATTER.value == "chatter"
         assert ComponentType.COMMAND.value == "command"
-        assert ComponentType.COLLECTION.value == "collection"
         assert ComponentType.CONFIG.value == "config"
         assert ComponentType.EVENT_HANDLER.value == "event_handler"
         assert ComponentType.SERVICE.value == "service"

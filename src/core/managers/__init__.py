@@ -9,7 +9,6 @@ from src.core.managers.adapter_manager import get_adapter_manager, initialize_ad
 from src.core.managers.action_manager import get_action_manager, ActionManager
 from src.core.managers.chatter_manager import get_chatter_manager, ChatterManager
 from src.core.managers.command_manager import get_command_manager, CommandManager
-from src.core.managers.collection_manager import get_collection_manager, CollectionManager
 from src.core.managers.service_manager import get_service_manager, ServiceManager
 from src.core.managers.permission_manager import get_permission_manager, PermissionManager
 from src.core.managers.stream_manager import get_stream_manager, StreamManager
@@ -30,7 +29,6 @@ __all__ = [
     "get_adapter_manager",
     "get_chatter_manager",
     "get_command_manager",
-    "get_collection_manager",
     "get_service_manager",
     "get_permission_manager",
     "get_stream_manager",
@@ -50,7 +48,6 @@ __all__ = [
     "ActionManager",
     "ChatterManager",
     "CommandManager",
-    "CollectionManager",
     "ServiceManager",
     "PermissionManager",
     "StreamManager",
