@@ -134,5 +134,5 @@ class BaseTool(ABC, LLMUsable):
             ...     }
             ... }
         """
-        # 使用 utils 中的共同方法生成 schema
-        return parse_function_signature(cls.execute, cls.tool_name, cls.tool_description)
+        # 使用 utils 中的共同方法生成 schema，name 前缀加上组件类型
+        return parse_function_signature(cls.execute, f"tool:{cls.tool_name}", cls.tool_description)

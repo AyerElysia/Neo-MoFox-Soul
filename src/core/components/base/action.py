@@ -142,8 +142,8 @@ class BaseAction(ABC, LLMUsable):
             ...     }
             ... }
         """
-        # 使用 utils 中的共同方法生成 schema
-        return parse_function_signature(cls.execute, cls.action_name, cls.action_description)
+        # 使用 utils 中的共同方法生成 schema，name 前缀加上组件类型
+        return parse_function_signature(cls.execute, f"action:{cls.action_name}", cls.action_description)
 
     async def go_activate(self) -> bool:
         """动作激活判定函数。

@@ -87,7 +87,7 @@ class TestBaseAgent:
         """测试 schema 生成。"""
         schema = ConcreteAgent.to_schema()
         assert schema["type"] == "function"
-        assert schema["function"]["name"] == "task_agent"
+        assert schema["function"]["name"] == "agent:task_agent"
         assert schema["function"]["description"] == "Task agent for tests"
         assert "task" in schema["function"]["parameters"]["properties"]
 

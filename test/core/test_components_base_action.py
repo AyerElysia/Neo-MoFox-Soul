@@ -74,7 +74,7 @@ class TestBaseAction:
         schema = action.to_schema()
 
         assert schema["type"] == "function"
-        assert schema["function"]["name"] == "test_action"
+        assert schema["function"]["name"] == "action:test_action"
         assert schema["function"]["description"] == "A test action"
         assert "parameters" in schema["function"]
         assert schema["function"]["parameters"]["type"] == "object"

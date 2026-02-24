@@ -85,7 +85,7 @@ class TestBaseTool:
         schema = tool.to_schema()
 
         assert schema["type"] == "function"
-        assert schema["function"]["name"] == "test_tool"
+        assert schema["function"]["name"] == "tool:test_tool"
         assert schema["function"]["description"] == "A test tool"
         assert "parameters" in schema["function"]
         assert schema["function"]["parameters"]["type"] == "object"
