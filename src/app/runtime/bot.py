@@ -170,7 +170,7 @@ class Bot:
         loop = asyncio.get_running_loop()
 
         # 默认线程池：承载 to_thread / run_in_executor(None, ...)
-        loop.set_default_executor(ThreadPoolExecutor(max_workers=128))
+        loop.set_default_executor(ThreadPoolExecutor(max_workers=192))
 
         # DNS 专用线程池：避免 getaddrinfo 被通用任务挤占
         dns_executor = ThreadPoolExecutor(max_workers=16)

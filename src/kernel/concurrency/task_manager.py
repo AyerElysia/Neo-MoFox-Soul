@@ -35,9 +35,6 @@ class TaskManager:
 
     def __init__(self) -> None:
         """初始化任务管理器"""
-        if self._initialized:
-            return
-
         self._tasks: dict[str, TaskInfo] = {}
         self._groups: dict[str, TaskGroup] = {}
         self._lock = Lock()
