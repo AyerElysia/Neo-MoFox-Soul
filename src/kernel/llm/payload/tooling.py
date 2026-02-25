@@ -1,6 +1,14 @@
+"""
+定义了与工具调用相关的内容类型、工具注册表和工具执行器。
+
+主要组件：
+- ToolCall：表示工具调用的信息，包括工具名称、参数等。
+- ToolResult：表示工具执行的结果，包含结果值、调用 ID 和工具名称等信息。
+- ToolRegistry：一个工具注册表，支持动态注册和发现工具。
+"""
+
 from __future__ import annotations
 
-import asyncio
 import json
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
@@ -97,77 +105,3 @@ class ToolRegistry:
     def get_all_names(self) -> list[str]:
         """获取所有已注册工具的名称。"""
         return list(self._tools.keys())
-
-
-@dataclass
-class ToolExecutor:
-    """工具执行器，支持超时、错误处理。
-
-    使用示例：
-        executor = ToolExecutor(timeout=30.0)
-        result = await executor.execute(tool_call, execute_func)
-    """
-
-    timeout: float = 30.0
-    on_error: str = "return_error"  # "return_error" | "raise"
-
-    async def execute(
-        self,
-        tool_call: ToolCall,
-        execute_func: Any,  # 实际的工具执行函数
-    ) -> ToolResult:
-        """执行工具调用。
-
-        Args:
-            tool_call: 工具调用信息。
-            execute_func: 工具执行函数（可以是普通函数或异步函数）。
-                        接收 (name: str, args: dict) 参数，返回结果。
-
-        Returns:
-            ToolResult: 工具执行结果。
-
-        Raises:
-            asyncio.TimeoutError: 如果 on_error="raise" 且执行超时。
-            Exception: 如果 on_error="raise" 且执行出错。
-        """
-        # 确保 args 是 dict
-        args = tool_call.args if isinstance(tool_call.args, dict) else {}
-
-        try:
-            # 判断是否为异步函数
-            if asyncio.iscoroutinefunction(execute_func):
-                result = await asyncio.wait_for(
-                    execute_func(tool_call.name, args),
-                    timeout=self.timeout,
-                )
-            else:
-                # 同步函数在线程池中执行（避免阻塞事件循环）
-                loop = asyncio.get_running_loop()
-                result = await asyncio.wait_for(
-                    loop.run_in_executor(None, lambda: execute_func(tool_call.name, args)),
-                    timeout=self.timeout,
-                )
-
-            return ToolResult(result, call_id=tool_call.id, name=tool_call.name)
-
-        except asyncio.TimeoutError:
-            error_result = {
-                "error": "tool_execution_timeout",
-                "tool_name": tool_call.name,
-                "timeout": self.timeout,
-                "detail": f"工具执行超时（超过 {self.timeout} 秒）",
-            }
-            if self.on_error == "raise":
-                raise
-            return ToolResult(error_result, call_id=tool_call.id, name=tool_call.name)
-
-        except Exception as e:
-            error_result = {
-                "error": "tool_execution_failed",
-                "tool_name": tool_call.name,
-                "detail": str(e),
-                "type": type(e).__name__,
-            }
-            if self.on_error == "raise":
-                raise
-            return ToolResult(error_result, call_id=tool_call.id, name=tool_call.name)

@@ -1,3 +1,7 @@
+"""
+实现了一个简单的轮询策略（Round Robin Policy）用于选择模型进行请求处理。
+每个请求会在提供的模型列表中循环选择，支持对每个模型进行一定次数的重试，并在重试后切换到下一个模型。
+"""
 from __future__ import annotations
 
 import itertools

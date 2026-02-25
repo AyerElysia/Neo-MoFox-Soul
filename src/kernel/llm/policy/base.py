@@ -1,3 +1,10 @@
+"""
+定义了一个用于 LLM 重试策略的基础模块，
+包括 ModelStep 数据类和 PolicySession、Policy 协议接口。
+
+这些组件用于描述和执行基于模型输出的重试计划。
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

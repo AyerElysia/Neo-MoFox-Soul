@@ -1,3 +1,6 @@
+"""
+提供了一个工具调用兼容性的提示构建函数和一个响应解析函数，用于处理 LLM 输出的工具调用信息。
+"""
 from __future__ import annotations
 
 import json
@@ -9,6 +12,7 @@ from .exceptions import LLMError
 
 
 def build_tool_call_compat_prompt(tool_schemas: list[dict[str, Any]]) -> str:
+    """构建一个提示文本，指导 LLM 输出符合工具调用兼容性要求的 JSON 格式响应。"""
     schema_text = json.dumps(tool_schemas, ensure_ascii=False)
     return (
         "请只返回一个 JSON 对象，格式如下：\n"
@@ -28,6 +32,7 @@ def build_tool_call_compat_prompt(tool_schemas: list[dict[str, Any]]) -> str:
 
 
 def _repair_to_obj(raw: str) -> Any:
+    """尝试修复一个原始字符串并将其解析为 JSON 对象。"""
     try:
         return repair_json(raw, return_objects=True)
     except Exception as e:
@@ -35,12 +40,14 @@ def _repair_to_obj(raw: str) -> Any:
 
 
 def _normalize_args(args: Any) -> dict[str, Any] | str:
+    """规范化工具调用的参数，确保最终返回一个字典对象。"""
     if isinstance(args, dict):
         return args
     if isinstance(args, str):
         stripped = args.strip()
         if not stripped:
             return {}
+        # 尝试修复并解析字符串形式的参数，如果修复后的结果是一个对象则返回，否则抛出错误
         repaired = _repair_to_obj(stripped)
         if isinstance(repaired, dict):
             return repaired
@@ -51,6 +58,7 @@ def _normalize_args(args: Any) -> dict[str, Any] | str:
 
 
 def _normalize_single_call(item: Any, index: int) -> dict[str, Any]:
+    """规范化单个工具调用项，确保包含有效的 name 和 args 字段。"""
     if not isinstance(item, dict):
         raise LLMError(f"tool_call_compat 第 {index} 个调用项不是对象")
 
@@ -76,6 +84,7 @@ def _normalize_single_call(item: Any, index: int) -> dict[str, Any]:
 
 
 def parse_tool_call_compat_response(raw_text: str) -> tuple[str, list[dict[str, Any]]]:
+    """解析 LLM 输出的工具调用兼容性响应，返回一个包含自然语言回复和工具调用列表的元组。"""
     repaired = _repair_to_obj(raw_text)
 
     if isinstance(repaired, list):

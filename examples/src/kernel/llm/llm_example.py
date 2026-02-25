@@ -21,10 +21,8 @@ from src.kernel.llm import (
     LLMPayload,
     ROLE,
     Text,
-    Tool,
     ToolResult,
     ToolRegistry,
-    ToolExecutor,
     get_global_collector,
     LLMRateLimitError,
     LLMTimeoutError,
@@ -173,72 +171,6 @@ async def demo_stream_with_buffer() -> None:
             "检测到缓冲流式输出与最终 message 不一致（可能有尾段被吞或含不可见字符）"
         )
         logger.warning(f"buffered_full_len={len(buffered_full)}, message_len={len(final_message)}")
-
-
-async def demo_tool_registry_and_executor() -> None:
-    """演示工具注册表和执行器。"""
-    logger.print_panel("演示 4: 工具注册表和执行器")
-
-    # 1. 创建工具注册表并注册工具
-    registry = ToolRegistry()
-    registry.register(GetTimeTool)
-    registry.register(SearchTool)
-
-    logger.info("已注册工具:")
-    for name in registry.get_all_names():
-        logger.info(f"  - {name}")
-
-    # 2. 使用工具
-    req = LLMRequest(build_model_set(), request_name="demo.tools")
-    req.add_payload(LLMPayload(ROLE.USER, Text("现在几点了？")))
-    req.add_payload(LLMPayload(ROLE.TOOL, Tool(GetTimeTool)))
-
-    resp = await req.send(stream=False)
-
-    # 3. 使用 ToolExecutor 执行工具调用
-    if resp.call_list:
-        logger.info("检测到工具调用，开始执行...")
-        
-        executor = ToolExecutor(timeout=10.0, on_error="return_error")
-
-        async def execute_tool(name: str, args: dict[str, Any]) -> Any:
-            """模拟工具执行"""
-            logger.debug(f"执行工具: {name}, 参数: {args}")
-            
-            if name == "get_time":
-                tz = args.get("timezone", "Asia/Shanghai")
-                return {"timezone": tz, "time": "2026-02-02T12:00:00+08:00"}
-            elif name == "search":
-                query = args.get("query", "")
-                return {"results": [f"结果1 for '{query}'", f"结果2 for '{query}'"]}
-            else:
-                raise ValueError(f"未知工具: {name}")
-
-        tool_payloads: list[LLMPayload] = []
-        for call in resp.call_list:
-            # 使用注册表验证工具
-            tool_cls = registry.get(call.name)
-            if tool_cls is None:
-                logger.warning(f"工具 '{call.name}' 未在注册表中找到")
-                tool_result = ToolResult(
-                    {"error": "unknown_tool", "available_tools": registry.get_all_names()},
-                    call_id=call.id,
-                    name=call.name,
-                )
-            else:
-                # 使用执行器执行
-                tool_result = await executor.execute(call, execute_tool)
-
-            logger.info(f"工具结果: {tool_result.value}")
-            tool_payloads.append(LLMPayload(ROLE.TOOL_RESULT, tool_result))
-
-        # 将工具结果发回给模型
-        resp.add_call_reflex(tool_payloads)
-        final_resp = await resp.send(stream=False)
-        logger.info(f"最终响应: {final_resp.message}")
-    else:
-        logger.info(f"模型响应: {resp.message}")
-
 
 async def demo_metrics_history() -> None:
     """演示指标历史查询。"""

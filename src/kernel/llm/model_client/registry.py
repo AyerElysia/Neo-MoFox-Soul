@@ -1,3 +1,6 @@
+"""
+模型客户端注册表，负责根据模型配置返回对应的 client 实例。
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass

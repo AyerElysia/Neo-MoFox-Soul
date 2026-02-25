@@ -18,7 +18,6 @@ from src.kernel.llm import (
     MetricsCollector,
     RequestMetrics,
     ToolRegistry,
-    ToolExecutor,
     ToolCall,
 )
 

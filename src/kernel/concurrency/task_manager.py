@@ -33,18 +33,6 @@ class TaskManager:
         _watchdog: WatchDog 实例引用
     """
 
-    _instance: TaskManager | None = None
-    _lock: Lock = Lock()
-
-    def __new__(cls) -> TaskManager:
-        """单例模式"""
-        if cls._instance is None:
-            with cls._lock:
-                if cls._instance is None:
-                    cls._instance = super().__new__(cls)
-                    cls._instance._initialized = False
-        return cls._instance
-
     def __init__(self) -> None:
         """初始化任务管理器"""
         if self._initialized:
@@ -316,7 +304,7 @@ class TaskManager:
             return []
 
         # 创建任务组（如果指定了 group_name）
-        group_context: Any = None
+        group_context: TaskGroup | None = None
         if group_name:
             group_context = self.group(name=group_name)
 
@@ -386,35 +374,3 @@ def get_task_manager() -> TaskManager:
     if _task_manager is None:
         _task_manager = TaskManager()
     return _task_manager
-
-
-async def gather(
-    *coros: Coroutine[Any, Any, Any],
-    return_exceptions: bool = False,
-    group_name: str | None = None,
-) -> list[Any]:
-    """并行执行多个协程并返回结果列表（模块级别函数）。
-
-    这是 TaskManager.gather 的便捷包装器，使用全局 TaskManager 实例。
-
-    Args:
-        *coros: 要执行的协程
-        return_exceptions: 是否将异常作为结果返回（False 则抛出第一个异常）
-        group_name: 可选的任务组名称
-
-    Returns:
-        list[Any]: 结果列表，顺序与输入协程一致
-
-    Raises:
-        Exception: 第一个发生的异常（如果 return_exceptions=False）
-
-    Examples:
-        >>> from src.kernel.concurrency import gather
-        >>> results = await gather(
-        ...     task1(),
-        ...     task2(),
-        ...     task3()
-        ... )
-    """
-    tm = get_task_manager()
-    return await tm.gather(*coros, return_exceptions=return_exceptions, group_name=group_name)

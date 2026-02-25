@@ -31,7 +31,6 @@ from .payload import (
 	ToolCall,
 	ToolResult,
 	ToolRegistry,
-	ToolExecutor,
 )
 
 from .monitor import (
@@ -81,7 +80,6 @@ __all__ = [
 	"ToolCall",
 	"LLMUsable",
 	"ToolRegistry",
-	"ToolExecutor",
 	# 监控相关
 	"RequestMetrics",
 	"ModelStats",

@@ -47,15 +47,16 @@ class LLMResponse:
     _consumed: bool = False
 
     def __post_init__(self) -> None:
-        """Initialize fields that need special handling."""
+        """确保 message 和 call_list 不为 None，方便后续处理；如果 context_manager 为空且上层存在，则继承上层的 context_manager。"""
         if self.call_list is None:
-            object.__setattr__(self, "call_list", [])
+            self.call_list = []
         if self.context_manager is None:
             ctx = getattr(self._upper, "context_manager", None)
             if ctx:
-                object.__setattr__(self, "context_manager", ctx)
+                self.context_manager = ctx
 
     def _maybe_apply_tool_call_compat(self) -> None:
+        """如果启用了 tool_call_compat 模式且尚未解析过工具调用，则尝试从 message 中解析工具调用信息。"""
         if not self.tool_call_compat:
             return
         if self.call_list:
@@ -71,14 +72,17 @@ class LLMResponse:
         ]
 
     def __await__(self):
+        """await 模式：收集完整响应，适用于需要一次性获取完整结果的场景。"""
         return self._collect_full_response().__await__()
 
     async def __aiter__(self):
+        """async for 模式：流式处理响应，适用于需要边接收边处理的场景（如 UI 更新）。"""
         if self._consumed:
             raise LLMResponseConsumedError("Response has already been consumed.")
         self._consumed = True
 
         if self._stream is None:
+            # 兼容非流式直接返回完整响应的情况，尝试解析工具调用信息后再返回文本内容
             self._maybe_apply_tool_call_compat()
             content = self.message or ""
             if content:
@@ -109,15 +113,18 @@ class LLMResponse:
             raise stream_error
 
     async def _collect_full_response(self) -> str:
+        """收集完整响应，适用于需要一次性获取完整结果的场景。"""
         if self._consumed:
             raise LLMResponseConsumedError("Response has already been consumed.")
         self._consumed = True
 
         if self._stream is None:
+            # 非流式直接返回完整响应的情况，尝试解析工具调用信息后再返回文本内容
             self._maybe_apply_tool_call_compat()
             self._maybe_append_response_to_context()
             return self.message or ""
 
+        # 流式处理的情况，收集完整文本并解析工具调用信息
         full_content: list[str] = []
         tool_acc = _ToolCallAccumulator()
         stream_error: Exception | None = None
@@ -144,6 +151,7 @@ class LLMResponse:
 
 
     def _maybe_append_response_to_context(self) -> None:
+        """如果启用了自动追加响应到上下文，并且当前响应有内容，则将其作为新的 ASSISTANT 消息追加到 payloads 中，供后续请求使用。"""
         if not self._auto_append_response:
             return
 
@@ -161,11 +169,13 @@ class LLMResponse:
         self._maybe_apply_context_manager()
 
     def _maybe_apply_context_manager(self) -> None:
+        """如果启用了上下文管理器，则尝试裁剪 payloads，以适应上下文限制。"""
         if not self.context_manager:
             return
         self.payloads = self.context_manager.maybe_trim(self.payloads)
 
     def to_payload(self) -> LLMPayload:
+        """将当前响应转换为一个 LLMPayload 对象，适用于需要将响应作为消息追加到上下文中的场景。"""
         content_parts: list[object] = []
         if self.message:
             content_parts.append(Text(self.message))
@@ -176,6 +186,7 @@ class LLMResponse:
         return LLMPayload(ROLE.ASSISTANT, content_parts)  # type: ignore[arg-type]
 
     def add_payload(self, payload: "LLMPayload | LLMResponse", position=None) -> Self:
+        """在当前响应的 payloads 中追加一个新的 payload，可以是一个 LLMPayload 对象，也可以是另一个 LLMResponse 对象（会被转换为 LLMPayload）。"""
         if isinstance(payload, LLMResponse):
             payload = payload.to_payload()
 
@@ -187,15 +198,28 @@ class LLMResponse:
         return self
 
     def add_call_reflex(self, results: list[LLMPayload]) -> Self:
+        """在当前响应的 payloads 中追加一个新的工具调用结果列表，适用于工具调用完成后需要将结果写回上下文的场景。"""
         for payload in results:
             self.payloads.append(payload)
         self._maybe_apply_context_manager()
         return self
 
     async def send(self, auto_append_response: bool = True, *, stream: bool = True) -> "LLMResponse":
+        """
+        将当前响应作为新的请求发送，适用于需要基于当前响应继续对话的场景。
+
+        Args:
+            auto_append_response: 是否自动将当前响应追加到上下文中，默认为 True。
+            stream: 是否以流式方式发送请求，默认为 True。
+
+        Returns:
+            LLMResponse: 新的请求的响应对象。
+        """
         # 延迟导入，避免循环依赖
         from .request import LLMRequest
 
+        # 创建一个新的 LLMRequest 对象，继承当前响应的 model_set 和 context_manager
+        # 并将当前响应的 payloads 作为新的请求的初始 payloads，然后发送请求并返回响应对象
         req = LLMRequest(
             self.model_set,
             request_name=getattr(self._upper, "request_name", ""),
@@ -327,6 +351,7 @@ class _ToolCallAccumulator:
         self._current_id: str | None = None  # 追踪最近一次有效的 tool_call_id
 
     def apply(self, event: StreamEvent) -> None:
+        """处理一个新的 StreamEvent，更新工具调用的积累状态。"""
         # 优先使用事件携带的 id；若无则沿用上一次的 id（OpenAI 后续 chunk 不重复发送 id）
         effective_id = event.tool_call_id or self._current_id
         if not effective_id:
@@ -348,6 +373,9 @@ class _ToolCallAccumulator:
             rec["args"] = (rec.get("args") or "") + event.tool_args_delta
 
     def finalize(self) -> list[ToolCall]:
+        """
+        将当前积累的工具调用记录转换为 ToolCall 对象列表。
+        """
         out: list[ToolCall] = []
         for tool_call_id in self._order:
             rec = self._by_id[tool_call_id]

@@ -11,13 +11,14 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from .task_manager import TaskManager
 from .exceptions import WatchDogError
 
-if TYPE_CHECKING:
-    from src.kernel.logger import Logger
+from src.kernel.logger import get_logger, COLOR
+
+logger = get_logger("WatchDog", display="WatchDog", color=COLOR.YELLOW)
 
 
 @dataclass
@@ -53,7 +54,7 @@ class WatchDog:
     Attributes:
         _tick_interval: WatchDog 自身 tick 间隔（秒）
         _running: 是否运行中
-        _thread: 监控线程
+        _monitor_thread: 监控线程
         _stream_registry: 聊天流心跳注册表 {stream_id: StreamHeartbeat}
         _last_tick_time: 上次 tick 时间
         _task_manager: TaskManager 实例
@@ -67,38 +68,10 @@ class WatchDog:
         """
         self._tick_interval = tick_interval
         self._running = False
-        self._thread: threading.Thread | None = None
+        self._monitor_thread: threading.Thread | None = None
         self._stream_registry: dict[str, StreamHeartbeat] = {}
         self._last_tick_time: datetime | None = None
         self._task_manager: TaskManager | None = None
-        self._logger: Logger | None = self._get_logger()
-
-    def _get_logger(self) -> Logger | None:
-        """获取 logger 实例"""
-        try:
-            from src.kernel.logger import get_logger, COLOR
- 
-            return get_logger("WatchDog", display="WatchDog", color=COLOR.YELLOW)
-        except Exception:
-            # 如果 logger 不可用，返回 None
-            return None
-
-    def _log(self, level: str, message: str) -> None:
-        """记录日志
-
-        Args:
-            level: 日志级别 (info, warning, error)
-            message: 日志消息
-        """
-        if self._logger is None:
-            return
-
-        if level == "info":
-            self._logger.info(message)
-        elif level == "warning":
-            self._logger.warning(message)
-        elif level == "error":
-            self._logger.error(message)
 
     def start(self) -> None:
         """启动 WatchDog 监控线程"""
@@ -106,10 +79,10 @@ class WatchDog:
             raise WatchDogError("WatchDog is already running")
 
         self._running = True
-        self._thread = threading.Thread(target=self._run_loop, daemon=True, name="WatchDog")
-        self._thread.start()
+        self._monitor_thread = threading.Thread(target=self._run_loop, daemon=True, name="WatchDog")
+        self._monitor_thread.start()
 
-        self._log("info", f"WatchDog 监控已启动 (tick间隔={self._tick_interval}s)")
+        logger.info(f"WatchDog 监控已启动 (tick间隔={self._tick_interval}s)")
 
     def stop(self) -> None:
         """停止 WatchDog 监控线程"""
@@ -119,10 +92,10 @@ class WatchDog:
         self._running = False
 
         # 等待线程结束
-        if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=5.0)
+        if self._monitor_thread and self._monitor_thread.is_alive():
+            self._monitor_thread.join(timeout=3.0)
 
-        self._log("info", "WatchDog 监控已停止")
+        logger.info("WatchDog 监控已停止")
 
     def _run_loop(self) -> None:
         """WatchDog 主循环（在独立线程中运行）"""
@@ -140,8 +113,7 @@ class WatchDog:
 
                     # 检查 tick 间隔是否异常
                     if tick_delta > expected_interval * 2:
-                        self._log(
-                            "warning",
+                        logger.warning(
                             f"WatchDog tick 间隔异常: {tick_delta:.2f}s "
                             f"(预期 {expected_interval}s)",
                         )
@@ -156,7 +128,7 @@ class WatchDog:
                 time.sleep(self._tick_interval)
 
             except Exception as e:
-                self._log("error", f"WatchDog 循环异常: {e}")
+                logger.error(f"WatchDog 循环异常: {e}")
                 # 继续运行，不退出
 
     def _check_streams(self) -> None:
@@ -173,8 +145,7 @@ class WatchDog:
 
             # 检查是否超过警告阈值
             if delta > heartbeat.tick_interval * heartbeat.warning_threshold:
-                self._log(
-                    "warning",
+                logger.warning(
                     f"聊天流 '{stream_id}' 响应缓慢: "
                     f"距离上次心跳 {delta:.2f}s "
                     f"(正常间隔 {heartbeat.tick_interval}s)",
@@ -182,8 +153,7 @@ class WatchDog:
 
             # 检查是否超过重启阈值
             if delta > heartbeat.tick_interval * heartbeat.restart_threshold:
-                self._log(
-                    "warning",
+                logger.warning(
                     f"聊天流 '{stream_id}' 可能已卡死: "
                     f"距离上次心跳 {delta:.2f}s，尝试重启...",
                 )
@@ -192,9 +162,9 @@ class WatchDog:
                 if heartbeat.restart_callback:
                     try:
                         heartbeat.restart_callback()
-                        self._log("info", f"聊天流 '{stream_id}' 重启回调已执行")
+                        logger.info(f"聊天流 '{stream_id}' 重启回调已执行")
                     except Exception as e:
-                        self._log("error", f"聊天流 '{stream_id}' 重启失败: {e}")
+                        logger.error(f"聊天流 '{stream_id}' 重启失败: {e}")
 
     def _check_tasks(self) -> None:
         """检查任务状态"""
@@ -222,17 +192,16 @@ class WatchDog:
 
             # 检查是否超时
             if delta > task_info.timeout:
-                self._log(
-                    "warning",
+                logger.warning(
                     f"任务 '{task_info.name}' (id={task_info.task_id[:8]}) "
                     f"超时 ({delta:.2f}s > {task_info.timeout}s)，尝试取消...",
                 )
 
                 # 取消任务
                 if task_info.cancel():
-                    self._log("info", f"任务 '{task_info.name}' 已取消")
+                    logger.info(f"任务 '{task_info.name}' 已取消")
                 else:
-                    self._log("warning", f"任务 '{task_info.name}' 取消失败")
+                    logger.warning(f"任务 '{task_info.name}' 取消失败")
 
     def register_stream(
         self,
@@ -263,7 +232,7 @@ class WatchDog:
         )
 
         self._stream_registry[stream_id] = heartbeat
-        self._log("info", f"聊天流 '{stream_id}' 已注册到 WatchDog")
+        logger.info(f"聊天流 '{stream_id}' 已注册到 WatchDog")
 
         return heartbeat
 
@@ -275,7 +244,7 @@ class WatchDog:
         """
         if stream_id in self._stream_registry:
             del self._stream_registry[stream_id]
-            self._log("info", f"聊天流 '{stream_id}' 已从 WatchDog 注销")
+            logger.info(f"聊天流 '{stream_id}' 已从 WatchDog 注销")
 
     def feed_dog(self, stream_id: str) -> None:
         """喂狗（更新心跳时间）
@@ -309,7 +278,7 @@ class WatchDog:
             "running": self._running,
             "tick_interval": self._tick_interval,
             "registered_streams": len(self._stream_registry),
-            "thread_alive": self._thread.is_alive() if self._thread else False,
+            "thread_alive": self._monitor_thread.is_alive() if self._monitor_thread else False,
         }
 
     def __repr__(self) -> str:
