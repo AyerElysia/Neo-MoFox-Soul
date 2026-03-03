@@ -60,6 +60,10 @@ class CoreConfig(ConfigBase):
             default=5.0,
             description="LLM 接口预检超时时间（秒）",
         )
+        enable_watchdog: bool = Field(
+            default=True,
+            description="是否启用 WatchDog 监控（仅调试模式下建议关闭，以避免断点调试时触发超时警告或重启）",
+        )
         tick_interval: float = Field(
             default=5.0,
             description="主循环 tick 间隔（秒），过短可能增加消耗，过长可能降低响应速度",

@@ -109,6 +109,21 @@ async def get_or_create_stream(
         chat_type=_normalize_chat_type(chat_type),
     )
 
+async def get_stream(
+    stream_id: str = "",
+) -> "ChatStream | None":
+    """获取现有流。
+
+    Args:
+        stream_id: 聊天流 ID
+
+    Returns:
+        聊天流实例，未找到则返回 None
+    """
+
+    _validate_non_empty(stream_id, "stream_id")
+    return _get_stream_manager()._streams.get(stream_id)
+
 
 async def build_stream_from_database(stream_id: str) -> "ChatStream | None":
     """从数据库记录构建 ChatStream。

@@ -289,7 +289,13 @@ class Bot:
         from src.kernel.concurrency import get_task_manager, get_watchdog
 
         self.task_manager = get_task_manager()
-        get_watchdog().start()
+        
+        # 仅在启用时启动 WatchDog
+        if self.config.bot.enable_watchdog:
+            get_watchdog().start()
+        else:
+            self.logger.warning("WatchDog 已禁用 (调试模式)")
+            
         self.ui.update_phase_status("任务管理器", "已初始化")
 
         # Step 5: Scheduler
