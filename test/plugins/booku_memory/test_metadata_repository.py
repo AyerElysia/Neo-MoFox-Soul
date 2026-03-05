@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import time
+from collections.abc import AsyncGenerator
+from pathlib import Path
 
 import pytest
 
@@ -21,11 +23,17 @@ from plugins.booku_memory.service.metadata_repository import (
 
 
 @pytest.fixture
-async def repo(tmp_path: pytest.TempdirFactory) -> BookuMemoryMetadataRepository:
-    """返回已初始化的临时 repository。"""
+async def repo(tmp_path: Path) -> AsyncGenerator[BookuMemoryMetadataRepository, None]:
+    """返回已初始化的临时 repository。
+
+    结束时显式 close，避免 aiosqlite 后台线程在事件循环关闭后触发回调 warning。
+    """
     r = BookuMemoryMetadataRepository(str(tmp_path / "booku_test.db"))
     await r.initialize()
-    return r
+    try:
+        yield r
+    finally:
+        await r.close()
 
 
 def _sample_kwargs(memory_id: str = "m1", bucket: str = "emergent") -> dict:
@@ -243,6 +251,27 @@ async def test_list_memory_ids_by_folder(repo: BookuMemoryMetadataRepository) ->
     ids = await repo.list_memory_ids_by_folder(folder_id="folder_a")
     assert "f1" in ids
     assert "f2" not in ids
+
+
+@pytest.mark.asyncio
+async def test_list_records_by_bucket_filters_and_limits(
+    repo: BookuMemoryMetadataRepository,
+) -> None:
+    """list_records_by_bucket 应按 bucket/folder 过滤并按 limit 截断。"""
+    await repo.upsert_record(**_sample_kwargs("e1", bucket="emergent"))
+    await repo.upsert_record(**_sample_kwargs("e2", bucket="emergent"))
+    await repo.upsert_record(**_sample_kwargs("a1", bucket="archived"))
+    await repo.upsert_record(**{**_sample_kwargs("e_other", bucket="emergent"), "folder_id": "folder_b"})
+
+    emergent_all = await repo.list_records_by_bucket(bucket="emergent", folder_id=None, limit=10)
+    assert all(r.bucket == "emergent" for r in emergent_all)
+    assert {r.memory_id for r in emergent_all} >= {"e1", "e2", "e_other"}
+
+    emergent_folder_a = await repo.list_records_by_bucket(bucket="emergent", folder_id="folder_a", limit=10)
+    assert {r.memory_id for r in emergent_folder_a} == {"e1", "e2"}
+
+    limited = await repo.list_records_by_bucket(bucket="emergent", folder_id=None, limit=1)
+    assert len(limited) == 1
 
 
 # ---------------------------------------------------------------------------
