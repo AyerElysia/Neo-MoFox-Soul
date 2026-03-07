@@ -19,6 +19,7 @@ logger = get_logger("agent")
 
 if TYPE_CHECKING:
     from src.core.components.base.plugin import BasePlugin
+    from src.core.prompt import SystemReminderBucket
     from src.core.models.message import Message
     from src.kernel.llm import LLMContextManager, ModelSet
 
@@ -166,6 +167,7 @@ class BaseAgent(ABC, LLMUsable):
         request_name: str = "",
         context_manager: "LLMContextManager | None" = None,
         with_usables: bool = False,
+        with_reminder: str | SystemReminderBucket | None = None,
     ) -> LLMRequest:
         """快速创建 LLMRequest 对象。
 
@@ -174,6 +176,7 @@ class BaseAgent(ABC, LLMUsable):
             request_name: 请求名称
             context_manager: 上下文管理器
             with_usables: 是否自动注入 Agent 私有 usables 到 TOOL payload
+            with_reminder: 可选的 system reminder bucket；传入后会自动登记到上下文管理器
 
         Returns:
             LLMRequest: LLM 请求对象
@@ -183,6 +186,16 @@ class BaseAgent(ABC, LLMUsable):
             request_name=request_name,
             context_manager=context_manager,
         )
+
+        if with_reminder is not None and request.context_manager is not None:
+            from src.core.prompt import get_system_reminder_store
+
+            reminder_text = get_system_reminder_store().get(with_reminder)
+            if reminder_text:
+                request.context_manager.reminder(
+                    reminder_text,
+                    wrap_with_system_tag=True,
+                )
 
         if with_usables:
             request.add_payload(LLMPayload(ROLE.TOOL, self.get_local_usables()))
