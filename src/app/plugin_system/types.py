@@ -17,6 +17,7 @@ from src.core.components.types import (
     EventType,
     PermissionLevel,
 )
+from src.core.models import ChatStream, Message, MessageType, StreamContext
 from src.core.prompt import PromptTemplate, SystemReminderBucket
 from src.core.prompt.policies import RenderPolicy
 from src.kernel.llm import (
@@ -61,6 +62,8 @@ __all__ = [
     "Image",
     "LLMPayload",
     "LLMUsable",
+    "Message",
+    "MessageType",
     "ModelEntry",
     "ModelSet",
     "PermissionLevel",
@@ -68,6 +71,8 @@ __all__ = [
     "RenderPolicy",
     "RequestType",
     "ROLE",
+    "ChatStream",
+    "StreamContext",
     "SystemReminderBucket",
     "TaskType",
     "Text",

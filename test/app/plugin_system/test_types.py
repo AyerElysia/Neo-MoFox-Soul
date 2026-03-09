@@ -5,6 +5,7 @@ from __future__ import annotations
 from src.app.plugin_system import types
 from src.app.plugin_system.api import llm_api
 from src.core.components.types import EventType
+from src.core.models import ChatStream, Message, MessageType, StreamContext
 from src.core.prompt import PromptTemplate, SystemReminderBucket
 from src.kernel.llm import ROLE, Text
 
@@ -21,6 +22,15 @@ def test_types_module_reexports_component_types() -> None:
     """types 模块应导出组件层常用枚举。"""
     assert types.EventType is EventType
     assert types.EventType.ON_START.value == "on_start"
+
+
+def test_types_module_reexports_message_and_stream_models() -> None:
+    """types 模块应导出插件作者常用的消息与流模型。"""
+    assert types.Message is Message
+    assert types.MessageType is MessageType
+    assert types.ChatStream is ChatStream
+    assert types.StreamContext is StreamContext
+    assert types.MessageType.TEXT.value == "text"
 
 
 def test_llm_api_task_type_uses_public_types_module() -> None:
