@@ -20,6 +20,8 @@ from .config import PersonalityEngineConfig
 from .prompts import (
     build_baseline_hypothesis,
     build_prompt_block,
+    build_reflection_system_prompt,
+    build_reflection_user_prompt,
     build_reflection_reason,
     build_selector_system_prompt,
     build_selector_user_prompt,
@@ -112,6 +114,13 @@ MAIN_TO_AUX: dict[str, list[str]] = {
     "Si": ["Fe", "Te"],
     "Se": ["Fi", "Ti"],
 }
+
+REFLECTION_ACTIONS: tuple[str, ...] = (
+    "swap_main_aux",
+    "change_main",
+    "change_aux",
+    "reorganize_main_aux",
+)
 
 
 def _now_iso() -> str:
@@ -282,7 +291,7 @@ class PersonalityEngineService(BaseService):
 
     service_name = "personality_engine_service"
     service_description = "按聊天流维护 JPAF 人格状态并持续推进"
-    version = "1.1.0"
+    version = "1.2.0"
 
     def __init__(self, plugin: Any) -> None:
         super().__init__(plugin)
@@ -670,13 +679,279 @@ class PersonalityEngineService(BaseService):
                 float(state.change_history.get(func, 0.0)) * decay,
             )
 
-    def _apply_reflection(
+    def _clamp(self, value: Any, minimum: float, maximum: float, default: float) -> float:
+        try:
+            parsed = float(value)
+        except Exception:
+            parsed = default
+        return max(minimum, min(maximum, parsed))
+
+    def _build_temp_weights(self, state: PersonalityState) -> dict[str, float]:
+        return {func: self._temp_weight(state, func) for func in FUNCTIONS}
+
+    def _detect_reflection_action(
+        self,
+        *,
+        state: PersonalityState,
+        selected_function: str,
+    ) -> str:
+        mapping = MBTI_TO_FUNCTION.get(state.mbti)
+        if mapping is None:
+            return "invalid_mbti"
+        main_func = mapping["main"]
+        aux_func = mapping["aux"]
+        selected_temp = self._temp_weight(state, selected_function)
+        main_weight = float(state.weights.get(main_func, 0.0))
+        aux_weight = float(state.weights.get(aux_func, 0.0))
+
+        if selected_function == aux_func and selected_temp >= main_weight:
+            return "swap_main_aux"
+
+        if selected_function == main_func:
+            threshold = float(self._cfg().personality.normalize_main_threshold)
+            if selected_temp >= threshold:
+                return "normalize_main_threshold"
+            return "main_selected_decay"
+
+        if selected_function not in {main_func, aux_func}:
+            counterpart = CHANGE_LIST.get(selected_function, "")
+            if counterpart == main_func and selected_temp >= main_weight:
+                return "change_main"
+            if counterpart == aux_func and selected_temp >= aux_weight:
+                return "change_aux"
+            if selected_temp >= main_weight:
+                return "reorganize_main_aux"
+
+        return "no_structure_change"
+
+    def _normalize_reflection_output(
+        self,
+        *,
+        action: str,
+        parsed: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        judgment = str(parsed.get("judgment", "")).strip().lower()
+        if judgment not in {"yes", "no"}:
+            return None
+        normalized: dict[str, Any] = {
+            "judgment": judgment,
+            "reason": str(parsed.get("reason", "")).strip(),
+        }
+        if judgment == "no":
+            return normalized
+
+        if action == "swap_main_aux":
+            normalized["main_weight"] = self._clamp(
+                parsed.get("main_weight"), 0.31, 1.00, 0.40
+            )
+            normalized["aux_weight"] = self._clamp(
+                parsed.get("aux_weight"), 0.07, 0.30, 0.18
+            )
+            return normalized
+        if action == "change_main":
+            normalized["main_weight"] = self._clamp(
+                parsed.get("main_weight"), 0.31, 1.00, 0.35
+            )
+            normalized["ori_main_weight"] = self._clamp(
+                parsed.get("ori_main_weight"), 0.00, 0.30, 0.15
+            )
+            return normalized
+        if action == "change_aux":
+            normalized["aux_weight"] = self._clamp(
+                parsed.get("aux_weight"), 0.07, 0.30, 0.18
+            )
+            normalized["ori_aux_weight"] = self._clamp(
+                parsed.get("ori_aux_weight"), 0.00, 0.06, 0.05
+            )
+            return normalized
+        if action == "reorganize_main_aux":
+            normalized["main_weight"] = self._clamp(
+                parsed.get("main_weight"), 0.31, 1.00, 0.35
+            )
+            normalized["aux_weight"] = self._clamp(
+                parsed.get("aux_weight"), 0.07, 0.30, 0.18
+            )
+            normalized["ori_main_weight"] = self._clamp(
+                parsed.get("ori_main_weight"), 0.00, 0.30, 0.05
+            )
+            normalized["ori_aux_weight"] = self._clamp(
+                parsed.get("ori_aux_weight"), 0.00, 0.06, 0.03
+            )
+            normalized["aux_func"] = str(parsed.get("aux_func", "")).strip()
+            return normalized
+        return None
+
+    async def _reflect_with_llm(
+        self,
+        *,
+        action: str,
+        trigger: str,
+        state: PersonalityState,
+        selected_function: str,
+        recent_messages: str,
+    ) -> dict[str, Any] | None:
+        if action not in REFLECTION_ACTIONS:
+            return None
+        if not self._cfg().model.enable_llm_reflection:
+            return None
+
+        model_set = self._build_model_set()
+        if not model_set:
+            return None
+
+        mapping = MBTI_TO_FUNCTION.get(state.mbti, {"main": "Ni", "aux": "Te"})
+        main_func = mapping["main"]
+        aux_func = mapping["aux"]
+        base_weights = {func: float(state.weights.get(func, 0.0)) for func in FUNCTIONS}
+        temp_weights = self._build_temp_weights(state)
+        aux_candidates = MAIN_TO_AUX.get(selected_function, [])
+
+        retries = self._cfg().personality.max_parse_retries + 1
+        for _ in range(retries):
+            request = llm_api.create_llm_request(
+                model_set=model_set,
+                request_name=f"personality_engine_reflection_{action}",
+                context_manager=LLMContextManager(max_payloads=4),
+            )
+            request.add_payload(
+                LLMPayload(
+                    ROLE.SYSTEM,
+                    Text(build_reflection_system_prompt(action=action)),
+                )
+            )
+            request.add_payload(
+                LLMPayload(
+                    ROLE.USER,
+                    Text(
+                        build_reflection_user_prompt(
+                            action=action,
+                            trigger=trigger,
+                            mbti=state.mbti,
+                            main_func=main_func,
+                            aux_func=aux_func,
+                            selected_function=selected_function,
+                            base_weights=base_weights,
+                            temp_weights=temp_weights,
+                            recent_messages=recent_messages,
+                            recent_changes=self._format_recent_changes(state),
+                            aux_candidates=aux_candidates,
+                        )
+                    ),
+                )
+            )
+            try:
+                response = await request.send(stream=False)
+                result_text = response.message or await response
+            except Exception as exc:
+                logger.warning(f"人格引擎反思调用失败：{exc}")
+                return None
+
+            parsed = self._parse_json_blob(str(result_text or ""))
+            if parsed is None:
+                continue
+            normalized = self._normalize_reflection_output(action=action, parsed=parsed)
+            if normalized is not None:
+                return normalized
+        return None
+
+    def _apply_reflection_decision(
+        self,
+        *,
+        action: str,
+        decision: dict[str, Any],
+        state: PersonalityState,
+        selected_function: str,
+        trigger: str,
+    ) -> tuple[bool, str]:
+        del trigger
+        judgment = str(decision.get("judgment", "no")).strip().lower()
+        reason = str(decision.get("reason", "")).strip()
+
+        mapping = MBTI_TO_FUNCTION.get(state.mbti)
+        if mapping is None:
+            state.mbti = self._default_mbti()
+            state.weights = _clean_weights(DEFAULT_WEIGHTS[state.mbti])
+            state.change_history = _clean_change_history()
+            return False, "invalid_mbti_reset"
+
+        old_mbti = state.mbti
+        main_func = mapping["main"]
+        aux_func = mapping["aux"]
+
+        if judgment != "yes":
+            self._decay_change_history(state)
+            return False, reason or f"{action}: judgment=no"
+
+        if action == "swap_main_aux":
+            state.weights[aux_func] = float(decision["main_weight"])
+            state.weights[main_func] = float(decision["aux_weight"])
+            state.mbti = FUNCTION_TO_MBTI.get(f"{aux_func}{main_func}", state.mbti)
+            state.weights = _clean_weights(state.weights)
+            state.change_history = _clean_change_history()
+            return True, reason or build_reflection_reason(
+                action=action,
+                old_mbti=old_mbti,
+                new_mbti=state.mbti,
+                selected_function=selected_function,
+            )
+
+        if action == "change_main":
+            state.weights[main_func] = float(decision["ori_main_weight"])
+            state.weights[selected_function] = float(decision["main_weight"])
+            state.mbti = FUNCTION_TO_MBTI.get(f"{selected_function}{aux_func}", state.mbti)
+            state.weights = _clean_weights(state.weights)
+            state.change_history = _clean_change_history()
+            return True, reason or build_reflection_reason(
+                action=action,
+                old_mbti=old_mbti,
+                new_mbti=state.mbti,
+                selected_function=selected_function,
+            )
+
+        if action == "change_aux":
+            state.weights[aux_func] = float(decision["ori_aux_weight"])
+            state.weights[selected_function] = float(decision["aux_weight"])
+            state.mbti = FUNCTION_TO_MBTI.get(f"{main_func}{selected_function}", state.mbti)
+            state.weights = _clean_weights(state.weights)
+            state.change_history = _clean_change_history()
+            return True, reason or build_reflection_reason(
+                action=action,
+                old_mbti=old_mbti,
+                new_mbti=state.mbti,
+                selected_function=selected_function,
+            )
+
+        if action == "reorganize_main_aux":
+            candidates = MAIN_TO_AUX.get(selected_function, [aux_func, main_func])
+            candidate = str(decision.get("aux_func", "")).strip()
+            if candidate not in candidates:
+                candidate = max(candidates, key=lambda func: self._temp_weight(state, func))
+            state.weights[main_func] = float(decision["ori_main_weight"])
+            state.weights[aux_func] = float(decision["ori_aux_weight"])
+            state.weights[selected_function] = float(decision["main_weight"])
+            state.weights[candidate] = float(decision["aux_weight"])
+            state.mbti = FUNCTION_TO_MBTI.get(f"{selected_function}{candidate}", state.mbti)
+            state.weights = _clean_weights(state.weights)
+            state.change_history = _clean_change_history()
+            return True, reason or build_reflection_reason(
+                action=action,
+                old_mbti=old_mbti,
+                new_mbti=state.mbti,
+                selected_function=selected_function,
+                extra={"new_aux": candidate},
+            )
+
+        self._decay_change_history(state)
+        return False, reason or "unknown_reflection_action"
+
+    def _apply_reflection_rules(
         self,
         state: PersonalityState,
         *,
         selected_function: str,
         trigger: str,
     ) -> tuple[bool, str]:
+        del trigger
         old_mbti = state.mbti
         mapping = MBTI_TO_FUNCTION.get(state.mbti)
         if mapping is None:
@@ -765,6 +1040,59 @@ class PersonalityEngineService(BaseService):
         self._decay_change_history(state)
         return False, "no_structure_change"
 
+    async def _apply_reflection(
+        self,
+        state: PersonalityState,
+        *,
+        selected_function: str,
+        trigger: str,
+        recent_messages: str,
+    ) -> tuple[bool, str]:
+        action = self._detect_reflection_action(
+            state=state,
+            selected_function=selected_function,
+        )
+
+        if action == "invalid_mbti":
+            state.mbti = self._default_mbti()
+            state.weights = _clean_weights(DEFAULT_WEIGHTS[state.mbti])
+            state.change_history = _clean_change_history()
+            return False, "invalid_mbti_reset"
+
+        if action == "normalize_main_threshold":
+            self._normalize_weights_with_change_history(state)
+            return False, "normalize_main_threshold"
+
+        if action == "main_selected_decay":
+            self._decay_change_history(state)
+            return False, "main_selected_decay"
+
+        if action == "no_structure_change":
+            self._decay_change_history(state)
+            return False, "no_structure_change"
+
+        decision = await self._reflect_with_llm(
+            action=action,
+            trigger=trigger,
+            state=state,
+            selected_function=selected_function,
+            recent_messages=recent_messages,
+        )
+        if decision is not None:
+            return self._apply_reflection_decision(
+                action=action,
+                decision=decision,
+                state=state,
+                selected_function=selected_function,
+                trigger=trigger,
+            )
+
+        return self._apply_reflection_rules(
+            state,
+            selected_function=selected_function,
+            trigger=trigger,
+        )
+
     async def advance_personality_step(
         self,
         *,
@@ -824,10 +1152,11 @@ class PersonalityEngineService(BaseService):
             )
 
             old_mbti = state.mbti
-            changed, reflection_reason = self._apply_reflection(
+            changed, reflection_reason = await self._apply_reflection(
                 state,
                 selected_function=selected_function,
                 trigger=trigger,
+                recent_messages=recent_messages,
             )
             if changed:
                 state.history.insert(

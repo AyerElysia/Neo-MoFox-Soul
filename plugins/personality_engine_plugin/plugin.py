@@ -25,7 +25,7 @@ class PersonalityEnginePlugin(BasePlugin):
 
     plugin_name = "personality_engine_plugin"
     plugin_description = "按聊天流演化的人格引擎"
-    plugin_version = "1.1.0"
+    plugin_version = "1.2.0"
 
     configs: list[type] = [PersonalityEngineConfig]
     dependent_components: list[str] = []

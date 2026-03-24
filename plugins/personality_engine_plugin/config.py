@@ -66,6 +66,10 @@ class ModelSection(SectionBase):
         default=True,
         description="是否启用 LLM 选择当前补偿功能",
     )
+    enable_llm_reflection: bool = Field(
+        default=True,
+        description="是否启用 LLM 执行结构反思判定",
+    )
 
 
 @config_section("personality")

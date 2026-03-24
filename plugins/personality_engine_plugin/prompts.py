@@ -72,6 +72,101 @@ def build_selector_user_prompt(
     )
 
 
+def build_reflection_system_prompt(*, action: str) -> str:
+    """构建人格结构反思系统提示词。"""
+    return (
+        "你是荣格八功能反思分析器。"
+        "你要根据心理功能历史使用、权重变化和近期对话，判断是否发生结构变化。"
+        f"当前反思任务类型: {action}。"
+        "必须只输出 JSON，不输出任何额外文字。"
+    )
+
+
+def build_reflection_user_prompt(
+    *,
+    action: str,
+    trigger: str,
+    mbti: str,
+    main_func: str,
+    aux_func: str,
+    selected_function: str,
+    base_weights: dict[str, float],
+    temp_weights: dict[str, float],
+    recent_messages: str,
+    recent_changes: list[str] | None,
+    aux_candidates: list[str] | None = None,
+) -> str:
+    """构建人格结构反思用户提示词。"""
+    msg = recent_messages.strip() or "（无可用近期对话）"
+    changes = "\n".join([f"- {item}" for item in (recent_changes or [])]) or "- 无"
+
+    if action == "swap_main_aux":
+        output_spec = (
+            "{\n"
+            '  "judgment": "yes",\n'
+            '  "reason": "为什么发生或未发生变化",\n'
+            '  "main_weight": 0.40,\n'
+            '  "aux_weight": 0.18\n'
+            "}\n"
+        )
+    elif action == "change_main":
+        output_spec = (
+            "{\n"
+            '  "judgment": "yes",\n'
+            '  "reason": "为什么发生或未发生变化",\n'
+            '  "main_weight": 0.35,\n'
+            '  "ori_main_weight": 0.15\n'
+            "}\n"
+        )
+    elif action == "change_aux":
+        output_spec = (
+            "{\n"
+            '  "judgment": "yes",\n'
+            '  "reason": "为什么发生或未发生变化",\n'
+            '  "aux_weight": 0.18,\n'
+            '  "ori_aux_weight": 0.05\n'
+            "}\n"
+        )
+    else:
+        choices = ", ".join(aux_candidates or [])
+        output_spec = (
+            "{\n"
+            '  "judgment": "yes",\n'
+            '  "reason": "为什么发生或未发生变化",\n'
+            '  "main_weight": 0.35,\n'
+            '  "aux_func": "候选之一",\n'
+            '  "aux_weight": 0.18,\n'
+            '  "ori_main_weight": 0.05,\n'
+            '  "ori_aux_weight": 0.03\n'
+            "}\n"
+            f"aux_func 候选只能是: {choices}\n"
+        )
+
+    return (
+        "请结合以下信息判断是否发生结构变化，并输出 JSON。\n\n"
+        "## 分析依据 ##\n"
+        "- 若某功能被高频使用并超过阈值，可能触发结构变化。\n"
+        "- judgment 只能是 yes 或 no。\n"
+        "- 若 judgment=no，可省略权重字段。\n\n"
+        "## 当前状态 ##\n"
+        f"- 触发来源: {trigger}\n"
+        f"- MBTI: {mbti}\n"
+        f"- 主导功能: {main_func}\n"
+        f"- 辅助功能: {aux_func}\n"
+        f"- 本轮选中功能: {selected_function}\n"
+        f"- 反思动作: {action}\n"
+        f"- 变更前权重: {json.dumps(base_weights, ensure_ascii=False)}\n"
+        f"- 临时权重: {json.dumps(temp_weights, ensure_ascii=False)}\n\n"
+        "## 近期对话 ##\n"
+        f"{msg}\n\n"
+        "## 近期结构变化 ##\n"
+        f"{changes}\n\n"
+        "## 输出格式 ##\n"
+        f"{output_spec}\n"
+        "只输出 JSON。"
+    )
+
+
 def build_prompt_block(
     *,
     title: str,
@@ -116,31 +211,33 @@ def build_prompt_block(
             )
         return "\n".join(lines)
 
-    # paper_strict 模式：更接近论文的“机制型注入”，而非仅标签注入
+    # paper_strict 模式：尽量贴近原论文 prompt 结构
     miss_funcs = [f for f in FUNCTION_BRIEFS if f not in {main_func, aux_func}]
     lines.extend(
         [
             "",
             "##Compensation Mechanism##",
-            "1. 若主导-辅助功能无法有效应对当前任务，应触发补偿机制。",
-            "2. 补偿功能必须基于任务需求匹配八功能，而非随机切换。",
-            "3. 当补偿功能被持续高频使用时，可能引发主辅结构调整。",
+            "1. When the dominant and auxiliary functions cannot effectively cope with the current situation, trigger compensation.",
+            "2. The compensation process must match task demands with the most appropriate Jungian function.",
+            "3. Frequent compensation may lead to long-term structural personality change through reflection.",
             "",
-            "##执行步骤##",
-            "1. 任务需求分析：识别问题核心维度与约束。",
-            "2. 主辅评估：判断当前主导/辅助是否足够。",
-            "3. 补偿识别：若不足，优先在未充分分化池中选择最匹配功能。",
-            "4. 响应生成：在不暴露内部推理的前提下给出自然回答。",
+            "##Following the steps##",
+            "1. Task Demand Analysis: identify the core requirements and constraints in the current user request.",
+            "2. Current Function Evaluation: evaluate whether dominant/auxiliary functions can handle the task.",
+            "3. Compensatory Function Identification: if insufficient, choose the best function from the undifferentiated pool.",
+            "4. Response Generation: keep final response natural, concise, and helpful without exposing chain-of-thought.",
             "",
-            "##当前人格结构##",
-            f"- 主导功能: {main_func}",
-            f"- 辅助功能: {aux_func}",
-            f"- 未充分分化池: {', '.join(miss_funcs)}",
+            "##Psychological Type Characteristics##",
+            f"- Dominant Function: {main_func} (high differentiation)",
+            f"- Auxiliary Function: {aux_func} (medium differentiation)",
+            f"- Undifferentiated Function Pool: {', '.join(miss_funcs)}",
+            f"- Current Compensation Focus: {selected_function or 'none'}",
+            f"- Current Hypothesis: {hypothesis or 'none'}",
         ]
     )
     if detail:
         lines.append(
-            "- 当前权重："
+            "- Current Weights: "
             + " ".join(
                 [
                     f"Ti{weights.get('Ti', 0.0):.2f}",
@@ -156,11 +253,11 @@ def build_prompt_block(
         )
     if include_function_catalog:
         lines.append("")
-        lines.append("##八功能映射##")
+        lines.append("##Jungian Function Mapping##")
         lines.extend([f"- {func}: {desc}" for func, desc in FUNCTION_BRIEFS.items()])
     if recent_changes:
         lines.append("")
-        lines.append("##近期结构变化##")
+        lines.append("##Recent Structural Changes##")
         lines.extend([f"- {item}" for item in recent_changes if item.strip()])
     return "\n".join(lines)
 

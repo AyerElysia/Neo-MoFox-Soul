@@ -8,7 +8,8 @@
 - 按 `stream_id` 维护人格状态（私聊/群聊/讨论组互不污染）
 - 基于聊天推进自动触发人格更新
 - 支持 LLM 选择当前补偿功能（可关闭，关闭后走启发式）
-- 支持主辅互换 / 主变更 / 辅变更 / 重构四类反思规则
+- 支持主辅互换 / 主变更 / 辅变更 / 重构四类反思
+- 支持 LLM 反思判定（失败自动回退规则反思）
 - 在 `on_prompt_build` 阶段注入人格态（支持论文式机制注入）
 - 提供命令查看、手动推进、重置、设置 MBTI
 
@@ -47,6 +48,7 @@ personality_engine_plugin/
   - `task_name`: 人格推进模型任务名（默认 `diary`）
   - `fallback_task_name`: 回退任务名（默认 `actor`）
   - `enable_llm_selector`: 是否启用 LLM 功能选择
+  - `enable_llm_reflection`: 是否启用 LLM 结构反思判定
 - `[personality]`
   - `default_mbti`: 默认 MBTI
   - `change_weight`: 每轮补偿增量
@@ -76,8 +78,8 @@ personality_engine_plugin/
 `mode = "paper_strict"` 时，注入块包含：
 
 - 当前类型、主辅、当前补偿、当前假设
-- 补偿机制规则（Compensation Mechanism）
-- 执行步骤（任务分析 → 主辅评估 → 补偿识别 → 响应生成）
+- 补偿机制规则（Compensation Mechanism，接近原论文文本结构）
+- 执行步骤（Following the steps，任务分析 → 主辅评估 → 补偿识别 → 响应生成）
 - 当前人格结构与未充分分化池
 - 可选八功能映射、可选近期结构变化记录、可选权重
 
@@ -88,7 +90,7 @@ personality_engine_plugin/
 1. 收集最近消息上下文
 2. 选择本轮补偿功能（LLM 或启发式）
 3. 更新 `change_history`
-4. 按规则执行反思分支（结构变化或衰减）
+4. 先执行 LLM 反思判定（yes/no + 权重），失败回退规则反思
 5. 落盘并返回摘要
 
 说明：新状态初始化时会写入“基线补偿=主导功能”与“基线假设”，避免长期显示“暂无”。
@@ -118,3 +120,5 @@ personality_engine_plugin/
 - 保持按轮推进、功能选择、结构反思与权重更新链路
 
 由于 Neo-MoFox 的实际回复链路不是实验脚本，本插件不会强制主回复输出论文实验用 JSON，而是在系统提示中注入机制约束，以影响真实对话生成。
+
+另外，论文代码中的反思阶段会二次调用 LLM 产出结构变化判断；本插件已对齐该行为，并保留规则回退以保证线上稳定性。

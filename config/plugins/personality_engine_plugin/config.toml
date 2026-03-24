@@ -42,6 +42,10 @@ fallback_task_name = "actor"
 # 值类型：bool, 默认值：true
 enable_llm_selector = true
 
+# 是否启用 LLM 执行结构反思判定
+# 值类型：bool, 默认值：true
+enable_llm_reflection = true
+
 # 人格更新配置。
 [personality]
 # 默认人格类型（16MBTI）

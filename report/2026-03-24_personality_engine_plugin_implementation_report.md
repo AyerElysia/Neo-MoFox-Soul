@@ -1,4 +1,4 @@
-# 2026-03-24 personality_engine_plugin 实现报告（第二版）
+# 2026-03-24 personality_engine_plugin 实现报告（第三版）
 
 ## 1. 任务目标
 
@@ -37,6 +37,7 @@
 
 - `plugins/personality_engine_plugin/prompts.py`（论文式机制注入模板）
 - `plugins/personality_engine_plugin/service.py`（基线补偿/假设、聊天类型兜底、注入增强）
+- `plugins/personality_engine_plugin/service.py`（新增 LLM 反思判定链）
 - `plugins/personality_engine_plugin/components/events/personality_scan_event.py`（事件参数兜底）
 - `plugins/personality_engine_plugin/components/events/personality_prompt_injector.py`（chat_type 空值兜底）
 - `plugins/personality_engine_plugin/config.py`（新增 `prompt.mode` 等配置）
@@ -71,14 +72,40 @@
   - `compact`：轻量摘要注入。
   - `paper_strict`：机制型注入（补偿机制、执行步骤、八功能映射、当前结构、可选历史变化与权重）。
 
-### 3.4 命令接口
+`paper_strict` 注入文案已按原论文 `Personality_changes/prompt.py` 的组织方式进行对齐：
+
+- `Compensation Mechanism`
+- `Following the steps`
+- `Psychological Type Characteristics`
+
+同时保留工程化约束：主回复不强制 JSON，以避免破坏聊天体验。
+
+### 3.4 反思机制（与原论文预期对齐）
+
+本版新增“LLM 反思判定”链路：
+
+1. 当触发反思阈值后，先判断反思动作类型：
+   - 主辅互换（swap_main_aux）
+   - 仅主导变化（change_main）
+   - 仅辅助变化（change_aux）
+   - 主辅重构（reorganize_main_aux）
+2. 针对动作类型调用 LLM 反思提示词，要求输出：
+   - `judgment`（yes/no）
+   - `reason`
+   - 对应权重字段（如 `main_weight`、`ori_main_weight` 等）
+3. 若 LLM 输出可解析且有效，则按输出执行结构变更并归一化；
+4. 若 LLM 不可用/输出非法，则自动回退到规则反思。
+
+该链路对应了原论文实现中“反思阶段再次调用 LLM 判断结构变更”的预期行为。
+
+### 3.5 命令接口
 
 - `/personality view`
 - `/personality advance`
 - `/personality reset`
 - `/personality set_mbti <MBTI>`
 
-### 3.5 “长期暂无”修复
+### 3.6 “长期暂无”修复
 
 针对“聊天很久仍显示 当前补偿/当前假设=暂无”的问题，本版做了三层修复：
 
@@ -96,6 +123,7 @@
 - 禁止 `eval`，仅使用 JSON 解析（含安全剪裁解析）。
 - LLM 输出解析失败采用有限重试，不无限循环。
 - LLM 不可用时自动启发式回退，主流程不中断。
+- 反思 LLM 不可用时自动回退规则反思，结构演化不中断。
 - 权重与变更历史均做清洗和归一化，避免非法值扩散。
 - 注入模式切换异常时回退 `compact`，避免因配置值错误导致注入失败。
 
@@ -125,6 +153,7 @@ pytest -q -o addopts='' \
 
 - 八功能语义映射 + 补偿机制 + 分步决策框架注入到 system prompt。
 - 保留“补偿功能选择 -> 权重变化 -> 结构反思”主链。
+- 反思阶段支持 LLM 二次判定（yes/no + 权重），并应用结构变化。
 
 有意保留的工程化差异：
 
