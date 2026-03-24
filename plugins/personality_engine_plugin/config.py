@@ -108,9 +108,23 @@ class PromptSection(SectionBase):
         description="允许注入人格态摘要的 prompt 模板名",
     )
     prompt_title: str = Field(default="人格态", description="注入块标题")
+    mode: str = Field(
+        default="paper_strict",
+        description="注入模式，可选 compact/paper_strict",
+    )
     inject_detail_level: str = Field(
-        default="compact",
+        default="detail",
         description="注入粒度，可选 compact/detail",
+    )
+    include_function_catalog: bool = Field(
+        default=True,
+        description="paper_strict 模式下是否注入八功能映射说明",
+    )
+    recent_history_records: int = Field(
+        default=3,
+        ge=0,
+        le=20,
+        description="paper_strict 模式下注入的近期结构变化记录条数",
     )
 
 

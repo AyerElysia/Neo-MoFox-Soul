@@ -59,9 +59,13 @@ class PersonalityPromptInjector(BaseEventHandler):
             return EventDecision.SUCCESS, params
 
         chat_type_value = values.get("chat_type")
+        normalized_chat_type: str | None = None
+        if chat_type_value is not None:
+            text = str(chat_type_value).strip()
+            normalized_chat_type = text if text else None
         block = service.render_prompt_block(
             stream_id=stream_id,
-            chat_type=str(chat_type_value) if chat_type_value is not None else None,
+            chat_type=normalized_chat_type,
         )
         if not block:
             return EventDecision.SUCCESS, params

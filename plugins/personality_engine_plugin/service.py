@@ -18,6 +18,7 @@ from src.kernel.logger import get_logger
 
 from .config import PersonalityEngineConfig
 from .prompts import (
+    build_baseline_hypothesis,
     build_prompt_block,
     build_reflection_reason,
     build_selector_system_prompt,
@@ -209,6 +210,9 @@ class PersonalityState:
         stream_name: str = "",
     ) -> "PersonalityState":
         default_weights = DEFAULT_WEIGHTS.get(mbti) or DEFAULT_WEIGHTS["INTJ"]
+        mapping = MBTI_TO_FUNCTION.get(mbti, {"main": "Ni", "aux": "Te"})
+        main_func = mapping["main"]
+        aux_func = mapping["aux"]
         return cls(
             stream_id=stream_id,
             chat_type=chat_type,
@@ -219,8 +223,11 @@ class PersonalityState:
             mbti=mbti,
             weights=_clean_weights(default_weights),
             change_history=_clean_change_history(),
-            last_selected_function="",
-            current_hypothesis="",
+            last_selected_function=main_func,
+            current_hypothesis=build_baseline_hypothesis(
+                main_func=main_func,
+                aux_func=aux_func,
+            ),
             history=[],
         )
 
@@ -275,7 +282,7 @@ class PersonalityEngineService(BaseService):
 
     service_name = "personality_engine_service"
     service_description = "按聊天流维护 JPAF 人格状态并持续推进"
-    version = "1.0.0"
+    version = "1.1.0"
 
     def __init__(self, plugin: Any) -> None:
         super().__init__(plugin)
@@ -363,6 +370,16 @@ class PersonalityEngineService(BaseService):
             state.mbti = self._default_mbti()
             state.weights = _clean_weights(DEFAULT_WEIGHTS[state.mbti])
             state.change_history = _clean_change_history()
+        mapping = MBTI_TO_FUNCTION.get(state.mbti, {"main": "Ni", "aux": "Te"})
+        main_func = mapping["main"]
+        aux_func = mapping["aux"]
+        if state.last_selected_function not in FUNCTIONS:
+            state.last_selected_function = main_func
+        if not state.current_hypothesis:
+            state.current_hypothesis = build_baseline_hypothesis(
+                main_func=main_func,
+                aux_func=aux_func,
+            )
         return state
 
     def _save_state(self, state: PersonalityState) -> None:
@@ -403,6 +420,10 @@ class PersonalityEngineService(BaseService):
                     stream_name=stream_name,
                 )
         path = self._get_state_path(stream_id, normalized)
+        if not path.exists():
+            found = self._find_existing_state_path(stream_id)
+            if found is not None:
+                normalized, path = found
         return self._load_state_from_path(
             path,
             stream_id=stream_id,
@@ -507,6 +528,32 @@ class PersonalityEngineService(BaseService):
         main_func = MBTI_TO_FUNCTION.get(mbti, {}).get("main", "Ni")
         return main_func, "无显著关键词，回退主导功能", f"回退到主导功能 {main_func}"
 
+    def _build_runtime_hypothesis(
+        self,
+        *,
+        selected_function: str,
+        reason: str,
+        mbti: str,
+    ) -> str:
+        mapping = MBTI_TO_FUNCTION.get(mbti, {"main": "Ni", "aux": "Te"})
+        main_func = mapping["main"]
+        aux_func = mapping["aux"]
+        if reason:
+            return f"当前任务优先激活 {selected_function}，原因：{reason}"
+        return build_baseline_hypothesis(main_func=main_func, aux_func=aux_func)
+
+    def _format_recent_changes(self, state: PersonalityState) -> list[str]:
+        count = int(self._cfg().prompt.recent_history_records)
+        if count <= 0 or not state.history:
+            return []
+        rows: list[str] = []
+        for item in state.history[:count]:
+            rows.append(
+                f"{item.changed_at}: {item.old_mbti}->{item.new_mbti} "
+                f"(trigger={item.trigger}, selected={item.selected_function})"
+            )
+        return rows
+
     def _build_model_set(self) -> list[dict[str, Any]] | None:
         task_name = str(self._cfg().model.task_name or "").strip() or "actor"
         fallback_task_name = str(self._cfg().model.fallback_task_name or "").strip() or "diary"
@@ -550,6 +597,8 @@ class PersonalityEngineService(BaseService):
                         build_selector_user_prompt(
                             trigger=trigger,
                             mbti=state.mbti,
+                            main_func=MBTI_TO_FUNCTION.get(state.mbti, {}).get("main", "Ni"),
+                            aux_func=MBTI_TO_FUNCTION.get(state.mbti, {}).get("aux", "Te"),
                             weights=state.weights,
                             recent_messages=recent_messages,
                         )
@@ -760,7 +809,15 @@ class PersonalityEngineService(BaseService):
                 selected_function = MBTI_TO_FUNCTION.get(state.mbti, {}).get("main", "Ni")
 
             state.last_selected_function = selected_function
-            state.current_hypothesis = hypothesis or reason or "暂无"
+            state.current_hypothesis = (
+                hypothesis.strip()
+                if hypothesis and hypothesis.strip()
+                else self._build_runtime_hypothesis(
+                    selected_function=selected_function,
+                    reason=reason.strip() if reason else "",
+                    mbti=state.mbti,
+                )
+            )
             state.change_history[selected_function] = (
                 float(state.change_history.get(selected_function, 0.0))
                 + float(self._cfg().personality.change_weight)
@@ -872,6 +929,7 @@ class PersonalityEngineService(BaseService):
         if mapping is None:
             return ""
         detail = str(self._cfg().prompt.inject_detail_level).strip().lower() == "detail"
+        mode = str(self._cfg().prompt.mode).strip().lower() or "paper_strict"
         return build_prompt_block(
             title=self._cfg().prompt.prompt_title,
             mbti=state.mbti,
@@ -881,6 +939,9 @@ class PersonalityEngineService(BaseService):
             hypothesis=state.current_hypothesis,
             weights=state.weights,
             detail=detail,
+            mode=mode,
+            recent_changes=self._format_recent_changes(state),
+            include_function_catalog=bool(self._cfg().prompt.include_function_catalog),
         )
 
     def reset_state(
@@ -936,4 +997,3 @@ def initialize_personality_engine_service(plugin: Any) -> PersonalityEngineServi
     else:
         _SERVICE_INSTANCE.plugin = plugin
     return _SERVICE_INSTANCE
-

@@ -1,12 +1,12 @@
-# 2026-03-24 personality_engine_plugin 实现报告
+# 2026-03-24 personality_engine_plugin 实现报告（第二版）
 
 ## 1. 任务目标
 
-在不改动核心代码的前提下，将 `evolving_personality` 能力插件化接入 Neo-MoFox，形成可加载、可运行、可观测、可测试的人格引擎插件。
+在不改动核心代码的前提下，将 `evolving_personality` 能力插件化接入 Neo-MoFox，形成可加载、可运行、可观测、可测试的人格引擎插件，并将注入方式从“状态标签”升级为更接近原论文的“机制注入”。
 
 ## 2. 实现范围
 
-本次仅新增插件与测试文件，未改动 `src/` 核心框架代码。
+本次仅改动插件自身、插件配置、插件测试与报告文档，未改动 `src/` 核心框架代码。
 
 新增插件目录：
 
@@ -33,6 +33,16 @@
 - `test/plugins/personality_engine_plugin/test_personality_prompt_injector.py`
 - `test/plugins/personality_engine_plugin/test_personality_scan_event.py`
 
+本版增量改动：
+
+- `plugins/personality_engine_plugin/prompts.py`（论文式机制注入模板）
+- `plugins/personality_engine_plugin/service.py`（基线补偿/假设、聊天类型兜底、注入增强）
+- `plugins/personality_engine_plugin/components/events/personality_scan_event.py`（事件参数兜底）
+- `plugins/personality_engine_plugin/components/events/personality_prompt_injector.py`（chat_type 空值兜底）
+- `plugins/personality_engine_plugin/config.py`（新增 `prompt.mode` 等配置）
+- `config/plugins/personality_engine_plugin/config.toml`（默认切到 `paper_strict`）
+- `plugins/personality_engine_plugin/README.md`
+
 ## 3. 功能说明
 
 ### 3.1 状态管理
@@ -57,7 +67,9 @@
 - 事件订阅：`on_prompt_build`。
 - 默认注入目标：`default_chatter_system_prompt`。
 - 注入字段：`extra_info`（若是 user prompt 则注入 `extra`）。
-- 注入内容包含：当前 MBTI、主辅功能、本轮补偿、当前假设（可选详细权重）。
+- 注入模式：
+  - `compact`：轻量摘要注入。
+  - `paper_strict`：机制型注入（补偿机制、执行步骤、八功能映射、当前结构、可选历史变化与权重）。
 
 ### 3.4 命令接口
 
@@ -65,6 +77,17 @@
 - `/personality advance`
 - `/personality reset`
 - `/personality set_mbti <MBTI>`
+
+### 3.5 “长期暂无”修复
+
+针对“聊天很久仍显示 当前补偿/当前假设=暂无”的问题，本版做了三层修复：
+
+1. 新状态初始化即写入基线值：  
+   `last_selected_function = 主导功能`，`current_hypothesis = 基线人格假设`。
+2. Prompt 注入读状态时增加聊天类型兜底：  
+   避免 `chat_type` 不一致导致读到空状态。
+3. 扫描事件增加 `stream_id/chat_type` 兜底提取：  
+   减少因事件参数形态差异导致推进链被跳过。
 
 ## 4. 稳定性处理
 
@@ -74,6 +97,7 @@
 - LLM 输出解析失败采用有限重试，不无限循环。
 - LLM 不可用时自动启发式回退，主流程不中断。
 - 权重与变更历史均做清洗和归一化，避免非法值扩散。
+- 注入模式切换异常时回退 `compact`，避免因配置值错误导致注入失败。
 
 ## 5. 测试结果
 
@@ -95,14 +119,24 @@ pytest -q -o addopts='' \
 - 新插件 Python 文件已通过 `py_compile`。
 - 新插件模块导入通过。
 
-## 6. 已知边界
+## 6. 与原论文对齐度说明
+
+已对齐部分：
+
+- 八功能语义映射 + 补偿机制 + 分步决策框架注入到 system prompt。
+- 保留“补偿功能选择 -> 权重变化 -> 结构反思”主链。
+
+有意保留的工程化差异：
+
+- 原论文实验脚本将部分环节输出为严格 JSON；插件在线对话链路中不强制主回复为 JSON，避免破坏正常聊天输出。
+
+## 7. 已知边界
 
 - 当前版本将“功能选择”交给 LLM（可配置关闭），但“结构反思决策”采用规则引擎以优先保证稳定性。
 - 未实现离线批量问卷实验链路（`Personality_test`），仅实现在线人格演化插件链路。
 
-## 7. 后续建议
+## 8. 后续建议
 
 - 增加更多场景化回归测试（长对话稳定性、不同 MBTI 初始值切换）。
 - 若后续需要更强可解释性，可在变更历史中记录更多中间阈值数据。
 - 可考虑新增 `/personality history` 命令便于线上观测演化轨迹。
-

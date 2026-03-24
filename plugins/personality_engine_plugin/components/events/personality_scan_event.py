@@ -41,12 +41,18 @@ class PersonalityScanEvent(BaseEventHandler):
         if not config or not getattr(config.plugin, "enabled", True):
             return EventDecision.SUCCESS, params
 
-        stream_id = str(params.get("stream_id", "")).strip()
+        context = params.get("context")
+        stream_id = str(params.get("stream_id", "")).strip() or str(
+            getattr(context, "stream_id", "") or ""
+        ).strip()
         if not stream_id:
             return EventDecision.SUCCESS, params
 
-        context = params.get("context")
-        chat_type = str(getattr(context, "chat_type", "") or "").strip() or "private"
+        chat_type = (
+            str(params.get("chat_type", "") or "").strip()
+            or str(getattr(context, "chat_type", "") or "").strip()
+            or "private"
+        )
         platform = str(getattr(context, "platform", "") or "").strip()
         stream_name = str(getattr(context, "stream_name", "") or "").strip()
 
@@ -69,4 +75,3 @@ class PersonalityScanEvent(BaseEventHandler):
             logger.error(f"人格扫描失败：{exc}", exc_info=True)
 
         return EventDecision.SUCCESS, params
-

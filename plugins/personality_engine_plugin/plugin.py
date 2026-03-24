@@ -25,7 +25,7 @@ class PersonalityEnginePlugin(BasePlugin):
 
     plugin_name = "personality_engine_plugin"
     plugin_description = "按聊天流演化的人格引擎"
-    plugin_version = "1.0.0"
+    plugin_version = "1.1.0"
 
     configs: list[type] = [PersonalityEngineConfig]
     dependent_components: list[str] = []
@@ -60,4 +60,3 @@ class PersonalityEnginePlugin(BasePlugin):
         personality_service_module._SERVICE_INSTANCE = None
         self._service = None
         logger.info("personality_engine_plugin 已卸载")
-

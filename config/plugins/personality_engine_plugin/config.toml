@@ -74,6 +74,18 @@ target_prompt_names = ["default_chatter_system_prompt"]
 # 值类型：str, 默认值："人格态"
 prompt_title = "人格态"
 
+# 注入模式，可选 compact/paper_strict
+# 值类型：str, 默认值："paper_strict"
+mode = "paper_strict"
+
 # 注入粒度，可选 compact/detail
-# 值类型：str, 默认值："compact"
-inject_detail_level = "compact"
+# 值类型：str, 默认值："detail"
+inject_detail_level = "detail"
+
+# paper_strict 模式下是否注入八功能映射说明
+# 值类型：bool, 默认值：true
+include_function_catalog = true
+
+# paper_strict 模式下注入的近期结构变化记录条数
+# 值类型：int, 默认值：3
+recent_history_records = 3
