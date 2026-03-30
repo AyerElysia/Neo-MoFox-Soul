@@ -33,7 +33,7 @@ Neo-MoFox 是一个全新重构的 AI 聊天机器人框架，它的目标不仅
 - 中枢上下文持久化：重启后自动恢复（`data/life_engine_workspace/life_engine_context.json`）
 - 中枢工具箱：受限工作区文件工具 + TODO 工具（仅 life_engine 内部可见）
 - 主动唤醒 DFC：`nucleus_wake_dfc` 可让中枢在需要时向指定会话“带话”
-- 灵魂与记忆文件：`SOUL.md` / `MEMORY.md`（位于 `data/life_engine_workspace/`）
+- 灵魂/记忆/工具习惯文件：`SOUL.md` / `MEMORY.md` / `TOOL.md`（位于 `data/life_engine_workspace/`）
 
 > 说明：`nucleus_wake_dfc` 不做硬编码节流，是否唤醒由中枢模型结合上下文自主判断。
 
