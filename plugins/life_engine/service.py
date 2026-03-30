@@ -707,7 +707,17 @@ class LifeEngineService(BaseService):
             if not call_list:
                 break
 
+            logger.info(
+                f"life_engine 心跳#{self._state.heartbeat_count} 本轮调用列表："
+                f"{[getattr(call, 'name', '<unknown>') for call in call_list]}"
+            )
             for call in call_list:
+                args = dict(call.args) if isinstance(getattr(call, "args", None), dict) else {}
+                reason = args.pop("reason", "未提供原因")
+                logger.info(
+                    f"life_engine 心跳#{self._state.heartbeat_count} "
+                    f"LLM 调用 {getattr(call, 'name', '<unknown>')}，原因: {reason}，参数: {args}"
+                )
                 await self._execute_heartbeat_tool_call(call, response, registry)
                 tool_event_count += 2  # call + result
 
