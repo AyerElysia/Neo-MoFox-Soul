@@ -145,6 +145,23 @@ def _pick_latest_target_stream_id(plugin: Any) -> str | None:
     return None
 
 
+def _get_life_engine_service(plugin: Any):
+    """获取 life_engine 服务实例。"""
+    try:
+        services = getattr(plugin, "_services", None) or []
+        for svc in services:
+            if hasattr(svc, "record_tell_dfc"):
+                return svc
+    except Exception:
+        pass
+    return None
+
+
+# 冷却时间常量（分钟）
+_TELL_DFC_COOLDOWN_MINUTES = 10  # 两次传话之间的最小间隔
+_TELL_DFC_EXTERNAL_ACTIVE_MINUTES = 5  # 外部消息在此时间内视为"活跃"
+
+
 class LifeEngineWakeDFCTool(BaseTool):
     """给并行存在的另一个自己（DFC）传递想法的工具。"""
 
@@ -186,6 +203,32 @@ class LifeEngineWakeDFCTool(BaseTool):
         text = str(message or "").strip()
         if not text:
             return False, "message 不能为空"
+
+        # 获取服务实例以检查冷却时间
+        life_service = _get_life_engine_service(self.plugin)
+        if life_service:
+            minutes_since_tell = life_service._minutes_since_tell_dfc()
+            minutes_since_external = life_service._minutes_since_external_message()
+            
+            # 冷却检查：两次传话之间需要间隔
+            if minutes_since_tell is not None and minutes_since_tell < _TELL_DFC_COOLDOWN_MINUTES:
+                # 除非是 critical 级别，否则拒绝
+                if importance != "critical":
+                    return (
+                        False,
+                        f"刚才才传话给 DFC（{minutes_since_tell} 分钟前），请稍后再传。"
+                        f"冷却时间: {_TELL_DFC_COOLDOWN_MINUTES} 分钟。"
+                        "如果真的很紧急，请使用 importance='critical'。"
+                    )
+            
+            # 活跃检查：如果外界很活跃，建议不要打扰
+            if minutes_since_external is not None and minutes_since_external < _TELL_DFC_EXTERNAL_ACTIVE_MINUTES:
+                # 除非是 high 或 critical 级别，否则给出警告但不阻止
+                if importance not in ("high", "critical"):
+                    logger.info(
+                        f"外界正在活跃（{minutes_since_external} 分钟前有消息），"
+                        f"传话可能会打扰 DFC 正常对话，但仍然允许执行。"
+                    )
 
         target_stream_id = str(stream_id or "").strip()
         if not target_stream_id:
@@ -240,6 +283,10 @@ class LifeEngineWakeDFCTool(BaseTool):
         removed = loop_mgr._wait_states.pop(chat_stream.stream_id, None)  # noqa: SLF001
         if loop_mgr.is_running:
             await loop_mgr.start_stream_loop(chat_stream.stream_id)
+
+        # 记录传话时间
+        if life_service:
+            life_service.record_tell_dfc()
 
         logger.info(
             "中枢向 DFC 传递想法: "

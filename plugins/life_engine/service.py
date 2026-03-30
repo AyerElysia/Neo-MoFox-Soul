@@ -155,6 +155,10 @@ class LifeEngineState:
     last_model_reply: str | None = None
     last_model_error: str | None = None
     last_error: str | None = None
+    # 新增：跟踪最后一次外部消息和传话时间
+    last_external_message_at: str | None = None
+    last_tell_dfc_at: str | None = None
+    tell_dfc_count: int = 0  # 本次运行期间传话总次数
 
 
 class LifeEngineService(BaseService):
@@ -245,6 +249,35 @@ class LifeEngineService(BaseService):
         self._state.event_sequence += 1
         return self._state.event_sequence
 
+    def _minutes_since_external_message(self) -> int | None:
+        """计算距离上一条外部消息过去了多少分钟。"""
+        if not self._state.last_external_message_at:
+            return None
+        try:
+            last_time = datetime.fromisoformat(self._state.last_external_message_at)
+            now = datetime.now().astimezone()
+            delta = now - last_time
+            return int(delta.total_seconds() / 60)
+        except Exception:
+            return None
+
+    def _minutes_since_tell_dfc(self) -> int | None:
+        """计算距离上一次传话给 DFC 过去了多少分钟。"""
+        if not self._state.last_tell_dfc_at:
+            return None
+        try:
+            last_time = datetime.fromisoformat(self._state.last_tell_dfc_at)
+            now = datetime.now().astimezone()
+            delta = now - last_time
+            return int(delta.total_seconds() / 60)
+        except Exception:
+            return None
+
+    def record_tell_dfc(self) -> None:
+        """记录一次传话给 DFC 的时间。"""
+        self._state.last_tell_dfc_at = _now_iso()
+        self._state.tell_dfc_count += 1
+
     def _runtime_context_path(self) -> Path:
         """返回运行时上下文持久化文件路径。"""
         workspace = Path(self._cfg().settings.workspace_path).resolve()
@@ -310,6 +343,10 @@ class LifeEngineService(BaseService):
                     "last_model_error": self._state.last_model_error,
                     "last_wake_context_at": self._state.last_wake_context_at,
                     "last_wake_context_size": self._state.last_wake_context_size,
+                    # 新增：跟踪外部消息和传话时间
+                    "last_external_message_at": self._state.last_external_message_at,
+                    "last_tell_dfc_at": self._state.last_tell_dfc_at,
+                    "tell_dfc_count": self._state.tell_dfc_count,
                 },
                 "pending_events": [self._event_to_dict(e) for e in self._pending_events],
                 "event_history": [self._event_to_dict(e) for e in self._event_history],
@@ -368,6 +405,10 @@ class LifeEngineService(BaseService):
             self._state.last_model_error = state_raw.get("last_model_error")
             self._state.last_wake_context_at = state_raw.get("last_wake_context_at")
             self._state.last_wake_context_size = int(state_raw.get("last_wake_context_size") or 0)
+            # 新增：恢复外部消息和传话时间跟踪
+            self._state.last_external_message_at = state_raw.get("last_external_message_at")
+            self._state.last_tell_dfc_at = state_raw.get("last_tell_dfc_at")
+            self._state.tell_dfc_count = int(state_raw.get("tell_dfc_count") or 0)
 
             if self._event_history:
                 max_seq = max(event.sequence for event in self._event_history)
@@ -571,6 +612,9 @@ class LifeEngineService(BaseService):
         async with self._get_lock():
             self._pending_events.append(event)
             self._state.pending_event_count = len(self._pending_events)
+            # 如果是入站消息（非自己发送的），更新 last_external_message_at
+            if direction == "received":
+                self._state.last_external_message_at = event.timestamp
         await self._save_runtime_context()
 
         log_message_received(
@@ -832,18 +876,48 @@ class LifeEngineService(BaseService):
 
     def _build_heartbeat_model_prompt(self, wake_context: str) -> str:
         """构造心跳模型输入。"""
+        # 计算关键的时间信息
+        minutes_since_external = self._minutes_since_external_message()
+        minutes_since_tell_dfc = self._minutes_since_tell_dfc()
+        
+        # 根据外部消息间隔判断外界活跃度
+        if minutes_since_external is None:
+            external_activity = "暂无外部消息记录"
+        elif minutes_since_external <= 5:
+            external_activity = f"外界非常活跃（{minutes_since_external}分钟前有消息），DFC 正在处理"
+        elif minutes_since_external <= 15:
+            external_activity = f"外界较活跃（{minutes_since_external}分钟前有消息）"
+        elif minutes_since_external <= 30:
+            external_activity = f"外界有一段时间安静了（{minutes_since_external}分钟前有消息）"
+        else:
+            external_activity = f"外界长时间沉默（{minutes_since_external}分钟无消息）"
+        
+        # 根据上次传话时间给出提示
+        if minutes_since_tell_dfc is None:
+            tell_dfc_hint = "本次运行尚未传话给 DFC"
+        elif minutes_since_tell_dfc <= 10:
+            tell_dfc_hint = f"刚刚才传话给 DFC（{minutes_since_tell_dfc}分钟前），不要频繁传话"
+        elif minutes_since_tell_dfc <= 30:
+            tell_dfc_hint = f"不久前传话过 DFC（{minutes_since_tell_dfc}分钟前）"
+        else:
+            tell_dfc_hint = f"上次传话给 DFC 是 {minutes_since_tell_dfc} 分钟前"
+        
         lines = [
             "这是你的心跳时刻。",
             "",
-            "**要求：必须输出一些内容，可以是：**",
-            "1. 内部思考/心理独白（1-4句话，表达此刻的感受、想法或观察）",
-            "2. 同时可以选择使用工具（记录想法、管理待办、操作文件等）",
+            "### 当前状态",
+            f"- 心跳序号: {self._state.heartbeat_count}",
+            f"- 当前时间: {self._state.last_heartbeat_at or _now_iso()}",
+            f"- 事件流中有 {self._state.history_event_count} 个事件",
+            f"- {external_activity}",
+            f"- {tell_dfc_hint}",
             "",
-            "注意：不要沉默，至少说说你此刻在想什么、感受到什么。",
+            "### 你需要做什么",
+            "1. 输出内心独白（1-4句话，表达此刻的感受、想法或观察）",
+            "2. 可选：使用工具（记录想法、管理待办、操作文件等）",
             "",
-            f"当前心跳序号: {self._state.heartbeat_count}",
-            f"当前时间: {self._state.last_heartbeat_at or _now_iso()}",
-            f"事件流中有 {self._state.history_event_count} 个事件",
+            "**注意：** 不要每次心跳都传话给 DFC。大部分心跳你只需要观察和思考。",
+            "只有在外界长时间沉默（>30分钟）且你有重要想法时，才考虑传话。",
         ]
 
         if wake_context.strip():
