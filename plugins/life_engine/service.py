@@ -27,7 +27,7 @@ from src.core.config import get_core_config
 from src.core.components.base import BaseService
 from src.core.models.message import Message
 from src.kernel.concurrency import get_task_manager
-from src.kernel.llm import LLMPayload, ROLE, Text
+from src.kernel.llm import LLMPayload, ROLE, Text, ToolRegistry, ToolResult
 
 from .audit import (
     get_life_log_file,
@@ -184,7 +184,7 @@ class LifeEngineService(BaseService):
         self._state.event_sequence += 1
         return self._state.event_sequence
 
-    def _build_message_event(self, message: Message) -> LifeEngineEvent:
+    def _build_message_event(self, message: Message, direction: str = "received") -> LifeEngineEvent:
         """将核心消息对象转换为事件。"""
         extra = getattr(message, "extra", {}) or {}
         platform = str(message.platform or "unknown")
@@ -199,22 +199,32 @@ class LifeEngineService(BaseService):
         )
         sender_id = str(message.sender_id or "")
 
+        direction_label = "入站" if direction == "received" else "出站"
+
         if chat_type == "group":
             source_kind = "群聊"
             source_name = group_name or group_id or stream_id[:8] or "未知群聊"
-            source_detail = f"{platform} | {source_kind} | {source_name} | 群ID={group_id or 'unknown'}"
+            source_detail = (
+                f"{platform} | {direction_label} | {source_kind} | {source_name} | 群ID={group_id or 'unknown'}"
+            )
         elif chat_type == "private":
             source_kind = "私聊"
             source_name = sender_display
-            source_detail = f"{platform} | {source_kind} | {source_name} | 用户ID={sender_id or 'unknown'}"
+            source_detail = (
+                f"{platform} | {direction_label} | {source_kind} | {source_name} | 用户ID={sender_id or 'unknown'}"
+            )
         elif chat_type == "discuss":
             source_kind = "讨论组"
             source_name = group_name or group_id or stream_id[:8] or "未知讨论组"
-            source_detail = f"{platform} | {source_kind} | {source_name} | 讨论组ID={group_id or 'unknown'}"
+            source_detail = (
+                f"{platform} | {direction_label} | {source_kind} | {source_name} | 讨论组ID={group_id or 'unknown'}"
+            )
         else:
             source_kind = chat_type or "未知"
             source_name = group_name or sender_display or stream_id[:8] or "未知来源"
-            source_detail = f"{platform} | {source_kind} | {source_name} | 来源ID={group_id or sender_id or 'unknown'}"
+            source_detail = (
+                f"{platform} | {direction_label} | {source_kind} | {source_name} | 来源ID={group_id or sender_id or 'unknown'}"
+            )
 
         raw_content = message.processed_plain_text
         if raw_content is None:
@@ -309,12 +319,15 @@ class LifeEngineService(BaseService):
         """返回一个轻量健康信息。"""
         return self.snapshot()
 
-    async def record_message(self, message: Message) -> None:
+    async def record_message(self, message: Message, direction: str = "received") -> None:
         """记录一条来自聊天流的消息事件。"""
         if not self._is_enabled():
             return
 
-        event = self._build_message_event(message)
+        if direction not in {"received", "sent"}:
+            direction = "received"
+
+        event = self._build_message_event(message, direction=direction)
         async with self._get_lock():
             self._pending_events.append(event)
             self._state.pending_event_count = len(self._pending_events)
@@ -332,6 +345,7 @@ class LifeEngineService(BaseService):
             reply_to=None,
             message_type=event.content_type,
             content=event.content,
+            direction=direction,
             pending_message_count=self._state.pending_event_count,
         )
 
@@ -589,6 +603,42 @@ class LifeEngineService(BaseService):
         
         return ALL_TOOLS + TODO_TOOLS
 
+    async def _execute_heartbeat_tool_call(
+        self,
+        call: Any,
+        response: Any,
+        registry: ToolRegistry,
+    ) -> None:
+        """执行一次心跳 tool call，并把 TOOL_RESULT 追加回响应上下文。"""
+        tool_name = getattr(call, "name", "") or ""
+        raw_args = getattr(call, "args", {}) or {}
+        args = dict(raw_args) if isinstance(raw_args, dict) else {}
+        args.pop("reason", None)
+
+        await self.record_tool_call(tool_name or "<unknown>", args)
+
+        usable_cls = registry.get(tool_name) if tool_name else None
+        if not usable_cls:
+            result_text = f"未知工具: {tool_name}"
+            success = False
+        else:
+            try:
+                tool_instance = usable_cls(plugin=self.plugin)
+                success, result = await tool_instance.execute(**args)
+                result_text = str(result) if success else f"执行失败: {result}"
+            except Exception as exc:  # noqa: BLE001
+                success = False
+                result_text = f"执行异常: {exc}"
+
+        call_id = getattr(call, "id", None)
+        response.add_payload(
+            LLMPayload(
+                ROLE.TOOL_RESULT,
+                ToolResult(value=result_text, call_id=call_id, name=tool_name),  # type: ignore[arg-type]
+            )
+        )
+        await self.record_tool_result(tool_name or "<unknown>", result_text, success)
+
     async def _run_heartbeat_model(self, wake_context: str) -> str:
         """调用 life 任务模型生成内部报文。"""
         cfg = self._cfg()
@@ -609,6 +659,9 @@ class LifeEngineService(BaseService):
         
         # 注入工具（文件系统 + TODO 系统）
         tools = self._get_nucleus_tools()
+        registry = ToolRegistry()
+        for tool in tools:
+            registry.register(tool)
         request.add_payload(
             LLMPayload(
                 ROLE.TOOL,
@@ -631,22 +684,30 @@ class LifeEngineService(BaseService):
             f"tools_count={len(tools)}"
         )
         
-        # send() 返回 LLMResponse 对象，需要 await 它来获取实际文本
-        response = await asyncio.wait_for(
-            request.send(stream=False),
-            timeout=timeout_seconds,
-        )
-        
-        # 调试：查看 response 对象
-        logger.debug(f"life_engine response object type: {type(response)}")
-        logger.debug(f"life_engine response object: {response}")
-        
-        # LLMResponse 实现了 __await__，再次 await 获取文本
-        response_text = await response
-        logger.debug(f"life_engine heartbeat raw response: {repr(response_text)[:200]}")
-        logger.debug(f"life_engine response_text type: {type(response_text)}")
-        
-        return str(response_text).strip()
+        # 支持一次心跳内的“模型 -> tool_call -> tool_result -> follow-up”链路
+        response = await asyncio.wait_for(request.send(stream=False), timeout=timeout_seconds)
+        max_rounds = 3
+        last_text = ""
+
+        for _ in range(max_rounds):
+            response_text = await response
+            last_text = str(response_text or "").strip()
+            call_list = list(getattr(response, "call_list", []) or [])
+
+            logger.debug(
+                "life_engine heartbeat turn: "
+                f"text_len={len(last_text)} call_count={len(call_list)}"
+            )
+
+            if not call_list:
+                break
+
+            for call in call_list:
+                await self._execute_heartbeat_tool_call(call, response, registry)
+
+            response = await asyncio.wait_for(response.send(stream=False), timeout=timeout_seconds)
+
+        return last_text
 
     async def start(self) -> None:
         """启动心跳。"""
