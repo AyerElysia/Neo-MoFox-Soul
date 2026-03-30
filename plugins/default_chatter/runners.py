@@ -173,6 +173,18 @@ def _transition(
     rt.phase = to_phase
 
 
+def _append_suspend_if_tool_result_tail(
+    response: LLMConversationState,
+    suspend_text: str,
+    logger: Logger,
+) -> None:
+    """若当前尾部是 TOOL_RESULT，补一条 ASSISTANT 占位，阻止无消息 follow-up 空转。"""
+    payloads = getattr(response, "payloads", None)
+    if payloads and payloads[-1].role == ROLE.TOOL_RESULT:
+        response.add_payload(LLMPayload(ROLE.ASSISTANT, Text(suspend_text)))
+        logger.debug("已注入 SUSPEND 占位符（pass_and_wait 优先结束本轮）")
+
+
 async def run_enhanced(
     chatter: DefaultChatterRuntime,
     chat_stream: ChatStream,
@@ -329,6 +341,14 @@ async def run_enhanced(
                 cross_round_seen_signatures=rt.cross_round_seen_signatures,
             )
 
+            # pass_and_wait 具有最高优先级：即使同轮有非 action 工具结果，也直接等待用户。
+            # 为避免下一轮被“尾部 TOOL_RESULT”强制 FOLLOW_UP，这里补一个 ASSISTANT 占位。
+            if call_outcome.should_wait:
+                _append_suspend_if_tool_result_tail(rt.response, suspend_text, logger)
+                yield Wait()
+                _transition(rt=rt, to_phase=_ToolCallWorkflowPhase.WAIT_USER, logger=logger, reason="pass_and_wait priority")
+                continue
+
             if call_outcome.has_pending_tool_results:
                 _transition(rt=rt, to_phase=_ToolCallWorkflowPhase.FOLLOW_UP, logger=logger, reason="pending tool results")
                 continue
@@ -341,8 +361,6 @@ async def run_enhanced(
             )
 
             # 工具链已闭合，可以进入等待或接受新 user。
-            if call_outcome.should_wait:
-                yield Wait()
             _transition(rt=rt, to_phase=_ToolCallWorkflowPhase.WAIT_USER, logger=logger, reason="tool exec done")
             continue
 
@@ -478,9 +496,11 @@ async def run_classical(
                 return
 
             if call_outcome.should_wait:
-                # 同 enhanced：若同时存在 pending 工具结果，优先 follow-up。
-                if has_pending_tool_results:
-                    continue
+                _append_suspend_if_tool_result_tail(response, suspend_text, logger)
                 await chatter.flush_unreads(unread_msgs)
                 yield Wait()
                 break
+
+            # 未要求等待时，若存在 pending 工具结果则继续 follow-up。
+            if has_pending_tool_results:
+                continue
