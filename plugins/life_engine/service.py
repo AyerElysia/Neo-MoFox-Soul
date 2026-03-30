@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import traceback
 from dataclasses import dataclass, asdict, field
 from datetime import datetime, timezone
@@ -49,6 +50,7 @@ _TARGET_REMINDER_NAME = "生命中枢唤醒上下文"
 # 中枢内部消息的固定标识
 _INTERNAL_PLATFORM = "life_engine"
 _INTERNAL_STREAM_ID = "life_engine_internal"
+_RUNTIME_CONTEXT_FILE = "life_engine_context.json"
 
 
 def _now_iso() -> str:
@@ -183,6 +185,142 @@ class LifeEngineService(BaseService):
         """获取下一个事件序列号。"""
         self._state.event_sequence += 1
         return self._state.event_sequence
+
+    def _runtime_context_path(self) -> Path:
+        """返回运行时上下文持久化文件路径。"""
+        workspace = Path(self._cfg().settings.workspace_path).resolve()
+        workspace.mkdir(parents=True, exist_ok=True)
+        return workspace / _RUNTIME_CONTEXT_FILE
+
+    def _event_to_dict(self, event: LifeEngineEvent) -> dict[str, Any]:
+        """将事件序列化为可落盘字典。"""
+        return {
+            "event_id": event.event_id,
+            "event_type": event.event_type.value,
+            "timestamp": event.timestamp,
+            "sequence": event.sequence,
+            "source": event.source,
+            "source_detail": event.source_detail,
+            "content": event.content,
+            "content_type": event.content_type,
+            "sender": event.sender,
+            "chat_type": event.chat_type,
+            "stream_id": event.stream_id,
+            "heartbeat_index": event.heartbeat_index,
+            "tool_name": event.tool_name,
+            "tool_args": event.tool_args,
+            "tool_success": event.tool_success,
+        }
+
+    def _event_from_dict(self, data: dict[str, Any]) -> LifeEngineEvent:
+        """从字典反序列化事件。"""
+        event_type_raw = str(data.get("event_type") or EventType.MESSAGE.value)
+        try:
+            event_type = EventType(event_type_raw)
+        except ValueError:
+            event_type = EventType.MESSAGE
+
+        return LifeEngineEvent(
+            event_id=str(data.get("event_id") or f"evt_{self._next_sequence()}"),
+            event_type=event_type,
+            timestamp=str(data.get("timestamp") or _now_iso()),
+            sequence=int(data.get("sequence") or 0),
+            source=str(data.get("source") or "unknown"),
+            source_detail=str(data.get("source_detail") or "unknown"),
+            content=str(data.get("content") or ""),
+            content_type=str(data.get("content_type") or "text"),
+            sender=data.get("sender"),
+            chat_type=data.get("chat_type"),
+            stream_id=data.get("stream_id"),
+            heartbeat_index=data.get("heartbeat_index"),
+            tool_name=data.get("tool_name"),
+            tool_args=data.get("tool_args"),
+            tool_success=data.get("tool_success"),
+        )
+
+    async def _save_runtime_context(self) -> None:
+        """持久化当前上下文（待处理事件 + 历史事件）。"""
+        async with self._get_lock():
+            payload = {
+                "version": 1,
+                "state": {
+                    "heartbeat_count": self._state.heartbeat_count,
+                    "event_sequence": self._state.event_sequence,
+                    "last_model_reply_at": self._state.last_model_reply_at,
+                    "last_model_reply": self._state.last_model_reply,
+                    "last_model_error": self._state.last_model_error,
+                    "last_wake_context_at": self._state.last_wake_context_at,
+                    "last_wake_context_size": self._state.last_wake_context_size,
+                },
+                "pending_events": [self._event_to_dict(e) for e in self._pending_events],
+                "event_history": [self._event_to_dict(e) for e in self._event_history],
+            }
+
+        path = self._runtime_context_path()
+        temp_path = path.with_suffix(path.suffix + ".tmp")
+        try:
+            temp_path.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            temp_path.replace(path)
+        except Exception as exc:  # noqa: BLE001
+            logger.error(f"life_engine 持久化上下文失败: {exc}")
+
+    async def _load_runtime_context(self) -> None:
+        """从持久化文件恢复上下文。"""
+        path = self._runtime_context_path()
+        if not path.exists():
+            return
+
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:  # noqa: BLE001
+            logger.error(f"life_engine 读取上下文失败: {exc}")
+            return
+
+        pending_raw = raw.get("pending_events")
+        history_raw = raw.get("event_history")
+        state_raw = raw.get("state") or {}
+
+        if not isinstance(pending_raw, list) or not isinstance(history_raw, list):
+            logger.warning("life_engine 上下文文件格式无效，跳过恢复")
+            return
+
+        pending_events: list[LifeEngineEvent] = []
+        history_events: list[LifeEngineEvent] = []
+        for item in pending_raw:
+            if isinstance(item, dict):
+                pending_events.append(self._event_from_dict(item))
+        for item in history_raw:
+            if isinstance(item, dict):
+                history_events.append(self._event_from_dict(item))
+
+        async with self._get_lock():
+            self._pending_events = pending_events
+            self._event_history = history_events[-self._history_limit():]
+
+            self._state.pending_event_count = len(self._pending_events)
+            self._state.history_event_count = len(self._event_history)
+            self._state.heartbeat_count = int(state_raw.get("heartbeat_count") or self._state.heartbeat_count)
+            self._state.event_sequence = int(state_raw.get("event_sequence") or self._state.event_sequence)
+            self._state.last_model_reply_at = state_raw.get("last_model_reply_at")
+            self._state.last_model_reply = state_raw.get("last_model_reply")
+            self._state.last_model_error = state_raw.get("last_model_error")
+            self._state.last_wake_context_at = state_raw.get("last_wake_context_at")
+            self._state.last_wake_context_size = int(state_raw.get("last_wake_context_size") or 0)
+
+            if self._event_history:
+                max_seq = max(event.sequence for event in self._event_history)
+                if self._pending_events:
+                    max_seq = max(max_seq, max(event.sequence for event in self._pending_events))
+                self._state.event_sequence = max(self._state.event_sequence, max_seq)
+
+        logger.info(
+            "life_engine 上下文恢复完成: "
+            f"history={len(history_events)} pending={len(pending_events)} "
+            f"heartbeat_count={self._state.heartbeat_count}"
+        )
 
     def _build_message_event(self, message: Message, direction: str = "received") -> LifeEngineEvent:
         """将核心消息对象转换为事件。"""
@@ -331,6 +469,7 @@ class LifeEngineService(BaseService):
         async with self._get_lock():
             self._pending_events.append(event)
             self._state.pending_event_count = len(self._pending_events)
+        await self._save_runtime_context()
 
         log_message_received(
             received_at=event.timestamp,
@@ -359,6 +498,7 @@ class LifeEngineService(BaseService):
         async with self._get_lock():
             self._pending_events.append(event)
             self._state.pending_event_count = len(self._pending_events)
+        await self._save_runtime_context()
 
     async def record_tool_result(
         self,
@@ -371,6 +511,7 @@ class LifeEngineService(BaseService):
         async with self._get_lock():
             self._pending_events.append(event)
             self._state.pending_event_count = len(self._pending_events)
+        await self._save_runtime_context()
 
     async def drain_pending_events(self) -> list[LifeEngineEvent]:
         """清空并返回当前待处理事件。"""
@@ -391,6 +532,7 @@ class LifeEngineService(BaseService):
             if len(self._event_history) > limit:
                 self._event_history = self._event_history[-limit:]
             self._state.history_event_count = len(self._event_history)
+        await self._save_runtime_context()
 
     async def clear_runtime_context(self) -> None:
         """清理当前事件上下文。"""
@@ -400,6 +542,7 @@ class LifeEngineService(BaseService):
             self._state.pending_event_count = 0
             self._state.history_event_count = 0
             self._state.event_sequence = 0
+        await self._save_runtime_context()
         self._clear_wake_context_reminder()
 
     def _clear_wake_context_reminder(self) -> None:
@@ -743,17 +886,14 @@ class LifeEngineService(BaseService):
             await self.clear_runtime_context()
             return
 
-        await self.clear_runtime_context()
+        await self._load_runtime_context()
 
         self._state.running = True
         self._state.started_at = _now_iso()
-        self._state.last_heartbeat_at = self._state.started_at
-        self._state.heartbeat_count = 0
+        self._state.last_heartbeat_at = self._state.last_heartbeat_at or self._state.started_at
         self._state.last_error = None
-        self._state.last_wake_context_at = None
-        self._state.last_wake_context_size = 0
-        self._state.history_event_count = 0
-        self._state.event_sequence = 0
+        self._state.history_event_count = len(self._event_history)
+        self._state.pending_event_count = len(self._pending_events)
 
         self._stop_event = asyncio.Event()
         task = get_task_manager().create_task(
@@ -792,7 +932,7 @@ class LifeEngineService(BaseService):
 
         self._heartbeat_task_id = None
         self._stop_event = None
-        await self.clear_runtime_context()
+        await self._save_runtime_context()
         logger.info("life_engine 已停止")
         log_lifecycle(
             "stopped",
