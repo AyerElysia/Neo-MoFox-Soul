@@ -160,7 +160,12 @@ async def run_chat_stream(
                         
                         # 设置触发用户 ID (从最后一条未读消息)
                         if context.unread_messages:
-                            context.triggering_user_id = context.unread_messages[-1].sender_id
+                            last_unread = context.unread_messages[-1]
+                            last_extra = getattr(last_unread, "extra", {}) or {}
+                            if last_extra.get("is_life_engine_wake") and last_extra.get("target_user_id"):
+                                context.triggering_user_id = str(last_extra.get("target_user_id"))
+                            else:
+                                context.triggering_user_id = last_unread.sender_id
                             
                         chatter_gene = chatter.execute()
                         if asyncio.iscoroutine(chatter_gene):

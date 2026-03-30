@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, cast
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -171,8 +173,7 @@ class TestNapcatAdapterStartupValidation:
             _validate_bot_identity(config)
 
 
-@pytest.mark.asyncio
-async def test_get_bot_info_returns_standard_bot_name_field() -> None:
+def test_get_bot_info_returns_standard_bot_name_field() -> None:
     """NapcatAdapter 应按统一契约返回 bot_name。"""
     config = NapcatAdapterConfig.from_dict(
         {
@@ -205,10 +206,48 @@ async def test_get_bot_info_returns_standard_bot_name_field() -> None:
     plugin = NapcatAdapterPlugin(config=config)
     adapter = NapcatAdapter(core_sink=cast(Any, _FakeCoreSink()), plugin=plugin)
 
-    bot_info = await adapter.get_bot_info()
+    bot_info = asyncio.run(adapter.get_bot_info())
 
     assert bot_info == {
         "bot_id": "123456789",
         "bot_name": "MoFoxBot",
         "platform": "qq",
     }
+
+
+def test_send_platform_message_propagates_send_handler_error() -> None:
+    """Napcat 发送失败时不应被适配器吞掉异常。"""
+    config = NapcatAdapterConfig.from_dict(
+        {
+            "plugin": {"enabled": True, "config_version": "2.0.0"},
+            "bot": {"qq_id": "123456789", "qq_nickname": "MoFoxBot"},
+            "napcat_server": {
+                "mode": "reverse",
+                "host": "localhost",
+                "port": 8095,
+                "access_token": "",
+            },
+            "features": {
+                "group_list_type": "blacklist",
+                "group_list": [],
+                "private_list_type": "blacklist",
+                "private_list": [],
+                "ban_user_id": [],
+                "enable_poke": True,
+                "ignore_non_self_poke": False,
+                "poke_debounce_seconds": 2.0,
+                "enable_emoji_like": True,
+                "enable_reply_at": True,
+                "reply_at_rate": 0.5,
+                "enable_video_processing": True,
+                "video_max_size_mb": 100,
+                "video_download_timeout": 60,
+            },
+        }
+    )
+    plugin = NapcatAdapterPlugin(config=config)
+    adapter = NapcatAdapter(core_sink=cast(Any, _FakeCoreSink()), plugin=plugin)
+    adapter.send_handler.handle_message = AsyncMock(side_effect=ValueError("bad target"))
+
+    with pytest.raises(ValueError, match="bad target"):
+        asyncio.run(adapter._send_platform_message({"message_info": {}, "message_segment": {}}))

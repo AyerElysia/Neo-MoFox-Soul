@@ -74,7 +74,7 @@ class TestBaseAction:
         schema = action.to_schema()
 
         assert schema["type"] == "function"
-        assert schema["function"]["name"] == "action:test_action"
+        assert schema["function"]["name"] == "action-test_action"
         assert schema["function"]["description"] == "A test action"
         assert "parameters" in schema["function"]
         assert schema["function"]["parameters"]["type"] == "object"
@@ -316,6 +316,54 @@ class TestBaseAction:
         result = asyncio.run(action._send_to_stream("test content"))
 
         assert result is False
+
+    @patch("src.core.transport.message_send.get_message_sender")
+    @patch("src.core.managers.adapter_manager.get_adapter_manager")
+    def test_send_to_stream_private_uses_target_user_from_internal_wake(
+        self,
+        mock_get_adapter_manager,
+        mock_get_sender,
+        mock_chat_stream,
+        mock_plugin,
+    ):
+        """内部唤醒消息不应把 life_engine_nucleus 当成私聊目标。"""
+        import asyncio
+
+        mock_chat_stream.chat_type = "private"
+        mock_chat_stream.platform = "qq"
+        mock_chat_stream.stream_id = "stream_private_1"
+
+        context = mock_chat_stream.context
+        context.unread_messages = []
+        context.triggering_user_id = "life_engine_nucleus"
+
+        internal_msg = MagicMock()
+        internal_msg.sender_id = "life_engine_nucleus"
+        internal_msg.sender_name = "生命中枢"
+        internal_msg.extra = {
+            "is_life_engine_wake": True,
+            "target_user_id": "123456789",
+            "target_user_name": "Ayer",
+        }
+        context.history_messages = [internal_msg]
+
+        mock_sender = MagicMock()
+        mock_sender.send_message = AsyncMock(return_value=True)
+        mock_get_sender.return_value = mock_sender
+
+        mock_adapter_manager = MagicMock()
+        mock_adapter_manager.get_bot_info_by_platform = AsyncMock(
+            return_value={"bot_id": "987654321", "bot_name": "MoFoxBot"}
+        )
+        mock_get_adapter_manager.return_value = mock_adapter_manager
+
+        action = ConcreteAction(mock_chat_stream, mock_plugin)
+        result = asyncio.run(action._send_to_stream("test content"))
+
+        assert result is True
+        sent_message = mock_sender.send_message.call_args.args[0]
+        assert sent_message.extra["target_user_id"] == "123456789"
+        assert sent_message.extra["target_user_name"] == "Ayer"
 
 
 class TestActionAttributes:

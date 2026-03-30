@@ -373,10 +373,10 @@ class SendTextAction(BaseAction):
                     target_group_id = last_msg.extra.get("group_id")
                     target_group_name = last_msg.extra.get("group_name")
             else:
-                target_user_id = context.triggering_user_id
-                if not target_user_id and last_msg:
-                    target_user_id = last_msg.sender_id
-                    target_user_name = last_msg.sender_name
+                target_user_id, target_user_name = await self._resolve_private_target_from_context(
+                    context,
+                    last_msg,
+                )
 
             extra: dict[str, str] = {}
             if target_user_id:

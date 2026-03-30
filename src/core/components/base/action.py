@@ -315,7 +315,70 @@ class BaseAction(ABC, LLMUsable):
         except Exception:
             # 出错时默认不激活
             return False
-        
+
+    @staticmethod
+    def _is_internal_sender_id(sender_id: Any) -> bool:
+        """判断 sender_id 是否为内部系统标识。"""
+        raw = str(sender_id or "").strip()
+        if not raw:
+            return False
+        return raw in {"life_engine_nucleus", "system"} or raw.startswith("life_engine_")
+
+    @classmethod
+    def _is_internal_message(cls, message: "Message | None") -> bool:
+        """判断消息是否为内部注入消息。"""
+        if message is None:
+            return False
+        extra = getattr(message, "extra", {}) or {}
+        if extra.get("is_life_engine_wake"):
+            return True
+        return cls._is_internal_sender_id(getattr(message, "sender_id", None))
+
+    async def _resolve_private_target_from_context(
+        self,
+        context: Any,
+        last_msg: "Message | None",
+    ) -> tuple[str | None, str | None]:
+        """解析私聊真正的目标用户，避免内部 sender_id 污染发送目标。"""
+        target_user_id = str(getattr(context, "triggering_user_id", "") or "").strip() or None
+        target_user_name: str | None = None
+
+        last_extra = getattr(last_msg, "extra", {}) or {}
+        extra_target_user_id = str(last_extra.get("target_user_id") or "").strip() or None
+        extra_target_user_name = str(last_extra.get("target_user_name") or "").strip() or None
+
+        if self._is_internal_sender_id(target_user_id):
+            target_user_id = None
+
+        if last_msg and extra_target_user_id and (self._is_internal_message(last_msg) or not target_user_id):
+            target_user_id = extra_target_user_id
+            target_user_name = extra_target_user_name or target_user_name
+
+        if not target_user_id and last_msg and not self._is_internal_message(last_msg):
+            target_user_id = str(getattr(last_msg, "sender_id", "") or "").strip() or None
+            target_user_name = str(getattr(last_msg, "sender_name", "") or "").strip() or None
+
+        if not target_user_id:
+            try:
+                from src.core.managers.stream_manager import get_stream_manager
+                from src.core.utils.user_query_helper import get_user_query_helper
+
+                stream_info = await get_stream_manager().get_stream_info(self.chat_stream.stream_id)
+                if stream_info and stream_info.get("chat_type") == "private":
+                    person_id = stream_info.get("person_id")
+                    if person_id:
+                        person = await get_user_query_helper().person_crud.get_by(
+                            person_id=person_id
+                        )
+                        if person and person.user_id:
+                            target_user_id = str(person.user_id)
+                        nickname = str(getattr(person, "nickname", "") or "").strip() if person else ""
+                        if nickname:
+                            target_user_name = nickname
+            except Exception:
+                pass
+
+        return target_user_id, target_user_name
 
     async def _send_to_stream(
         self,
@@ -383,10 +446,10 @@ class BaseAction(ABC, LLMUsable):
                         target_group_id = last_msg.extra.get("group_id")
                         target_group_name = last_msg.extra.get("group_name")
                 else:
-                    target_user_id = context.triggering_user_id
-                    if not target_user_id and last_msg:
-                        target_user_id = last_msg.sender_id
-                        target_user_name = last_msg.sender_name
+                    target_user_id, target_user_name = await self._resolve_private_target_from_context(
+                        context,
+                        last_msg,
+                    )
 
                 extra: dict[str, Any] = {}
                 if target_user_id:
