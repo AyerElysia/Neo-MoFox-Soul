@@ -356,7 +356,9 @@ class LifeEngineService(BaseService):
     ) -> None:
         """记录工具调用事件。"""
         event = self._build_tool_call_event(tool_name, tool_args)
-        await self._append_history([event])
+        async with self._get_lock():
+            self._pending_events.append(event)
+            self._state.pending_event_count = len(self._pending_events)
 
     async def record_tool_result(
         self,
@@ -366,7 +368,9 @@ class LifeEngineService(BaseService):
     ) -> None:
         """记录工具返回结果事件。"""
         event = self._build_tool_result_event(tool_name, result, success)
-        await self._append_history([event])
+        async with self._get_lock():
+            self._pending_events.append(event)
+            self._state.pending_event_count = len(self._pending_events)
 
     async def drain_pending_events(self) -> list[LifeEngineEvent]:
         """清空并返回当前待处理事件。"""
@@ -688,6 +692,7 @@ class LifeEngineService(BaseService):
         response = await asyncio.wait_for(request.send(stream=False), timeout=timeout_seconds)
         max_rounds = 3
         last_text = ""
+        tool_event_count = 0
 
         for _ in range(max_rounds):
             response_text = await response
@@ -704,8 +709,16 @@ class LifeEngineService(BaseService):
 
             for call in call_list:
                 await self._execute_heartbeat_tool_call(call, response, registry)
+                tool_event_count += 2  # call + result
 
             response = await asyncio.wait_for(response.send(stream=False), timeout=timeout_seconds)
+
+        if not last_text:
+            # 即使模型仅进行了工具调用，也保证产生最小内心独白，避免“空心跳”。
+            if tool_event_count > 0:
+                last_text = f"我刚刚完成了 {tool_event_count // 2} 次工具操作，先记下这些变化，下一次心跳继续整理。"
+            else:
+                last_text = "此刻很安静，但我仍在持续感受与观察，准备好迎接下一次变化。"
 
         return last_text
 
