@@ -511,10 +511,13 @@ class LifeEngineService(BaseService):
     def _build_heartbeat_model_prompt(self, wake_context: str) -> str:
         """构造心跳模型输入。"""
         lines = [
-            "这是你的心跳时刻。你可以：",
-            "1. 输出内部思考（给自己看的，1-4句话）",
-            "2. 使用工具记录想法、管理待办、操作文件",
-            "3. 或者什么都不做，只是静静体验当下",
+            "这是你的心跳时刻。",
+            "",
+            "**要求：必须输出一些内容，可以是：**",
+            "1. 内部思考/心理独白（1-4句话，表达此刻的感受、想法或观察）",
+            "2. 同时可以选择使用工具（记录想法、管理待办、操作文件等）",
+            "",
+            "注意：不要沉默，至少说说你此刻在想什么、感受到什么。",
             "",
             f"当前心跳序号: {self._state.heartbeat_count}",
             f"当前时间: {self._state.last_heartbeat_at or _now_iso()}",
@@ -633,9 +636,16 @@ class LifeEngineService(BaseService):
             request.send(stream=False),
             timeout=timeout_seconds,
         )
+        
+        # 调试：查看 response 对象
+        logger.debug(f"life_engine response object type: {type(response)}")
+        logger.debug(f"life_engine response object: {response}")
+        
         # LLMResponse 实现了 __await__，再次 await 获取文本
         response_text = await response
         logger.debug(f"life_engine heartbeat raw response: {repr(response_text)[:200]}")
+        logger.debug(f"life_engine response_text type: {type(response_text)}")
+        
         return str(response_text).strip()
 
     async def start(self) -> None:
