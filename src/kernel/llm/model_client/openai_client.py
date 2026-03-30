@@ -14,6 +14,8 @@ import threading
 from pathlib import Path
 from typing import Any, AsyncIterator
 
+from json_repair import repair_json
+
 from src.kernel.logger import get_logger
 from src.kernel.llm.payload.tooling import LLMUsable
 from src.kernel.llm.tool_call_compat import (
@@ -255,6 +257,48 @@ def _is_native_video_unsupported_error(error: Exception) -> bool:
     )
 
 
+def _coerce_tool_arguments_json(args: Any) -> str:
+    """将工具参数规范化为可安全回灌到 function.arguments 的 JSON 文本。"""
+    if isinstance(args, str):
+        stripped = args.strip()
+        if not stripped:
+            return "{}"
+        try:
+            normalized = json.loads(stripped)
+        except Exception:
+            try:
+                normalized = repair_json(stripped, return_objects=True)
+            except Exception:
+                logger.warning("检测到非法 tool_call.arguments，已回退为 JSON 字符串字面量")
+                normalized = stripped
+        return json.dumps(normalized, ensure_ascii=False)
+
+    try:
+        return json.dumps(args if args is not None else {}, ensure_ascii=False)
+    except Exception:
+        return json.dumps(str(args), ensure_ascii=False)
+
+
+def _parse_tool_arguments(args_raw: Any) -> dict[str, Any] | list[Any] | str | int | float | bool | None:
+    """尽量将上游返回的 function.arguments 解析为结构化 JSON。"""
+    if args_raw is None:
+        return {}
+    if not isinstance(args_raw, str):
+        return args_raw
+
+    stripped = args_raw.strip()
+    if not stripped:
+        return {}
+
+    try:
+        return json.loads(stripped)
+    except Exception:
+        try:
+            return repair_json(stripped, return_objects=True)
+        except Exception:
+            return args_raw
+
+
 def _to_openai_tool(tool: Any) -> dict[str, Any]:
     """将单个 LLMUsable 工具转换为 OpenAI tools 格式。
 
@@ -432,11 +476,7 @@ def _payloads_to_openai_messages(
 
             for idx, part in enumerate(payload.content):
                 if isinstance(part, ToolCall):
-                    args_text = (
-                        json.dumps(part.args, ensure_ascii=False)
-                        if isinstance(part.args, dict)
-                        else str(part.args)
-                    )
+                    args_text = _coerce_tool_arguments_json(part.args)
                     call_id = part.id or f"call_{idx}"
                     tool_calls_list.append(
                         {
@@ -505,14 +545,7 @@ def _parse_completion_message(
 
     if getattr(msg, "tool_calls", None):
         for tc in msg.tool_calls:
-            try:
-                args = (
-                    json.loads(tc.function.arguments)
-                    if tc.function.arguments
-                    else {}
-                )
-            except Exception:
-                args = tc.function.arguments
+            args = _parse_tool_arguments(getattr(tc.function, "arguments", None))
             tool_calls.append(
                 {
                     "id": tc.id,
@@ -526,10 +559,7 @@ def _parse_completion_message(
     fn_name = getattr(fn_call, "name", None) if fn_call is not None else None
     if not tool_calls and isinstance(fn_name, str) and fn_name:
         fn_args_raw = getattr(fn_call, "arguments", None)
-        try:
-            args = json.loads(fn_args_raw) if fn_args_raw else {}
-        except Exception:
-            args = fn_args_raw
+        args = _parse_tool_arguments(fn_args_raw)
         tool_calls.append(
             {
                 "id": None,

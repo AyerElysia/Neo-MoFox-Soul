@@ -16,6 +16,8 @@ from collections.abc import Callable, Awaitable
 from dataclasses import dataclass
 from typing import Any, AsyncIterator, Self, TYPE_CHECKING
 
+from json_repair import repair_json
+
 from .exceptions import LLMResponseConsumedError
 from .model_client import StreamEvent
 from .payload import LLMPayload, Text, ToolCall
@@ -408,7 +410,10 @@ class _ToolCallAccumulator:
                 try:
                     args = json.loads(args_raw)
                 except Exception:
-                    args = args_raw
+                    try:
+                        args = repair_json(args_raw, return_objects=True)
+                    except Exception:
+                        args = args_raw
 
             out.append(ToolCall(id=tool_call_id, name=name, args=args))
         return out

@@ -848,7 +848,7 @@ class LifeEngineService(BaseService):
         
         # 支持一次心跳内的“模型 -> tool_call -> tool_result -> follow-up”链路
         response = await asyncio.wait_for(request.send(stream=False), timeout=timeout_seconds)
-        max_rounds = 3
+        max_rounds = max(1, int(self._cfg().settings.max_rounds_per_heartbeat))
         last_text = ""
         tool_event_count = 0
 

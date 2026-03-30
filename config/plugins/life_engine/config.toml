@@ -6,7 +6,7 @@ enabled = true
 
 # 心跳间隔（秒）。
 # 值类型：int, 默认值：30
-heartbeat_interval_seconds = 30
+heartbeat_interval_seconds = 60
 
 # 是否在每次心跳时输出日志。
 # 值类型：bool, 默认值：true
@@ -19,6 +19,10 @@ context_history_max_events = 100
 # 中枢文件系统操作的工作空间路径。中枢只能在此目录下进行文件操作。
 # 值类型：str, 默认值："/root/Elysia/Neo-MoFox/data/life_engine_workspace"
 workspace_path = "/root/Elysia/Neo-MoFox/data/life_engine_workspace"
+
+# 单次心跳内允许模型连续进行工具调用的最大轮数（防止死循环）。
+# 值类型：int, 默认值：3
+max_rounds_per_heartbeat = 3
 
 # 中枢模型任务设置。
 [model]

@@ -4,6 +4,7 @@
 """
 
 import asyncio
+import json
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 from typing import cast, Any
 
@@ -117,6 +118,65 @@ class TestPayloadsToOpenAIMessages:
         assert len(messages) == 1
         assert messages[0]["role"] == "assistant"
         assert messages[0]["content"] == "Hi there"
+
+    def test_assistant_tool_call_string_args_are_normalized_to_json(self):
+        """测试 assistant.tool_calls 的字符串参数会被规范化为合法 JSON。"""
+        from src.kernel.llm.model_client.openai_client import _payloads_to_openai_messages
+
+        payloads = [
+            LLMPayload(
+                ROLE.ASSISTANT,
+                [
+                    Text("I'll call a tool"),
+                    ToolCall(id="call_1", name="calculator", args="{'a': 1, 'b': 'x'}"),
+                ],
+            )
+        ]
+
+        messages, tools = _payloads_to_openai_messages(payloads)
+
+        assert tools == []
+        assert len(messages) == 1
+        tool_calls = messages[0]["tool_calls"]
+        assert len(tool_calls) == 1
+        assert json.loads(tool_calls[0]["function"]["arguments"]) == {"a": 1, "b": "x"}
+
+    def test_assistant_tool_call_empty_string_args_become_empty_object(self):
+        """测试 assistant.tool_calls 的空字符串参数会回退为空对象。"""
+        from src.kernel.llm.model_client.openai_client import _payloads_to_openai_messages
+
+        payloads = [
+            LLMPayload(
+                ROLE.ASSISTANT,
+                [ToolCall(id="call_1", name="calculator", args="  ")],
+            )
+        ]
+
+        messages, tools = _payloads_to_openai_messages(payloads)
+
+        assert tools == []
+        assert len(messages) == 1
+        tool_calls = messages[0]["tool_calls"]
+        assert len(tool_calls) == 1
+        assert json.loads(tool_calls[0]["function"]["arguments"]) == {}
+
+    def test_parse_completion_message_repairs_non_json_tool_arguments(self):
+        """测试响应解析会修复单引号形式的 tool arguments。"""
+        from src.kernel.llm.model_client.openai_client import _parse_completion_message
+
+        mock_message = MagicMock()
+        mock_tool_call = MagicMock()
+        mock_tool_call.id = "call_1"
+        mock_tool_call.function.name = "calculator"
+        mock_tool_call.function.arguments = "{'a': 1, 'b': 'x'}"
+        mock_message.content = ""
+        mock_message.tool_calls = [mock_tool_call]
+        mock_message.function_call = None
+
+        message, tool_calls = _parse_completion_message(mock_message)
+
+        assert message == ""
+        assert tool_calls == [{"id": "call_1", "name": "calculator", "args": {"a": 1, "b": "x"}}]
 
     def test_multimodal_content(self):
         """测试多模态内容（文本+图片）。"""
