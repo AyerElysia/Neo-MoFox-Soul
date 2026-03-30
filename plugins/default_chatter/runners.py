@@ -349,6 +349,15 @@ async def run_enhanced(
                 _transition(rt=rt, to_phase=_ToolCallWorkflowPhase.WAIT_USER, logger=logger, reason="pass_and_wait priority")
                 continue
 
+            # 当同时存在 action 和 tool 时，优先执行 action 并进入等待，避免连续发送消息。
+            # 典型场景：模型同时调用 tool-think + action-send_text，应该发完消息后等待用户，而不是继续推理。
+            if call_outcome.has_action_calls and call_outcome.has_pending_tool_results:
+                logger.info("检测到同轮混用 action 和 tool，优先完成 action 并进入 WAIT_USER")
+                _append_suspend_if_tool_result_tail(rt.response, suspend_text, logger)
+                yield Wait()
+                _transition(rt=rt, to_phase=_ToolCallWorkflowPhase.WAIT_USER, logger=logger, reason="action+tool mixed, prioritize action")
+                continue
+
             if call_outcome.has_pending_tool_results:
                 _transition(rt=rt, to_phase=_ToolCallWorkflowPhase.FOLLOW_UP, logger=logger, reason="pending tool results")
                 continue
