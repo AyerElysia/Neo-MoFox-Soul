@@ -815,11 +815,14 @@ class LifeEngineService(BaseService):
         summary = self._generate_event_summary(old_events)
         
         # 创建摘要事件
+        from uuid import uuid4
         summary_event = LifeEngineEvent(
+            event_id=f"summary_{uuid4().hex[:12]}",
             sequence=old_events[0].sequence if old_events else 0,
             timestamp=old_events[0].timestamp if old_events else _now_iso(),
             event_type=EventType.HEARTBEAT,  # 用心跳类型表示摘要
             source="system",
+            source_detail="上下文压缩系统",
             content=summary,
             heartbeat_index=-1,  # 特殊标记表示这是摘要
         )
