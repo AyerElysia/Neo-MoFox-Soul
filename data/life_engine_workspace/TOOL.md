@@ -17,6 +17,18 @@
 
 ## 本次可用工具
 
+### 记忆系统 🧠
+
+| 工具 | 用途 |
+| --- | --- |
+| `nucleus_search_memory` | **搜索记忆 + 联想**。语义检索过去的记忆，自动触发相关联想。 |
+| `nucleus_relate_file` | **建立关联**。当发现两个文件有联系时，记录关联关系。 |
+| `nucleus_view_relations` | **查看关联图谱**。显示文件与其他文件的关联。 |
+| `nucleus_forget_relation` | **遗忘关联**。删除或弱化不再有意义的关联。 |
+| `nucleus_memory_stats` | **记忆统计**。了解记忆系统的整体状态。 |
+
+### TODO 系统 📋
+
 | 工具 | 用途 |
 | --- | --- |
 | `nucleus_list_todos` | **查看待办列表**。可按状态、标签筛选。每次心跳建议先检查。 |
@@ -24,6 +36,11 @@
 | `nucleus_edit_todo` | **更新待办**。修改状态、想法、感受。完成时记录 completion_feeling。 |
 | `nucleus_get_todo` | **查看待办详情**。了解某件事的完整背景。 |
 | `nucleus_delete_todo` | **删除待办**。建议用 `released` 状态替代，保留记录。 |
+
+### 文件系统 📁
+
+| 工具 | 用途 |
+| --- | --- |
 | `nucleus_read_file` | **读取文件**。查看你的笔记、日记或任何文件内容。 |
 | `nucleus_write_file` | **写入文件**。创建或覆盖文件。用于记录想法、写日记等。 |
 | `nucleus_edit_file` | **编辑文件**。查找替换文件中的文本，保留其余内容。 |
@@ -33,6 +50,77 @@
 | `nucleus_move_file` | **移动文件**。重命名或移动文件位置。 |
 | `nucleus_delete_file` | **删除文件**。移除不需要的文件（谨慎使用）。 |
 | `nucleus_run_task` | **启动子任务**。执行复杂的多步骤操作，如整理笔记、写日记。 |
+
+---
+
+## 记忆系统使用指南 🧠
+
+你拥有仿生记忆能力，可以像人一样建立联想。
+
+### 核心概念
+
+- **激活扩散**：搜索一个记忆时，会自动联想到相关的记忆
+- **Hebbian 强化**：经常一起被想起的记忆，关联会自动增强
+- **软遗忘**：长期不访问的记忆会逐渐淡化（但不会删除）
+
+### 什么时候搜索记忆？
+
+```
+用户问"我之前是不是说过..." 
+→ nucleus_search_memory(query="...", enable_association=True)
+
+需要回忆过去的事 
+→ nucleus_search_memory(query="...", time_range_days=30)
+
+想找某类笔记 
+→ nucleus_search_memory(query="...", file_types=["note"])
+```
+
+### 什么时候建立关联？
+
+| 场景 | 关联类型 | 示例 |
+| --- | --- | --- |
+| 日记提到了 TODO | `causes` | "日记里的想法启发了这个 TODO" |
+| 两个笔记讨论同一话题 | `relates` | "都在讨论小明的性格" |
+| 后来的想法是之前的延续 | `continues` | "这是上周想法的后续" |
+| 两个观点形成对比 | `contrasts` | "对同一件事的不同看法" |
+
+### reason 非常重要！
+
+```
+❌ 错误示例：
+reason: "可能相关"
+reason: "也许有联系"
+
+✅ 正确示例：
+reason: "日记中提到想学吉他，启发了学习规划的制定"
+reason: "两篇笔记都在讨论小明的性格特点"
+```
+
+### 搜索结果说明
+
+```json
+{
+  "direct_results": [     // 直接命中的记忆
+    {
+      "file_path": "diaries/2026-03-15.md",
+      "title": "想学吉他的一天",
+      "snippet": "今天听到一首歌，好想学吉他呀...",
+      "relevance": 0.85
+    }
+  ],
+  "associated_results": [  // 联想到的记忆
+    {
+      "file_path": "notes/学习规划.md",
+      "title": "音乐学习计划",
+      "snippet": "吉他、钢琴...",
+      "relevance": 0.72,
+      "association_path": ["diaries/2026-03-15.md", "notes/学习规划.md"],
+      "association_reason": "causes: 日记启发了学习规划"
+    }
+  ]
+}
+```
 
 ---
 
@@ -149,6 +237,7 @@ workspace/
 ├── MEMORY.md      # 记忆文档（重要记忆）
 ├── TOOL.md        # 本文档
 ├── todos.json     # TODO 数据（自动管理）
+├── .memory/       # 记忆系统数据（自动管理）
 ├── diaries/       # 日记目录
 └── notes/         # 笔记目录
 ```
