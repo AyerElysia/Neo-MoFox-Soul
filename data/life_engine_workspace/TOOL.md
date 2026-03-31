@@ -67,14 +67,38 @@ tools_hint: ["nucleus_read_file", "nucleus_write_file", "nucleus_list_files"]
 
 **TODO 不是记事本，是行动清单。**
 
+**新特性：截止时间系统** ⏰
+
+### 为什么需要截止时间
+
+- 有些事情有明确的时间窗口（节日惊喜、生日礼物）
+- "等合适的时机"往往变成无限拖延
+- 时间压力能激发行动力
+
 ### 正确用法
 
 ```
-看到有趣的事 → 创建 TODO（status: idea）
+看到有趣的事 → 创建 TODO（status: idea，设置 deadline）
 决定要做 → 更新状态（status: planning / waiting）
 开始做 → 更新状态（status: enjoying）
 做完了 → 更新状态（status: completed），记录 completion_feeling
 ```
+
+### 截止时间指南
+
+| 剩余时间 | 行动建议 |
+| --- | --- |
+| 已逾期（<0天） | 🔴 **立刻行动或删除**。不要再拖了！ |
+| 3天内 | 🟠 **优先处理**。马上就要到期了 |
+| 7天内 | 🟡 **开始规划**。该准备起来了 |
+| 7天以上 | 🟢 **从容安排**。但别忘了它 |
+| 无截止时间 | ⚪ **自由节奏**。但不要变成永久搁置 |
+
+### 心跳时的检查重点
+
+1. `nucleus_list_todos` 会返回 `overdue_count` 和 `urgent_count`
+2. TODO 列表已按截止时间紧急程度排序（最紧急的在前面）
+3. 每个 TODO 有 `deadline` 字段和 `days_until_deadline()` 方法
 
 ### 状态说明
 
