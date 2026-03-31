@@ -55,17 +55,14 @@ nucleus_search_memory(query="我之前想学什么乐器")
 - 长期不访问的记忆会逐渐被遗忘（激活强度降低）
 """
 
-    def __init__(self, plugin: Any):
-        super().__init__()
-        self.plugin = plugin
-        self._memory_service: Optional[LifeMemoryService] = None
-
     async def _get_service(self) -> LifeMemoryService:
         """获取记忆服务实例。"""
-        if self._memory_service is None:
-            self._memory_service = LifeMemoryService(self.plugin)
-            await self._memory_service.initialize()
-        return self._memory_service
+        from .service import LifeEngineService
+        
+        service = LifeEngineService.get_instance()
+        if service is None or service._memory_service is None:
+            raise RuntimeError("记忆服务未初始化")
+        return service._memory_service
 
     async def execute(
         self,
@@ -167,10 +164,13 @@ nucleus_relate_file(
         self._memory_service: Optional[LifeMemoryService] = None
 
     async def _get_service(self) -> LifeMemoryService:
-        if self._memory_service is None:
-            self._memory_service = LifeMemoryService(self.plugin)
-            await self._memory_service.initialize()
-        return self._memory_service
+        """获取记忆服务实例。"""
+        from .service import LifeEngineService
+        
+        service = LifeEngineService.get_instance()
+        if service is None or service._memory_service is None:
+            raise RuntimeError("记忆服务未初始化")
+        return service._memory_service
 
     async def execute(
         self,
@@ -271,10 +271,13 @@ nucleus_view_relations(file_path="diaries/2026-03-30.md")
         self._memory_service: Optional[LifeMemoryService] = None
 
     async def _get_service(self) -> LifeMemoryService:
-        if self._memory_service is None:
-            self._memory_service = LifeMemoryService(self.plugin)
-            await self._memory_service.initialize()
-        return self._memory_service
+        """获取记忆服务实例。"""
+        from .service import LifeEngineService
+        
+        service = LifeEngineService.get_instance()
+        if service is None or service._memory_service is None:
+            raise RuntimeError("记忆服务未初始化")
+        return service._memory_service
 
     async def execute(
         self,
@@ -349,10 +352,13 @@ nucleus_forget_relation(
         self._memory_service: Optional[LifeMemoryService] = None
 
     async def _get_service(self) -> LifeMemoryService:
-        if self._memory_service is None:
-            self._memory_service = LifeMemoryService(self.plugin)
-            await self._memory_service.initialize()
-        return self._memory_service
+        """获取记忆服务实例。"""
+        from .service import LifeEngineService
+        
+        service = LifeEngineService.get_instance()
+        if service is None or service._memory_service is None:
+            raise RuntimeError("记忆服务未初始化")
+        return service._memory_service
 
     async def execute(
         self,
@@ -447,10 +453,13 @@ class LifeEngineMemoryStatsTool(BaseTool):
         self._memory_service: Optional[LifeMemoryService] = None
 
     async def _get_service(self) -> LifeMemoryService:
-        if self._memory_service is None:
-            self._memory_service = LifeMemoryService(self.plugin)
-            await self._memory_service.initialize()
-        return self._memory_service
+        """获取记忆服务实例。"""
+        from .service import LifeEngineService
+        
+        service = LifeEngineService.get_instance()
+        if service is None or service._memory_service is None:
+            raise RuntimeError("记忆服务未初始化")
+        return service._memory_service
 
     async def execute(self) -> tuple[bool, dict[str, Any]]:
         """获取统计信息。"""
