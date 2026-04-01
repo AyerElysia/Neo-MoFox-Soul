@@ -1063,6 +1063,162 @@ class LifeEngineService(BaseService):
                 f"life_engine 心跳模型回复为空: #{self._state.heartbeat_count}"
             )
 
+        # 【潜意识透传】每次心跳后，将内在状态同步到 DFC 可感知的固定区域
+        await self._sync_subconscious_state(reply_text)
+
+    # ============================================================
+    # 潜意识状态透传 (Subconscious State Sync)
+    # ============================================================
+
+    async def _sync_subconscious_state(self, latest_monologue: str) -> None:
+        """将中枢当前的内在状态同步到全局 SystemReminderStore。
+
+        这是"润物细无声"的核心机制：
+        - 中枢（潜意识）不需要主动"发消息"给 DFC（表意识）
+        - 它只是默默更新自己的状态，就像人的潜意识持续运转
+        - 当 DFC 的 Chatter 在构建 LLM 请求时，会自动从 SystemReminderStore
+          读取 "actor" bucket 下的 "subconscious" 条目
+        - 这段文字会以系统提示的形式，像"第六感"一样影响 DFC 的回复语气和内容
+        
+        同时将状态写入 workspace/SUBCONSCIOUS.md，供中枢自身回顾。
+        """
+        try:
+            # === 1. 收集最近的内在活动 ===
+            recent_monologues = self._collect_recent_monologues(max_count=3)
+            recent_tool_actions = self._collect_recent_tool_actions(max_count=5)
+            active_concerns = self._collect_active_concerns()
+
+            # === 2. 构造潜意识摘要 ===
+            subconscious_text = self._build_subconscious_summary(
+                latest_monologue=latest_monologue,
+                recent_monologues=recent_monologues,
+                recent_tool_actions=recent_tool_actions,
+                active_concerns=active_concerns,
+            )
+
+            # === 3. 写入 SystemReminderStore（DFC 的 Chatter 会自动读取） ===
+            from src.core.prompt import get_system_reminder_store
+
+            store = get_system_reminder_store()
+            store.set(
+                bucket="actor",
+                name="subconscious",
+                content=subconscious_text,
+            )
+
+            # === 4. 持久化到 workspace/SUBCONSCIOUS.md（供中枢回顾） ===
+            await self._persist_subconscious_file(subconscious_text)
+
+            logger.debug(
+                f"潜意识状态已同步: "
+                f"monologues={len(recent_monologues)} "
+                f"actions={len(recent_tool_actions)} "
+                f"concerns={len(active_concerns)}"
+            )
+        except Exception as e:
+            # 潜意识同步失败不应影响心跳主流程
+            logger.warning(f"潜意识状态同步失败（不影响心跳）: {e}")
+
+    def _collect_recent_monologues(self, max_count: int = 3) -> list[str]:
+        """从事件历史中提取最近的内心独白。"""
+        monologues: list[str] = []
+        for event in reversed(self._event_history):
+            if event.event_type == EventType.HEARTBEAT and event.content:
+                text = event.content.strip()
+                if text and len(text) > 5:  # 过滤太短的独白
+                    monologues.append(text)
+                if len(monologues) >= max_count:
+                    break
+        monologues.reverse()  # 恢复时间正序
+        return monologues
+
+    def _collect_recent_tool_actions(self, max_count: int = 5) -> list[str]:
+        """从事件历史中提取最近的工具操作摘要。"""
+        actions: list[str] = []
+        for event in reversed(self._event_history):
+            if event.event_type == EventType.TOOL_CALL and event.content:
+                # 只取工具名和简要描述
+                content = event.content.strip()
+                if content:
+                    actions.append(content[:80])
+                if len(actions) >= max_count:
+                    break
+        actions.reverse()
+        return actions
+
+    def _collect_active_concerns(self) -> list[str]:
+        """从最近的独白中提取活跃关注点（简单关键词提取）。"""
+        concerns: list[str] = []
+        last_reply = self._state.last_model_reply or ""
+        # 提取最后独白中包含的情绪和主题关键词
+        if last_reply:
+            # 截取前 200 字作为关注点摘要
+            concerns.append(last_reply[:200])
+        return concerns
+
+    def _build_subconscious_summary(
+        self,
+        latest_monologue: str,
+        recent_monologues: list[str],
+        recent_tool_actions: list[str],
+        active_concerns: list[str],
+    ) -> str:
+        """构建写入 SystemReminderStore 的潜意识摘要文本。
+
+        这段文字会以系统提示的形式呈现给 DFC，
+        因此措辞要像"第六感暗示"，而不是"工作报告"。
+        """
+        parts: list[str] = []
+
+        parts.append(
+            "以下是你的潜意识/内心深处此刻的状态。"
+            "这些不是外部消息，而是你内心深处的感受和直觉。"
+            "你不需要复述它们，但它们会自然地影响你说话的语气和关注点。"
+        )
+
+        # 当前情绪/独白
+        if latest_monologue:
+            # 截取核心情绪（避免太长污染上下文）
+            mood_text = latest_monologue[:300]
+            parts.append(f"\n【此刻的内心】\n{mood_text}")
+
+        # 最近在忙什么
+        if recent_tool_actions:
+            actions_summary = "、".join(recent_tool_actions[:3])
+            parts.append(f"\n【最近在做的事】\n{actions_summary}")
+
+        # 最近的思考轨迹（只取最后 2 条，避免过长）
+        if len(recent_monologues) > 1:
+            thoughts = "\n".join(
+                f"- {m[:120]}" for m in recent_monologues[-2:]
+            )
+            parts.append(f"\n【近期的思绪】\n{thoughts}")
+
+        return "\n".join(parts)
+
+    async def _persist_subconscious_file(self, content: str) -> None:
+        """将潜意识状态持久化到 workspace/SUBCONSCIOUS.md。"""
+        cfg = self._cfg()
+        workspace = Path(cfg.settings.workspace_path)
+
+        if not workspace.exists():
+            return
+
+        subconscious_path = workspace / "SUBCONSCIOUS.md"
+        try:
+            header = (
+                f"# 潜意识状态\n"
+                f"> 最后更新: {_format_current_time()}\n"
+                f"> 心跳序号: #{self._state.heartbeat_count}\n\n"
+            )
+            subconscious_path.write_text(
+                header + content,
+                encoding="utf-8",
+            )
+        except Exception as e:
+            logger.debug(f"写入 SUBCONSCIOUS.md 失败: {e}")
+
+
     def _build_heartbeat_model_prompt(self, wake_context: str) -> str:
         """构造心跳模型输入。
         
@@ -1337,13 +1493,22 @@ class LifeEngineService(BaseService):
         )
         
         # 支持一次心跳内的“模型 -> tool_call -> tool_result -> follow-up”链路
-        response = await asyncio.wait_for(request.send(stream=False), timeout=timeout_seconds)
+        try:
+            response = await asyncio.wait_for(request.send(stream=False), timeout=timeout_seconds)
+        except asyncio.TimeoutError:
+            logger.warning(f"life_engine heartbeat request timeout after {timeout_seconds}s, using extended timeout")
+            response = await asyncio.wait_for(request.send(stream=False), timeout=timeout_seconds * 3)  # 使用3倍超时时间
         max_rounds = max(1, int(self._cfg().settings.max_rounds_per_heartbeat))
         last_text = ""
         tool_event_count = 0
 
         for _ in range(max_rounds):
-            response_text = await response
+            try:
+                response_text = await response
+            except asyncio.TimeoutError:
+                logger.warning(f"life_engine heartbeat response read timeout, skipping")
+                break
+            
             last_text = str(response_text or "").strip()
             call_list = list(getattr(response, "call_list", []) or [])
 
@@ -1369,7 +1534,11 @@ class LifeEngineService(BaseService):
                 await self._execute_heartbeat_tool_call(call, response, registry)
                 tool_event_count += 2  # call + result
 
-            response = await asyncio.wait_for(response.send(stream=False), timeout=timeout_seconds)
+            try:
+                response = await asyncio.wait_for(response.send(stream=False), timeout=timeout_seconds)
+            except asyncio.TimeoutError:
+                logger.warning(f"life_engine heartbeat follow-up request timeout")
+                break
 
         if not last_text:
             # 即使模型仅进行了工具调用，也保证产生最小内心独白，避免“空心跳”。
