@@ -223,7 +223,7 @@ class LifeEngineService(BaseService):
 
     service_name: str = "life_engine"
     service_description: str = "生命中枢服务，维持并行心跳与事件流上下文"
-    version: str = "3.1.0"
+    version: str = "3.2.0"
 
     @classmethod
     def get_instance(cls) -> "LifeEngineService | None":
