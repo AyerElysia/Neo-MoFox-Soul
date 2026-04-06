@@ -1483,9 +1483,12 @@ class LifeEngineService(BaseService):
         tool_name = getattr(call, "name", "") or ""
         raw_args = getattr(call, "args", {}) or {}
         args = dict(raw_args) if isinstance(raw_args, dict) else {}
-        args.pop("reason", None)
+        # 注意：不再移除 reason 参数，因为 nucleus_relate_file 等工具需要它
+        # args.pop("reason", None)  # 已移除这行，保留 reason 传递给工具
 
-        await self.record_tool_call(tool_name or "<unknown>", args)
+        # 记录工具调用时，排除 reason 以便日志更简洁
+        log_args = {k: v for k, v in args.items() if k != "reason"}
+        await self.record_tool_call(tool_name or "<unknown>", log_args)
 
         usable_cls = registry.get(tool_name) if tool_name else None
         if not usable_cls:
