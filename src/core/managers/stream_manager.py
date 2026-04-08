@@ -296,7 +296,7 @@ class StreamManager:
                 "person_id": person_id,
                 "time": message.time,
                 "message_type": message.message_type.value,
-                "content": str(message.content),
+                "content": self._sanitize_content(str(message.content)),
                 "processed_plain_text": message.processed_plain_text,
                 "reply_to": message.reply_to,
                 "platform": message.platform,
@@ -349,7 +349,7 @@ class StreamManager:
                 "person_id": "bot",
                 "time": message.time,
                 "message_type": message.message_type.value,
-                "content": str(message.content),
+                "content": self._sanitize_content(str(message.content)),
                 "processed_plain_text": message.processed_plain_text,
                 "reply_to": message.reply_to,
                 "platform": message.platform,
@@ -820,6 +820,57 @@ class StreamManager:
             return None
 
         return get_user_query_helper().generate_person_id(raw_platform, raw_user_id)
+
+    @staticmethod
+    def _sanitize_content(content: str) -> str:
+        """清理 content 中的 base64 数据，减少数据库存储。
+
+        图片、视频、语音等消息的 content 中包含大量 base64 数据，
+        这些数据存储在数据库中会占用大量空间（单条可达 20MB+），
+        但实际上 LLM 使用的是 processed_plain_text 字段，
+        base64 数据存入后几乎不被使用。
+
+        该方法保留消息结构，只移除大二进制数据。
+
+        Args:
+            content: 原始 content 字符串（可能是 JSON）
+
+        Returns:
+            清理后的 content 字符串
+
+        Examples:
+            >>> _sanitize_content("{'text': '[图片]', 'media': [{'data': 'base64|...'}]}")
+            "{'text': '[图片]', 'media': [{'data': '[removed]'}]}"
+        """
+        import json
+
+        try:
+            data = json.loads(content)
+        except (json.JSONDecodeError, TypeError):
+            # 不是 JSON，直接返回原内容
+            return content
+
+        if not isinstance(data, dict):
+            return content
+
+        # 处理 media 字段中的 base64 数据
+        if "media" in data and isinstance(data["media"], list):
+            for media in data["media"]:
+                if isinstance(media, dict) and "data" in media:
+                    media_data = media["data"]
+                    if isinstance(media_data, str) and len(media_data) > 500:
+                        # 超过 500 字符的 data 几乎肯定是 base64，移除
+                        media["data"] = "[removed]"
+
+        # 处理 base64 字段（视频消息格式）
+        if "base64" in data and isinstance(data["base64"], str):
+            if len(data["base64"]) > 500:
+                data["base64"] = "[removed]"
+
+        try:
+            return json.dumps(data, ensure_ascii=False)
+        except Exception:
+            return content
 
 
 # 全局单例
