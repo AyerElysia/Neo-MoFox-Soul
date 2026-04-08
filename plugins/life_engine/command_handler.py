@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from src.app.plugin_system.api.log_api import get_logger
@@ -18,11 +19,40 @@ class LifeEngineCommandHandler(BaseEventHandler):
     plugin_name = "life_engine"
     handler_name = "command_handler"
     handler_description = "处理 life_engine 命令（如手动触发心跳）"
-    weight = 45
+    # 需要高于 command_dispatch_plugin(2000)，避免被“未知命令”先拦截。
+    weight = 2100
     intercept_message = False
     init_subscribe: list[EventType | str] = [
         EventType.ON_MESSAGE_RECEIVED,
     ]
+
+    _HEARTBEAT_COMMANDS = {"/heartbeat", "/心跳", "!heartbeat", "!心跳"}
+    _CQ_AT_PATTERN = re.compile(r"\[CQ:at,[^\]]+\]")
+    _AT_TOKEN_PATTERN = re.compile(r"@\S+")
+
+    @classmethod
+    def _extract_heartbeat_command(cls, content: str) -> str | None:
+        """从消息中提取心跳命令。
+
+        允许格式：
+        - /heartbeat
+        - @机器人 /heartbeat
+        - [CQ:at,qq=xxx] /heartbeat
+        """
+        text = content.strip()
+        if not text:
+            return None
+
+        # 先移除常见 @ 片段，再判断剩余 token 是否仅为命令本体
+        text = cls._CQ_AT_PATTERN.sub(" ", text)
+        text = cls._AT_TOKEN_PATTERN.sub(" ", text)
+        tokens = [token for token in text.split() if token]
+        if len(tokens) != 1:
+            return None
+        token = tokens[0]
+        if token in cls._HEARTBEAT_COMMANDS:
+            return token
+        return None
 
     async def execute(
         self, event_name: str, params: dict[str, Any]
@@ -42,8 +72,9 @@ class LifeEngineCommandHandler(BaseEventHandler):
 
         content = content.strip()
 
-        # 检查是否是心跳命令
-        if content not in ("/heartbeat", "/心跳", "!heartbeat", "!心跳"):
+        # 检查是否是心跳命令（支持 @机器人 + 命令）
+        command = self._extract_heartbeat_command(content)
+        if command is None:
             return EventDecision.PASS, params
 
         plugin = self.plugin
@@ -55,7 +86,7 @@ class LifeEngineCommandHandler(BaseEventHandler):
             return EventDecision.PASS, params
 
         try:
-            logger.info(f"收到手动触发心跳命令: {content}")
+            logger.info(f"收到手动触发心跳命令: {command}")
             result = await service.trigger_heartbeat_manually()
             
             # 构造回复消息
@@ -101,4 +132,4 @@ class LifeEngineCommandHandler(BaseEventHandler):
             logger.error(f"处理心跳命令失败: {exc}")
 
         # 拦截这条消息，不让它进入正常的对话流程
-        return EventDecision.INTERCEPT, params
+        return EventDecision.STOP, params

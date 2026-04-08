@@ -331,6 +331,12 @@ class LLMRequest:
 
                 return resp
 
+            except asyncio.CancelledError:
+                logger.info(
+                    f"LLM 请求被取消: model={model_identifier}, "
+                    f"request={self.request_name or '__default__'}"
+                )
+                raise
             except BaseException as e:
                 # 将原始异常转换为标准化 LLM 异常
                 classified_error = classify_exception(e, model=model_identifier)

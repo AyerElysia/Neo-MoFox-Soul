@@ -21,7 +21,6 @@ class ToolCallOutcome:
     should_wait: bool = False
     sent_once: bool = False
     has_pending_tool_results: bool = False
-    has_action_calls: bool = False  # 是否包含 action 调用
 
 
 async def process_tool_calls(
@@ -119,10 +118,6 @@ async def process_tool_calls(
 
         if send_text_call_name and success and call.name == send_text_call_name:
             sent_text_successfully = True
-
-        # 记录是否有 action 调用
-        if call.name.startswith("action-"):
-            outcome.has_action_calls = True
 
         if appended and not call.name.startswith("action-"):
             # 仅 tool/agent 等“有信息返回、通常需要后续推理”的调用，

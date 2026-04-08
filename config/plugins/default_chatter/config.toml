@@ -12,30 +12,6 @@ mode = "enhanced"
 # 值类型：bool, 默认值：true
 reinforce_negative_behaviors = false
 
-# 是否启用系统提示词中的人设段落概率注入
-# 值类型：bool, 默认值：false
-probabilistic_persona_injection_enabled = true
-
-# personality_core 注入概率，取值 0.0~1.0
-# 值类型：float, 默认值：1.0
-personality_core_injection_probability = 0.9
-
-# personality_side 注入概率，取值 0.0~1.0
-# 值类型：float, 默认值：1.0
-personality_side_injection_probability = 0.1
-
-# reply_style 注入概率，取值 0.0~1.0
-# 值类型：float, 默认值：1.0
-reply_style_injection_probability = 0.3
-
-# identity 注入概率，取值 0.0~1.0
-# 值类型：float, 默认值：1.0
-identity_injection_probability = 0.5
-
-# background_story 注入概率，取值 0.0~1.0
-# 值类型：float, 默认值：1.0
-background_story_injection_probability = 0.2
-
 # 原生多模态模式。启用后，图片直接打包进 LLM payload，由主模型在对话上下文中理解图片内容并做出响应。需确保对应模型支持多模态输入。
 # 值类型：bool, 默认值：false
 native_multimodal = false
@@ -136,7 +112,7 @@ group = """
 [plugin.reply]
 # 模拟打字速度(字/秒)，小于等于 0 时不添加分段延迟
 # 值类型：float, 默认值：15.0
-typing_chars_per_sec = 15.0
+typing_chars_per_sec = 8.0
 
 # 分段发送时的最小段间延迟(秒)
 # 值类型：float, 默认值：0.8

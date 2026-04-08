@@ -9,6 +9,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from datetime import datetime
 from dataclasses import dataclass
+import re
 from typing import TYPE_CHECKING, Any, AsyncGenerator, cast
 
 from src.core.components.types import ChatType
@@ -485,6 +486,10 @@ class BaseChatter(ABC):
             from src.core.prompt import get_system_reminder_store
 
             reminder_text = get_system_reminder_store().get(with_reminder)
+            reminder_text = self._filter_reminder_text_for_request(
+                reminder_text=reminder_text,
+                bucket=self._normalize_reminder_bucket(with_reminder),
+            )
             if reminder_text:
                 context_manager.reminder(
                     reminder_text,
@@ -492,6 +497,77 @@ class BaseChatter(ABC):
                 )
 
         return request
+
+    @staticmethod
+    def _normalize_reminder_bucket(bucket: str | "SystemReminderBucket") -> str:
+        """将 reminder bucket 规范为字符串。"""
+        if hasattr(bucket, "value"):
+            value = getattr(bucket, "value")
+            if isinstance(value, str):
+                return value.strip()
+        return str(bucket).strip()
+
+    def _filter_reminder_text_for_request(
+        self,
+        *,
+        reminder_text: str,
+        bucket: str,
+    ) -> str:
+        """按 chatter 场景过滤 reminder 文本。"""
+        text = str(reminder_text or "").strip()
+        if not text:
+            return ""
+
+        # default_chatter 在 actor bucket 下不读取“生命中枢唤醒上下文”，
+        # 避免把长事件流塞进主对话；保留 subconscious 等其余 reminder。
+        if self.chatter_name == "default_chatter" and bucket == "actor":
+            return self._remove_named_reminder_block(
+                text=text,
+                blocked_name="生命中枢唤醒上下文",
+            )
+
+        return text
+
+    @staticmethod
+    def _remove_named_reminder_block(*, text: str, blocked_name: str) -> str:
+        """从 reminder 聚合文本中移除指定 name 的块。"""
+        lines = text.splitlines()
+        header_pattern = re.compile(r"^\[(.+)\]\s*$")
+
+        blocks: list[tuple[str, list[str]]] = []
+        current_name: str | None = None
+        current_lines: list[str] = []
+
+        def flush() -> None:
+            nonlocal current_name, current_lines
+            if current_name is not None:
+                blocks.append((current_name, current_lines))
+            current_name = None
+            current_lines = []
+
+        for line in lines:
+            match = header_pattern.match(line)
+            if match:
+                flush()
+                current_name = match.group(1).strip()
+                continue
+            if current_name is not None:
+                current_lines.append(line)
+
+        flush()
+
+        if not blocks:
+            return text
+
+        kept: list[str] = []
+        for name, body in blocks:
+            if name == blocked_name:
+                continue
+            content = "\n".join(body).strip()
+            if content:
+                kept.append(f"[{name}]\n{content}")
+
+        return "\n\n".join(kept).strip()
 
     async def inject_usables(self, request: Any) -> "ToolRegistry":
         """将可用工具过滤后注入 LLM 请求，返回工具注册表。

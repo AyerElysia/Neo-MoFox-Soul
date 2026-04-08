@@ -547,6 +547,35 @@ class TestLLMRequestSend:
         assert response.message == "Success!"
         assert mock_client.call_count == 2
 
+    def test_send_cancelled_error_bubbles_without_retry(
+        self, mock_model_set: list[dict[str, Any]], monkeypatch
+    ) -> None:
+        """CancelledError should propagate immediately and skip retry flow."""
+        monkeypatch.setattr(
+            "src.kernel.llm.request.count_payload_tokens",
+            lambda payloads, model_identifier: 0,
+        )
+
+        class CancelClient:
+            def __init__(self) -> None:
+                self.call_count = 0
+
+            async def create(self, **kwargs):  # type: ignore[no-untyped-def]
+                self.call_count += 1
+                raise asyncio.CancelledError()
+
+        async def _run() -> None:
+            request = LLMRequest(mock_model_set, "test_cancel")
+            request.add_payload(LLMPayload(ROLE.USER, Text("Hello")))
+            cancel_client = CancelClient()
+            request.clients.openai = cancel_client
+
+            with pytest.raises(asyncio.CancelledError):
+                await request.send(stream=False)
+            assert cancel_client.call_count == 1
+
+        asyncio.run(_run())
+
     @pytest.mark.asyncio
     async def test_send_model_switch_after_retries(
         self, mock_model_set: list[dict[str, Any]]

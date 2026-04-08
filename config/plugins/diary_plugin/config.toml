@@ -146,6 +146,10 @@ batch_size = 5
 # 值类型：int, 默认值：3
 max_levels = 3
 
+# 最高压缩层（Lmax_levels）最大保留条目数（0=不限制，超出时会裁剪最旧条目）
+# 值类型：int, 默认值：0
+max_items_top_level = 0
+
 # 是否将当前聊天流的连续记忆动态注入主回复 prompt 的专用 continuous_memory 区块
 # 值类型：bool, 默认值：true
 inject_prompt = true
@@ -154,9 +158,9 @@ inject_prompt = true
 # 值类型：bool, 默认值：false
 include_recent_entries_in_prompt = true
 
-# 允许注入连续记忆的 system prompt 模板名列表
-# 值类型：list, 默认值：["default_chatter_system_prompt"]
-target_prompt_names = ["default_chatter_system_prompt"]
+# 允许注入连续记忆的 prompt 模板名列表
+# 值类型：list, 默认值：["default_chatter_user_prompt"]
+target_prompt_names = ["default_chatter_user_prompt"]
 
 # 注入 prompt 时展示的近期详细记忆条数
 # 值类型：int, 默认值：5
@@ -169,3 +173,7 @@ summary_limit_per_level = 3
 # 压缩连续记忆使用的任务模型名称，留空则复用 model.task_name
 # 值类型：str, 默认值：""
 compression_model_task = ""
+
+# 每次连续记忆更新后，裁剪聊天流历史中最旧消息条数（0=不裁剪）
+# 值类型：int, 默认值：20
+payload_history_trim_count_on_update = 20

@@ -1,14 +1,14 @@
 # 基础设置配置项。
 [settings]
-# 是否启用思考工具。设为 false 可临时禁用思考功能，无需从 core.toml 移除插件。
+# 是否启用思考动作。设为 false 可临时禁用思考功能，无需从 core.toml 移除插件。
 # 值类型：bool, 默认值：true
 enabled = true
 
-# 是否启用思考触发器提醒。设为 false 可禁用每次回复前的醒目提醒，但仍保留 think 工具。
+# 是否启用思考触发器提醒。设为 false 可禁用每次回复前的醒目提醒，但仍保留 think action。
 # 值类型：bool, 默认值：true
 enable_trigger_reminder = true
 
-# 思考字段开关配置项。控制 think 工具返回的字段内容。
+# 思考字段开关配置项。控制 think action 的字段要求。
 [fields]
 # 是否启用 mood（心情）字段。启用后，思考时需填写此刻的心情状态。
 # 值类型：bool, 默认值：false

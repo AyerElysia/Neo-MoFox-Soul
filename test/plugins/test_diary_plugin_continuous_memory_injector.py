@@ -15,13 +15,13 @@ from plugins.diary_plugin.event_handler import (
 from src.kernel.event import EventDecision
 
 
-def test_continuous_memory_injects_into_dedicated_prompt_block() -> None:
-    """连续记忆应注入到 system prompt 的 dedicated continuous_memory 区块。"""
+def test_continuous_memory_injects_into_user_prompt_head_block() -> None:
+    """连续记忆应注入到 user prompt 开头的 continuous_memory 区块。"""
 
     config = DiaryConfig()
     config.continuous_memory.enabled = True
     config.continuous_memory.inject_prompt = True
-    config.continuous_memory.target_prompt_names = ["default_chatter_system_prompt"]
+    config.continuous_memory.target_prompt_names = ["default_chatter_user_prompt"]
 
     handler = ContinuousMemoryPromptInjector(plugin=SimpleNamespace(config=config))
 
@@ -36,13 +36,13 @@ def test_continuous_memory_injects_into_dedicated_prompt_block() -> None:
     handler._get_service = lambda: _DummyService()  # type: ignore[method-assign]
 
     params: dict[str, Any] = {
-        "name": "default_chatter_system_prompt",
-        "template": "{extra_info}\n{continuous_memory}",
+        "name": "default_chatter_user_prompt",
+        "template": "{continuous_memory}\n{history}",
         "values": {
             "stream_id": "sid_x",
             "chat_type": "private",
             "continuous_memory": "old",
-            "extra_info": "keep",
+            "history": "keep",
         },
         "policies": {},
         "strict": False,
@@ -51,8 +51,12 @@ def test_continuous_memory_injects_into_dedicated_prompt_block() -> None:
     decision, out = asyncio.run(handler.execute("on_prompt_build", params))
 
     assert decision is EventDecision.SUCCESS
-    assert out["values"]["continuous_memory"] == block
-    assert out["values"]["extra_info"] == "keep"
+    assert out["values"]["continuous_memory"] == (
+        "<continuous_memory_block>\n"
+        f"{block}\n"
+        "</continuous_memory_block>"
+    )
+    assert out["values"]["history"] == "keep"
 
 
 def test_auto_diary_runtime_user_prompt_injection_is_one_shot() -> None:
