@@ -80,7 +80,7 @@ class LifeEngineConfig(BaseConfig):
 
         tavily_api_key: str = Field(
             default="",
-            description="Tavily API Key。为空时回退到环境变量 TAVILY_API_KEY。",
+            description="Tavily API Key。请在 config/plugins/life_engine/config.toml 的 [web] 中配置。",
         )
 
         tavily_base_url: str = Field(

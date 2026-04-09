@@ -212,18 +212,12 @@
 
 ```toml
 [web]
-tavily_api_key = ""  # 为空时自动读取环境变量 TAVILY_API_KEY
+tavily_api_key = "tvly-..."  # 在 config/plugins/life_engine/config.toml 中填写
 tavily_base_url = "https://api.tavily.com"
 search_timeout_seconds = 30
 extract_timeout_seconds = 60
 default_search_max_results = 5
 default_fetch_max_chars = 12000
-```
-
-也可以只设置环境变量：
-
-```bash
-export TAVILY_API_KEY="tvly-..."
 ```
 
 ---

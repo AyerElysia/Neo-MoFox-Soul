@@ -81,6 +81,30 @@ def test_web_search_requires_api_key(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert "Tavily API Key" in data["error"]
 
 
+def test_web_search_does_not_use_env_api_key(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """仅设置环境变量时不应生效，必须从 toml 配置读取 key。"""
+    monkeypatch.setenv("TAVILY_API_KEY", "tvly-env-only")
+    plugin = _make_plugin(tmp_path)
+    plugin.config.web.tavily_api_key = ""
+
+    tool = LifeEngineWebSearchTool(plugin=plugin)
+    ok, data = asyncio.run(tool.execute(query="test query"))
+
+    assert ok is False
+    assert "config/plugins/life_engine/config.toml" in data["error"]
+
+
+def test_web_tools_allow_default_chatter() -> None:
+    """网络工具应同时允许 life_engine 与 DFC(default_chatter) 调用。"""
+    assert "life_engine_internal" in LifeEngineWebSearchTool.chatter_allow
+    assert "default_chatter" in LifeEngineWebSearchTool.chatter_allow
+    assert "life_engine_internal" in LifeEngineBrowserFetchTool.chatter_allow
+    assert "default_chatter" in LifeEngineBrowserFetchTool.chatter_allow
+
+
 def test_web_search_rejects_conflicting_domains(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -155,4 +179,3 @@ def test_browser_fetch_success_and_truncation(
     assert data["truncated"] is True
     assert len(data["content"]) == 10
     assert data["images"] == ["https://example.com/a.png"]
-

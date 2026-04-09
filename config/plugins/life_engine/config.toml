@@ -40,7 +40,7 @@ task_name = "life"
 
 # 网络搜索与网页提取能力配置（Tavily）。
 [web]
-# Tavily API Key。为空时回退到环境变量 TAVILY_API_KEY。
+# Tavily API Key。请直接填写在这里。
 # 值类型：str, 默认值：""
 tavily_api_key = ""
 

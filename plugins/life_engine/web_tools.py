@@ -52,7 +52,7 @@ def _resolve_tavily_api_key(plugin: Any) -> str:
         key = str(cfg.web.tavily_api_key or "").strip()
         if key:
             return key
-    return str(os.getenv("TAVILY_API_KEY") or "").strip()
+    return ""
 
 
 def _resolve_tavily_base_url(plugin: Any) -> str:
@@ -206,8 +206,8 @@ async def _tavily_post_json(
     api_key = _resolve_tavily_api_key(plugin)
     if not api_key:
         raise RuntimeError(
-            "未配置 Tavily API Key。请在 life_engine 配置中设置 web.tavily_api_key "
-            "或设置环境变量 TAVILY_API_KEY。"
+            "未配置 Tavily API Key。请在 config/plugins/life_engine/config.toml "
+            "中设置 [web].tavily_api_key。"
         )
     body = dict(payload)
     body["api_key"] = api_key
@@ -230,7 +230,7 @@ class LifeEngineWebSearchTool(BaseTool):
         "- ✗ 想回忆自己写过的内容 → 用 nucleus_search_memory / nucleus_grep_file\n\n"
         "**注意：** 这是外部网络信息，可能有偏差，关键事实请交叉核验。"
     )
-    chatter_allow: list[str] = ["life_engine_internal"]
+    chatter_allow: list[str] = ["life_engine_internal", "default_chatter"]
 
     async def execute(
         self,
@@ -344,7 +344,7 @@ class LifeEngineBrowserFetchTool(BaseTool):
         "- ✗ 想处理本地文件内容 → 用 read/grep/memory 工具\n\n"
         "**安全约束：** 仅允许 http/https，禁止访问本地/内网地址。"
     )
-    chatter_allow: list[str] = ["life_engine_internal"]
+    chatter_allow: list[str] = ["life_engine_internal", "default_chatter"]
 
     async def execute(
         self,
