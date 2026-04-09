@@ -1017,10 +1017,11 @@ class LifeEngineRunAgentTool(BaseTool):
             from .todo_tools import TODO_TOOLS
             from .memory_tools import MEMORY_TOOLS
             from .grep_tools import GREP_TOOLS
+            from .web_tools import WEB_TOOLS
 
             excluded_names = {"nucleus_run_agent", "nucleus_tell_dfc"}
             agent_tools = []
-            for tool_cls in ALL_TOOLS + TODO_TOOLS + MEMORY_TOOLS + GREP_TOOLS:
+            for tool_cls in ALL_TOOLS + TODO_TOOLS + MEMORY_TOOLS + GREP_TOOLS + WEB_TOOLS:
                 if hasattr(tool_cls, "tool_name") and tool_cls.tool_name not in excluded_names:
                     agent_tools.append(tool_cls)
 
@@ -1065,7 +1066,6 @@ class LifeEngineRunAgentTool(BaseTool):
                     tool_name = getattr(call, "name", "") or ""
                     raw_args = getattr(call, "args", {}) or {}
                     args = dict(raw_args) if isinstance(raw_args, dict) else {}
-                    args.pop("reason", None)
 
                     usable_cls = registry.get(tool_name)
                     if usable_cls:

@@ -74,5 +74,48 @@ class LifeEngineConfig(BaseConfig):
             description="中枢任务使用的模型任务名称，对应 config/model.toml 中的 [model_tasks.life]。",
         )
 
+    @config_section("web")
+    class WebSection(SectionBase):
+        """网络搜索与网页提取能力配置（Tavily）。"""
+
+        tavily_api_key: str = Field(
+            default="",
+            description="Tavily API Key。为空时回退到环境变量 TAVILY_API_KEY。",
+        )
+
+        tavily_base_url: str = Field(
+            default="https://api.tavily.com",
+            description="Tavily API 基础地址。",
+        )
+
+        search_timeout_seconds: int = Field(
+            default=30,
+            ge=1,
+            le=120,
+            description="网络搜索超时（秒）。",
+        )
+
+        extract_timeout_seconds: int = Field(
+            default=60,
+            ge=1,
+            le=180,
+            description="网页提取超时（秒）。",
+        )
+
+        default_search_max_results: int = Field(
+            default=5,
+            ge=1,
+            le=20,
+            description="网络搜索默认返回条数。",
+        )
+
+        default_fetch_max_chars: int = Field(
+            default=12000,
+            ge=500,
+            le=50000,
+            description="网页提取默认最大返回字符数。",
+        )
+
     settings: SettingsSection = Field(default_factory=SettingsSection)
     model: ModelSection = Field(default_factory=ModelSection)
+    web: WebSection = Field(default_factory=WebSection)

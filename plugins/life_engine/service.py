@@ -223,7 +223,7 @@ class LifeEngineService(BaseService):
 
     service_name: str = "life_engine"
     service_description: str = "生命中枢服务，维持并行心跳与事件流上下文"
-    version: str = "3.2.0"
+    version: str = "3.3.0"
 
     @classmethod
     def get_instance(cls) -> "LifeEngineService | None":
@@ -1300,6 +1300,8 @@ class LifeEngineService(BaseService):
             "4. **写点东西** → `nucleus_write_file` / `nucleus_edit_file` - 记录想法",
             "5. **建立关联** → `nucleus_relate_file` - 把相关的记忆连接起来",
             "6. **传话给DFC** → `nucleus_tell_dfc` - 有重要事情要说",
+            "7. **联网搜索** → `nucleus_web_search` - 了解外部世界的新信息",
+            "8. **网页浏览** → `nucleus_browser_fetch` - 深入阅读某个网页",
             "",
             "### ✍️ 输出格式（必须遵守）",
             "",
@@ -1470,8 +1472,9 @@ class LifeEngineService(BaseService):
         from .tools import ALL_TOOLS
         from .todo_tools import TODO_TOOLS
         from .memory_tools import MEMORY_TOOLS
+        from .web_tools import WEB_TOOLS
         
-        return ALL_TOOLS + TODO_TOOLS + MEMORY_TOOLS
+        return ALL_TOOLS + TODO_TOOLS + MEMORY_TOOLS + WEB_TOOLS
 
     async def _execute_heartbeat_tool_call(
         self,

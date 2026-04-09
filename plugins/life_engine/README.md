@@ -115,12 +115,13 @@
 - 愿望清单会考虑“逾期/紧急”，但语气是引导，不是施压
 - 记忆会“常用更清晰，久不用变淡”，更贴近自然记忆
 - 每天会做一次记忆保养，把弱连接慢慢清理，避免记忆网络臃肿
+- 现在还能联网搜索与抓取网页正文（基于 Tavily），把外部世界带入思考
 
 ---
 
 ## 2. 她会用哪些能力（工具全览）
 
-总共 21 种能力，按 4 组：
+总共 23 种能力，按 5 组：
 
 ### A. 文件与空间整理（10）
 
@@ -154,6 +155,11 @@
 - `nucleus_view_relations` 看关系图  
 - `nucleus_forget_relation` 弱化/删除关系  
 - `nucleus_memory_stats` 看记忆整体状态
+
+### E. 网络世界（2）
+
+- `nucleus_web_search` 联网搜索（Tavily）
+- `nucleus_browser_fetch` 打开网页并提取正文（Tavily Extract）
 
 ---
 
@@ -199,6 +205,26 @@
 - `todos.json`：愿望清单
 - 记忆数据目录（关联和检索会用到）
 - 运行记录与历史上下文文件
+
+### 联网能力配置（Tavily）
+
+如果你要启用 `nucleus_web_search` / `nucleus_browser_fetch`，配置一份 Tavily Key：
+
+```toml
+[web]
+tavily_api_key = ""  # 为空时自动读取环境变量 TAVILY_API_KEY
+tavily_base_url = "https://api.tavily.com"
+search_timeout_seconds = 30
+extract_timeout_seconds = 60
+default_search_max_results = 5
+default_fetch_max_chars = 12000
+```
+
+也可以只设置环境变量：
+
+```bash
+export TAVILY_API_KEY="tvly-..."
+```
 
 ---
 

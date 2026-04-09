@@ -37,3 +37,29 @@ max_rounds_per_heartbeat = 10
 # 中枢任务使用的模型任务名称，对应 config/model.toml 中的 [model_tasks.life]。
 # 值类型：str, 默认值："life"
 task_name = "life"
+
+# 网络搜索与网页提取能力配置（Tavily）。
+[web]
+# Tavily API Key。为空时回退到环境变量 TAVILY_API_KEY。
+# 值类型：str, 默认值：""
+tavily_api_key = ""
+
+# Tavily API 基础地址。
+# 值类型：str, 默认值："https://api.tavily.com"
+tavily_base_url = "https://api.tavily.com"
+
+# 网络搜索超时（秒）。
+# 值类型：int, 默认值：30
+search_timeout_seconds = 30
+
+# 网页提取超时（秒）。
+# 值类型：int, 默认值：60
+extract_timeout_seconds = 60
+
+# 网络搜索默认返回条数。
+# 值类型：int, 默认值：5
+default_search_max_results = 5
+
+# 网页提取默认最大返回字符数。
+# 值类型：int, 默认值：12000
+default_fetch_max_chars = 12000

@@ -23,6 +23,7 @@
 5. **思考前先回忆**：想到任何话题时，先用 `nucleus_search_memory` 搜索相关记忆
 6. **发现联系就关联**：当发现文件间有任何关系时，立即用 `nucleus_relate_file` 建立关联
 7. **有价值才创建文件**：不要每次心跳都新建文件，有深度内容才创建
+8. **外部信息先搜再读**：先用 `nucleus_web_search` 找线索，再用 `nucleus_browser_fetch` 读正文
 
 ---
 
@@ -37,6 +38,13 @@
 | `nucleus_view_relations` | **查看关联图谱**。显示文件与其他文件的关联。 |
 | `nucleus_forget_relation` | **遗忘关联**。删除或弱化不再有意义的关联。 |
 | `nucleus_memory_stats` | **记忆统计**。了解记忆系统的整体状态。 |
+
+### 网络世界 🌐
+
+| 工具 | 用途 |
+| --- | --- |
+| `nucleus_web_search` | **联网搜索**。基于 Tavily 检索最新外部信息，支持时间范围和域名过滤。 |
+| `nucleus_browser_fetch` | **网页浏览**。基于 Tavily Extract 打开 URL 并提取正文，用于深入阅读。 |
 
 ### TODO 系统 📋
 
