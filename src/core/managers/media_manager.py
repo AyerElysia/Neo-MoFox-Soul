@@ -347,8 +347,6 @@ class MediaManager:
             vlm_processed: 是否已经过 VLM 处理
         """
         try:
-            from sqlalchemy import select
-            
             async with get_db_session() as session:
                 # 查找现有记录（使用 image_id 作为唯一标识）
                 # 这里使用 scalars().first() 来避免数据库中存在多条重复记录导致的 MultipleResultsFound 错误
@@ -398,8 +396,6 @@ class MediaManager:
             媒体信息字典，不存在返回 None
         """
         try:
-            from sqlalchemy import select
-
             async with get_db_session() as session:
                 # 如果存在多条重复记录，取最新一条返回
                 stmt = (
@@ -515,8 +511,6 @@ class MediaManager:
             缓存的描述，不存在返回 None
         """
         try:
-            from sqlalchemy import select
-
             async with get_db_session() as session:
                 stmt = select(ImageDescriptions).where(
                     ImageDescriptions.image_description_hash == media_hash,
@@ -546,8 +540,6 @@ class MediaManager:
             description: 描述文本
         """
         try:
-            from sqlalchemy import select
-
             async with get_db_session() as session:
                 # 检查是否已存在（避免重复记录导致 MultipleResultsFound）
                 stmt = (
