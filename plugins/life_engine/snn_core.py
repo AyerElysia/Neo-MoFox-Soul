@@ -241,6 +241,15 @@ class DriveCoreNetwork:
         self._hidden_spike_gain = 1.4
         self._hidden_cont_gain = 0.35
 
+        # 自稳态目标：在不爆发的前提下维持可见激活
+        self._target_hidden_rate = 0.08
+        self._target_output_rate = 0.04
+        self._homeo_alpha = 0.05
+        self._homeo_threshold_lr = 0.01
+        self._homeo_gain_lr = 0.2
+        self._hidden_rate_ema = 0.0
+        self._output_rate_ema = 0.0
+
         self.tick_count: int = 0
 
     def step(self, input_vec: np.ndarray, reward: float = 0.0) -> np.ndarray:
@@ -271,6 +280,38 @@ class DriveCoreNetwork:
         current_output = self.syn_hid_out.forward(hidden_spike_signal)
         current_output += self._hidden_cont_gain * self.syn_hid_out.forward(hidden_cont_signal)
         spikes_output = self.output.step(current_output)
+
+        # 自稳态：根据放电率慢速调节阈值和增益
+        hidden_rate = float(np.mean(spikes_hidden.astype(np.float64)))
+        output_rate = float(np.mean(spikes_output.astype(np.float64)))
+        self._hidden_rate_ema = (
+            (1.0 - self._homeo_alpha) * self._hidden_rate_ema
+            + self._homeo_alpha * hidden_rate
+        )
+        self._output_rate_ema = (
+            (1.0 - self._homeo_alpha) * self._output_rate_ema
+            + self._homeo_alpha * output_rate
+        )
+
+        self.hidden.threshold += self._homeo_threshold_lr * (
+            self._hidden_rate_ema - self._target_hidden_rate
+        )
+        self.output.threshold += self._homeo_threshold_lr * (
+            self._output_rate_ema - self._target_output_rate
+        )
+
+        self._input_gain += self._homeo_gain_lr * (
+            self._target_hidden_rate - self._hidden_rate_ema
+        )
+        self._hidden_spike_gain += self._homeo_gain_lr * (
+            self._target_output_rate - self._output_rate_ema
+        )
+
+        self.hidden.threshold = float(np.clip(self.hidden.threshold, 0.08, 0.6))
+        self.output.threshold = float(np.clip(self.output.threshold, 0.1, 0.8))
+        self._input_gain = float(np.clip(self._input_gain, 0.6, 4.0))
+        self._hidden_spike_gain = float(np.clip(self._hidden_spike_gain, 0.6, 4.0))
+        self._hidden_cont_gain = float(np.clip(self._hidden_cont_gain, 0.1, 1.0))
 
         # 用膜电位作为连续输出（比 spike 更平滑）
         raw_output = self.output.get_state()
@@ -331,6 +372,13 @@ class DriveCoreNetwork:
             "hidden_v_std": round(float(np.std(self.hidden.v)), 4),
             "output_v_mean": round(float(np.mean(self.output.v)), 4),
             "output_v_std": round(float(np.std(self.output.v)), 4),
+            "hidden_threshold": round(float(self.hidden.threshold), 4),
+            "output_threshold": round(float(self.output.threshold), 4),
+            "input_gain": round(float(self._input_gain), 4),
+            "hidden_spike_gain": round(float(self._hidden_spike_gain), 4),
+            "hidden_cont_gain": round(float(self._hidden_cont_gain), 4),
+            "hidden_rate_ema": round(float(self._hidden_rate_ema), 4),
+            "output_rate_ema": round(float(self._output_rate_ema), 4),
             "syn_in_hid": self.syn_in_hid.get_weight_stats(),
             "syn_hid_out": self.syn_hid_out.get_weight_stats(),
         }
@@ -347,6 +395,13 @@ class DriveCoreNetwork:
             "syn_hid_out_W": self.syn_hid_out.W.tolist(),
             "syn_hid_out_trace_pre": self.syn_hid_out.trace_pre.tolist(),
             "syn_hid_out_trace_post": self.syn_hid_out.trace_post.tolist(),
+            "hidden_threshold": float(self.hidden.threshold),
+            "output_threshold": float(self.output.threshold),
+            "input_gain": float(self._input_gain),
+            "hidden_spike_gain": float(self._hidden_spike_gain),
+            "hidden_cont_gain": float(self._hidden_cont_gain),
+            "hidden_rate_ema": float(self._hidden_rate_ema),
+            "output_rate_ema": float(self._output_rate_ema),
             "tick_count": self.tick_count,
         }
 
@@ -387,6 +442,26 @@ class DriveCoreNetwork:
                     self.syn_hid_out.trace_post = t
             if "tick_count" in data:
                 self.tick_count = int(data["tick_count"])
+            if "hidden_threshold" in data:
+                self.hidden.threshold = float(data["hidden_threshold"])
+            if "output_threshold" in data:
+                self.output.threshold = float(data["output_threshold"])
+            if "input_gain" in data:
+                self._input_gain = float(data["input_gain"])
+            if "hidden_spike_gain" in data:
+                self._hidden_spike_gain = float(data["hidden_spike_gain"])
+            if "hidden_cont_gain" in data:
+                self._hidden_cont_gain = float(data["hidden_cont_gain"])
+            if "hidden_rate_ema" in data:
+                self._hidden_rate_ema = float(data["hidden_rate_ema"])
+            if "output_rate_ema" in data:
+                self._output_rate_ema = float(data["output_rate_ema"])
+
+            self.hidden.threshold = float(np.clip(self.hidden.threshold, 0.08, 0.6))
+            self.output.threshold = float(np.clip(self.output.threshold, 0.1, 0.8))
+            self._input_gain = float(np.clip(self._input_gain, 0.6, 4.0))
+            self._hidden_spike_gain = float(np.clip(self._hidden_spike_gain, 0.6, 4.0))
+            self._hidden_cont_gain = float(np.clip(self._hidden_cont_gain, 0.1, 1.0))
 
             logger.info(f"SNN 状态反序列化成功，tick_count={self.tick_count}")
         except Exception as e:
