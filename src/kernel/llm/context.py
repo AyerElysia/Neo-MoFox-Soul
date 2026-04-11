@@ -245,6 +245,9 @@ class LLMContextManager:
 
         将动态内容（如 Life 潜意识状态）放在 USER block 尾部而非头部，
         确保前面的静态内容（聊天历史等）可被 prefix caching 命中。
+
+        关键：每次调用先**剥离**所有旧 reminder（通过 <system_reminder> 标签识别），
+        再追加当前最新 reminder，避免 reminder 随心跳更新在上下文中累积。
         """
 
         if not self._reminders:
@@ -260,7 +263,7 @@ class LLMContextManager:
         first_user = updated[user_index]
         existing = first_user.content
 
-        # 检查尾部是否已包含相同 reminder（去重）
+        # 快速路径：尾部已是完全相同的 reminder → 无需改动
         tail_start = len(existing) - len(reminder_parts)
         if tail_start >= 0:
             already_appended = all(
@@ -270,21 +273,13 @@ class LLMContextManager:
             if already_appended:
                 return updated
 
-        # 如果旧版 reminder 在头部（兼容升级），先移除旧前缀
-        prefix_match = 0
-        while (
-            prefix_match < len(reminder_parts)
-            and prefix_match < len(existing)
-            and self._is_same_text_part(existing[prefix_match], reminder_parts[prefix_match])
-        ):
-            prefix_match += 1
-        if prefix_match == len(reminder_parts):
-            # 旧 reminder 完整存在于头部，移除后追加到尾部
-            clean_existing = existing[prefix_match:]
-        else:
-            clean_existing = list(existing)
+        # 剥离所有旧的 <system_reminder> 标签内容（心跳更新时内容会变化）
+        clean = [
+            part for part in existing
+            if not (isinstance(part, Text) and part.text.lstrip().startswith("<system_reminder>"))
+        ]
 
-        rebuilt = clean_existing + reminder_parts
+        rebuilt = clean + reminder_parts
         updated[user_index] = LLMPayload(ROLE.USER, rebuilt)
         return updated
 

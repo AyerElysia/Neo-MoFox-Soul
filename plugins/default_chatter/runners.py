@@ -372,25 +372,21 @@ def _trim_payloads_if_continuous_memory_updated(
         logger.debug(f"连续记忆更新触发 payloads 裁剪失败：{exc}")
 
 
-def _refresh_reminder_from_store(
-    request: "LLMRequest",
-    logger: Logger,
-    bucket: str = "actor",
-) -> None:
-    """从 SystemReminderStore 刷新最新的潜意识状态到上下文。
+def _read_subconscious_state(logger: Logger) -> str:
+    """从 SystemReminderStore 的 subconscious bucket 读取最新潜意识状态文本。
 
-    enhanced runner 是长生命周期的：create_request 只在启动时读取一次 reminder。
-    Life engine 每次心跳都会更新 SystemReminderStore 中的潜意识同步文本，
-    因此需要在每次 WAIT_USER 循环开始时刷新，确保 DFC 总是看到最新的内心状态。
+    Life engine 每次心跳将内在状态写入独立的 "subconscious" bucket，
+    DFC 在构建每轮 USER 消息时直接读取并注入，不经过 reminder 机制。
+    这样避免了动态内容通过 _apply_reminders 在首个 USER block 中累积。
     """
     try:
         from src.core.prompt import get_system_reminder_store
 
-        text = get_system_reminder_store().get(bucket)
-        if text:
-            request.context_manager.update_reminder(text, wrap_with_system_tag=True)
+        text = get_system_reminder_store().get("subconscious")
+        return text.strip() if text else ""
     except Exception as exc:
-        logger.debug(f"刷新 reminder 失败（不影响主流程）：{exc}")
+        logger.debug(f"读取潜意识状态失败（不影响主流程）：{exc}")
+        return ""
 
 
 async def run_enhanced(
@@ -428,7 +424,6 @@ async def run_enhanced(
     while True:
         _, unread_msgs = await chatter.fetch_unreads()
         _trim_payloads_if_continuous_memory_updated(chatter, chat_stream, rt, logger)
-        _refresh_reminder_from_store(rt.response, logger)
 
         # 安全兜底：若上下文尾部为 TOOL_RESULT，必须进入 FOLLOW_UP
         if rt.phase == _ToolCallWorkflowPhase.WAIT_USER and rt.has_tool_result_tail():
@@ -464,6 +459,15 @@ async def run_enhanced(
                 unread_lines=unread_lines,
                 extra=chatter._build_negative_behaviors_extra(),
             )
+
+            # 注入潜意识状态：每轮新建文本，不经过 reminder 机制，不会累积
+            subconscious_text = _read_subconscious_state(logger)
+            if subconscious_text:
+                unread_user_prompt += (
+                    "\n\n<subconscious_state>\n"
+                    f"{subconscious_text}\n"
+                    "</subconscious_state>"
+                )
 
             if native_multimodal:
                 unread_user_content = _build_multimodal_payload(
@@ -632,6 +636,16 @@ async def run_classical(
             chat_stream,
             unread_msgs,
         )
+
+        # 注入潜意识状态（与 enhanced runner 相同机制）
+        subconscious_text = _read_subconscious_state(logger)
+        if subconscious_text:
+            classical_user_text += (
+                "\n\n<subconscious_state>\n"
+                f"{subconscious_text}\n"
+                "</subconscious_state>"
+            )
+
         unread_lines = "\n".join(
             chatter.format_message_line(msg) for msg in unread_msgs
         )

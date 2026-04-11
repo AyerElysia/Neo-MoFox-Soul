@@ -62,10 +62,13 @@ class LifeEnginePlugin(BasePlugin):
 
     def get_components(self) -> list[type]:
         """返回插件提供的组件。"""
+        from .snn_router import SNNRouter
+
         return [
             LifeEngineService,
             LifeEngineMessageCollectorHandler,
             LifeEngineCommandHandler,
+            SNNRouter,
             *ALL_TOOLS,
             *TODO_TOOLS,
             *MEMORY_TOOLS,

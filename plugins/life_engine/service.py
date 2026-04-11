@@ -1221,13 +1221,13 @@ class LifeEngineService(BaseService):
                 todo_summary=todo_summary,
             )
 
-            # === 4. 写入 SystemReminderStore（DFC 的 Chatter 会自动读取） ===
+            # === 4. 写入专属 subconscious bucket（DFC 每轮直接读取） ===
             from src.core.prompt import get_system_reminder_store
 
             store = get_system_reminder_store()
             store.set(
-                bucket="actor",
-                name="subconscious",
+                bucket="subconscious",
+                name="state",
                 content=subconscious_text,
             )
 

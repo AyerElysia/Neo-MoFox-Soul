@@ -3,7 +3,7 @@
 覆盖：
 - LLMContextManager.update_reminder() 方法
 - _apply_reminders() 的尾部追加逻辑
-- _refresh_reminder_from_store() 辅助函数
+- _read_subconscious_state() 潜意识读取
 - ConsultNucleusTool 基本结构
 """
 
@@ -77,7 +77,7 @@ class TestApplyRemindersAppend:
 
     def test_reminder_not_duplicated(self):
         ctx = LLMContextManager(max_payloads=10)
-        ctx.reminder("my_reminder", wrap_with_system_tag=False)
+        ctx.reminder("my_reminder", wrap_with_system_tag=True)
 
         user_payload = LLMPayload(ROLE.USER, Text("history text"))
         payloads = [user_payload]
@@ -89,6 +89,50 @@ class TestApplyRemindersAppend:
 
         contents = result[0].content
         assert len(contents) == 2  # 历史 + reminder（不重复）
+
+    def test_old_reminder_stripped_when_content_changes(self):
+        """心跳更新 reminder 内容后，旧版本应被剥离，只保留最新版本。
+
+        这是导致上下文暴涨的根因：每次心跳更新产生不同的 reminder，
+        旧 reminder 滞留在 USER block 中，导致每轮增长数百 token。
+        """
+        ctx = LLMContextManager(max_payloads=10)
+        ctx.reminder("heartbeat v1", wrap_with_system_tag=True)
+
+        user_payload = LLMPayload(ROLE.USER, Text("history text"))
+        payloads = [user_payload]
+
+        # 第一次心跳注入
+        result = ctx._apply_reminders(payloads)
+        assert len(result[0].content) == 2  # history + reminder_v1
+
+        # 模拟心跳更新 reminder 内容
+        ctx.update_reminder("heartbeat v2", wrap_with_system_tag=True)
+        result = ctx._apply_reminders(result)
+
+        contents = result[0].content
+        assert len(contents) == 2  # history + reminder_v2（v1 已被剥离）
+        assert contents[0].text == "history text"
+        assert "heartbeat v2" in contents[1].text
+        assert "heartbeat v1" not in contents[1].text
+
+    def test_reminder_accumulation_prevented_across_many_updates(self):
+        """模拟 10 次心跳更新，验证 USER block 中只有最新 reminder。"""
+        ctx = LLMContextManager(max_payloads=10)
+        ctx.reminder("initial", wrap_with_system_tag=True)
+
+        user_payload = LLMPayload(ROLE.USER, Text("history"))
+        result = [user_payload]
+
+        for i in range(10):
+            ctx.update_reminder(f"heartbeat round {i}", wrap_with_system_tag=True)
+            result = ctx._apply_reminders(result)
+
+        contents = result[0].content
+        # 只应有 history + 最新 reminder，不应累积
+        assert len(contents) == 2
+        assert contents[0].text == "history"
+        assert "heartbeat round 9" in contents[1].text
 
     def test_system_payload_not_affected(self):
         ctx = LLMContextManager(max_payloads=10)
@@ -118,22 +162,23 @@ class TestApplyRemindersAppend:
         assert len(result) == 1
         assert result[0].role == ROLE.SYSTEM
 
-    def test_backward_compat_migrates_prefix_to_suffix(self):
-        """如果旧版 reminder 在头部，应迁移到尾部。"""
+    def test_tagged_reminder_at_head_also_stripped(self):
+        """旧版 reminder 在头部的情况——应同样被识别并剥离。"""
         ctx = LLMContextManager(max_payloads=10)
-        ctx.reminder("old_reminder", wrap_with_system_tag=False)
+        ctx.reminder("new_state", wrap_with_system_tag=True)
 
-        # 模拟旧版：reminder 在头部
+        # 模拟旧版格式：tagged reminder 在头部
         old_style_payload = LLMPayload(
-            ROLE.USER, [Text("old_reminder"), Text("history")]
+            ROLE.USER, [Text("<system_reminder>\nold_state\n</system_reminder>"), Text("history")]
         )
         payloads = [old_style_payload]
 
         result = ctx._apply_reminders(payloads)
         contents = result[0].content
-        # 旧前缀应被移除，history 在前，reminder 在后
+        # 旧 reminder 被剥离，history 在前，新 reminder 在后
+        assert len(contents) == 2
         assert contents[0].text == "history"
-        assert contents[1].text == "old_reminder"
+        assert "new_state" in contents[1].text
 
 
 # ============================================================
@@ -155,3 +200,77 @@ class TestConsultNucleusStructure:
     def test_tool_allows_default_chatter(self):
         from plugins.default_chatter.consult_nucleus import ConsultNucleusTool
         assert "default_chatter" in ConsultNucleusTool.chatter_allow
+
+
+# ============================================================
+# _read_subconscious_state 测试
+# ============================================================
+
+
+class TestReadSubconsciousState:
+    """测试潜意识状态读取函数。"""
+
+    def test_reads_from_subconscious_bucket(self):
+        """验证 _read_subconscious_state 从 'subconscious' bucket 而非 'actor' 读取。"""
+        import logging
+        from src.core.prompt import get_system_reminder_store
+        from plugins.default_chatter.runners import _read_subconscious_state
+
+        store = get_system_reminder_store()
+        store.set("subconscious", "state", "当前情绪：平静，好奇心较强")
+
+        logger = logging.getLogger("test")
+        result = _read_subconscious_state(logger)
+        assert "当前情绪" in result
+        assert "平静" in result
+
+        # 清理
+        store.delete("subconscious", "state")
+
+    def test_returns_empty_when_no_state(self):
+        """没有写入潜意识时返回空字符串。"""
+        import logging
+        from src.core.prompt import get_system_reminder_store
+        from plugins.default_chatter.runners import _read_subconscious_state
+
+        store = get_system_reminder_store()
+        # 确保 subconscious bucket 为空
+        store.delete("subconscious", "state")
+
+        logger = logging.getLogger("test")
+        result = _read_subconscious_state(logger)
+        assert result == ""
+
+    def test_does_not_read_actor_bucket(self):
+        """验证 _read_subconscious_state 不会读到 actor bucket 的内容。"""
+        import logging
+        from src.core.prompt import get_system_reminder_store
+        from plugins.default_chatter.runners import _read_subconscious_state
+
+        store = get_system_reminder_store()
+        store.set("actor", "subconscious", "这是旧的 actor bucket 内容")
+        store.delete("subconscious", "state")
+
+        logger = logging.getLogger("test")
+        result = _read_subconscious_state(logger)
+        assert "旧的 actor bucket" not in result
+        assert result == ""
+
+        # 清理
+        store.delete("actor", "subconscious")
+
+    def test_subconscious_not_in_actor_reminder_at_create_time(self):
+        """验证 create_request 读取 'actor' bucket 时不会包含潜意识状态。"""
+        from src.core.prompt import get_system_reminder_store
+
+        store = get_system_reminder_store()
+        store.set("subconscious", "state", "潜意识内容不应出现在 actor reminder 中")
+        store.set("actor", "emoji_hint", "关于表情包的使用...")
+
+        actor_text = store.get("actor")
+        assert "潜意识内容不应出现" not in actor_text
+        assert "表情包" in actor_text
+
+        # 清理
+        store.delete("subconscious", "state")
+        store.delete("actor", "emoji_hint")

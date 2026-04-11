@@ -24,10 +24,18 @@ from pathlib import Path
 
 def sanitize_content(content: str) -> str:
     """清理 content 中的 base64 数据。"""
+    import ast
+    import json
+
+    # 先尝试标准 JSON（双引号）
     try:
         data = json.loads(content)
     except (json.JSONDecodeError, TypeError):
-        return content
+        # 尝试解析单引号格式的 Python dict 字符串
+        try:
+            data = ast.literal_eval(content)
+        except (ValueError, SyntaxError):
+            return content
 
     if not isinstance(data, dict):
         return content
