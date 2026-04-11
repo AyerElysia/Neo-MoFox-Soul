@@ -6,7 +6,7 @@ enabled = true
 
 # 心跳间隔（秒）。
 # 值类型：int, 默认值：30
-heartbeat_interval_seconds = 600
+heartbeat_interval_seconds = 60
 
 # 睡觉时间，格式 HH:MM（24小时制）。与 wake_time 同时配置后生效。
 # 值类型：str, 默认值：""
@@ -68,11 +68,11 @@ default_fetch_max_chars = 12000
 [snn]
 # 是否启用 SNN 状态层。启用后 life_engine 将运行一个持续的 SNN 驱动核。
 # 值类型：bool, 默认值：false
-enabled = false
+enabled = true
 
 # 影子模式：只记录 SNN 状态变化，不注入心跳 prompt。用于初期验证。
 # 值类型：bool, 默认值：true
-shadow_only = true
+shadow_only = false
 
 # SNN 独立 tick 间隔（秒）。SNN 以此频率独立更新衰减，不绑定 LLM 心跳。
 # 值类型：float, 默认值：10.0
@@ -80,8 +80,22 @@ tick_interval_seconds = 10.0
 
 # 是否将 SNN 驱动状态注入心跳 prompt。需要 shadow_only=false 才生效。
 # 值类型：bool, 默认值：false
-inject_to_heartbeat = false
+inject_to_heartbeat = true
 
 # 特征提取窗口大小（秒）。决定 SNN 从多长时间的事件中提取输入。
 # 值类型：float, 默认值：600.0
 feature_window_seconds = 600.0
+
+# 神经调质层配置。
+[neuromod]
+# 是否启用神经调质层。
+# 值类型：bool, 默认值：true
+enabled = true
+
+# 是否将调质状态注入心跳 prompt。
+# 值类型：bool, 默认值：true
+inject_to_heartbeat = true
+
+# 是否启用习惯追踪。
+# 值类型：bool, 默认值：true
+habit_tracking = true
