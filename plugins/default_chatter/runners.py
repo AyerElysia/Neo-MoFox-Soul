@@ -372,23 +372,6 @@ def _trim_payloads_if_continuous_memory_updated(
         logger.debug(f"连续记忆更新触发 payloads 裁剪失败：{exc}")
 
 
-def _read_subconscious_state(logger: Logger) -> str:
-    """从 SystemReminderStore 的 subconscious bucket 读取最新潜意识状态文本。
-
-    Life engine 每次心跳将内在状态写入独立的 "subconscious" bucket，
-    DFC 在构建每轮 USER 消息时直接读取并注入，不经过 reminder 机制。
-    这样避免了动态内容通过 _apply_reminders 在首个 USER block 中累积。
-    """
-    try:
-        from src.core.prompt import get_system_reminder_store
-
-        text = get_system_reminder_store().get("subconscious")
-        return text.strip() if text else ""
-    except Exception as exc:
-        logger.debug(f"读取潜意识状态失败（不影响主流程）：{exc}")
-        return ""
-
-
 async def run_enhanced(
     chatter: DefaultChatterRuntime,
     chat_stream: ChatStream,
@@ -457,17 +440,8 @@ async def run_enhanced(
                 chat_stream,
                 history_text=history_text if not rt.history_merged else "",
                 unread_lines=unread_lines,
-                extra=chatter._build_negative_behaviors_extra(),
+                extra=chatter._build_user_extra(chat_stream),
             )
-
-            # 注入潜意识状态：每轮新建文本，不经过 reminder 机制，不会累积
-            subconscious_text = _read_subconscious_state(logger)
-            if subconscious_text:
-                unread_user_prompt += (
-                    "\n\n<subconscious_state>\n"
-                    f"{subconscious_text}\n"
-                    "</subconscious_state>"
-                )
 
             if native_multimodal:
                 unread_user_content = _build_multimodal_payload(
@@ -636,15 +610,6 @@ async def run_classical(
             chat_stream,
             unread_msgs,
         )
-
-        # 注入潜意识状态（与 enhanced runner 相同机制）
-        subconscious_text = _read_subconscious_state(logger)
-        if subconscious_text:
-            classical_user_text += (
-                "\n\n<subconscious_state>\n"
-                f"{subconscious_text}\n"
-                "</subconscious_state>"
-            )
 
         unread_lines = "\n".join(
             chatter.format_message_line(msg) for msg in unread_msgs

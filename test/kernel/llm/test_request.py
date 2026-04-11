@@ -14,6 +14,8 @@ from src.kernel.llm.exceptions import (
     LLMTimeoutError,
 )
 from src.kernel.llm.model_client.base import StreamEvent
+from src.kernel.llm.model_client.registry import ModelClientRegistry
+from src.kernel.llm.monitor import get_global_collector
 from src.kernel.llm.payload import LLMPayload, Text, ToolResult
 from src.kernel.llm.request import LLMRequest
 from src.kernel.llm.roles import ROLE
@@ -27,10 +29,16 @@ from src.kernel.llm.roles import ROLE
 class MockChatClient:
     """Mock ChatModelClient for testing."""
 
-    def __init__(self, responses: list[Any] | None = None) -> None:
+    def __init__(
+        self,
+        responses: list[Any] | None = None,
+        *,
+        usage_payload: dict[str, Any] | None = None,
+    ) -> None:
         """Initialize with predefined responses."""
         self.responses = responses or []
         self.call_count = 0
+        self.usage_payload = usage_payload
 
     async def create(
         self,
@@ -58,6 +66,11 @@ class MockChatClient:
             return None, None, stream_gen()
         else:
             return "Success response!", None, None
+
+    def pop_last_usage(self) -> dict[str, Any] | None:
+        usage = self.usage_payload
+        self.usage_payload = None
+        return usage
 
 
 # ============================================================================
@@ -194,6 +207,42 @@ class TestLLMRequest:
             .add_payload(LLMPayload(ROLE.USER, Text("How are you?")))
         )
         assert len(request.payloads) == 3
+
+    @pytest.mark.asyncio
+    async def test_send_records_provider_cache_usage_metrics(
+        self,
+        mock_model_set: list[dict[str, Any]],
+    ) -> None:
+        """send 成功时应记录 provider usage（含缓存 token 字段）。"""
+        collector = get_global_collector()
+        collector.clear()
+
+        client = MockChatClient(
+            responses=[("ok", [], None)],
+            usage_payload={
+                "prompt_tokens": 120,
+                "completion_tokens": 30,
+                "total_tokens": 150,
+                "cache_read_input_tokens": 90,
+                "cache_creation_input_tokens": 10,
+            },
+        )
+        request = LLMRequest(
+            mock_model_set,
+            "usage_metrics",
+            clients=ModelClientRegistry(openai=client),
+        )
+        request.add_payload(LLMPayload(ROLE.USER, Text("hello")))
+
+        await request.send(stream=False)
+
+        history = collector.get_recent_history(1)
+        assert len(history) == 1
+        metrics = history[0]
+        assert metrics.tokens_in == 120
+        assert metrics.tokens_out == 30
+        assert metrics.extra.get("cache_read_input_tokens") == 90
+        assert metrics.extra.get("cache_creation_input_tokens") == 10
 
 
 class TestValidateModelSet:

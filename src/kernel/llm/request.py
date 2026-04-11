@@ -291,6 +291,16 @@ class LLMRequest:
                     else:
                         message, tool_calls, stream_iter = await create_task
 
+                provider_usage: dict[str, Any] = {}
+                pop_last_usage = getattr(client, "pop_last_usage", None)
+                if callable(pop_last_usage):
+                    try:
+                        raw_usage = pop_last_usage()
+                        if isinstance(raw_usage, dict):
+                            provider_usage = dict(raw_usage)
+                    except Exception:
+                        provider_usage = {}
+
                 resp = LLMResponse(
                     _stream=stream_iter,
                     _upper=self,
@@ -318,14 +328,27 @@ class LLMRequest:
 
                 # 记录成功指标
                 if self.enable_metrics:
+                    tokens_in = provider_usage.get("prompt_tokens")
+                    tokens_out = provider_usage.get("completion_tokens")
+                    metrics_extra: dict[str, Any] = {}
+                    if provider_usage:
+                        metrics_extra["provider_usage"] = provider_usage
+                        if "cache_read_input_tokens" in provider_usage:
+                            metrics_extra["cache_read_input_tokens"] = provider_usage["cache_read_input_tokens"]
+                        if "cache_creation_input_tokens" in provider_usage:
+                            metrics_extra["cache_creation_input_tokens"] = provider_usage["cache_creation_input_tokens"]
+
                     metrics = RequestMetrics(
                         model_name=model_identifier,
                         request_name=self.request_name,
                         latency=timer.elapsed,
+                        tokens_in=tokens_in if isinstance(tokens_in, int) else None,
+                        tokens_out=tokens_out if isinstance(tokens_out, int) else None,
                         success=True,
                         stream=stream,
                         retry_count=retry_count,
                         model_index=step.meta.get("model_index", 0) if step.meta else 0,
+                        extra=metrics_extra,
                     )
                     get_global_collector().record_request(metrics)
 

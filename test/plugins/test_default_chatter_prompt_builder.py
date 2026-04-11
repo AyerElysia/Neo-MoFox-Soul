@@ -93,6 +93,65 @@ def test_build_system_prompt_uses_private_theme(
     assert prompt == "theme=PRIVATE_THEME"
 
 
+def test_build_runtime_context_extra_uses_private_theme() -> None:
+    """动态会话上下文应包含 private 场景引导。"""
+    config = DefaultChatterConfig.from_dict(
+        {"plugin": {"theme_guide": {"private": "PRIVATE_THEME", "group": "GROUP_THEME"}}}
+    )
+    stream = ChatStream(
+        stream_id="s1",
+        platform="qq",
+        chat_type="private",
+        bot_id="100",
+        bot_nickname="fox",
+    )
+
+    extra = DefaultChatterPromptBuilder.build_runtime_context_extra(config, stream)
+
+    assert "平台：qq" in extra
+    assert "聊天类型：private" in extra
+    assert "PRIVATE_THEME" in extra
+
+
+def test_build_runtime_context_extra_uses_group_theme() -> None:
+    """动态会话上下文应包含 group 场景引导。"""
+    config = DefaultChatterConfig.from_dict(
+        {"plugin": {"theme_guide": {"private": "PRIVATE_THEME", "group": "GROUP_THEME"}}}
+    )
+    stream = ChatStream(
+        stream_id="s2",
+        platform="qq",
+        chat_type="group",
+        bot_id="101",
+        bot_nickname="fox",
+    )
+
+    extra = DefaultChatterPromptBuilder.build_runtime_context_extra(config, stream)
+
+    assert "聊天类型：group" in extra
+    assert "GROUP_THEME" in extra
+
+
+def test_build_runtime_context_extra_discuss_without_theme() -> None:
+    """非 private/group 场景默认不追加主题引导。"""
+    config = DefaultChatterConfig.from_dict(
+        {"plugin": {"theme_guide": {"private": "PRIVATE_THEME", "group": "GROUP_THEME"}}}
+    )
+    stream = ChatStream(
+        stream_id="s3",
+        platform="qq",
+        chat_type="discuss",
+        bot_id="102",
+        bot_nickname="fox",
+    )
+
+    extra = DefaultChatterPromptBuilder.build_runtime_context_extra(config, stream)
+
+    assert "聊天类型：discuss" in extra
+    assert "PRIVATE_THEME" not in extra
+    assert "GROUP_THEME" not in extra
+
+
 def test_build_system_prompt_prefers_bot_name_for_platform_name(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

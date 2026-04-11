@@ -5,6 +5,7 @@
 
 import asyncio
 import json
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 from typing import cast, Any
 
@@ -525,6 +526,63 @@ class TestOpenAIChatClient:
         assert message == "Hello, world!"
         assert tool_calls == []
         assert stream_iter is None
+
+    @pytest.mark.asyncio
+    async def test_create_stores_usage_with_cache_fields(self):
+        """测试非流式请求会记录 usage，并包含缓存相关字段。"""
+        from src.kernel.llm.model_client.openai_client import OpenAIChatClient
+
+        mock_completion = MagicMock()
+        mock_completion.choices = [MagicMock()]
+        mock_completion.choices[0].message.content = "Hello"
+        mock_completion.choices[0].message.tool_calls = None
+        mock_completion.usage = SimpleNamespace(
+            prompt_tokens=120,
+            completion_tokens=30,
+            total_tokens=150,
+            prompt_tokens_details=SimpleNamespace(
+                cache_read_input_tokens=80,
+                cache_creation_input_tokens=20,
+            ),
+        )
+
+        mock_chat = AsyncMock()
+        mock_chat.completions.create = AsyncMock(return_value=mock_completion)
+
+        mock_openai_client = MagicMock()
+        mock_openai_client.chat.completions.create = mock_chat.completions.create
+
+        client = OpenAIChatClient()
+        client._clients = {}
+        client._get_client = MagicMock(return_value=mock_openai_client)
+
+        payloads = [LLMPayload(ROLE.USER, Text("Hi"))]
+        model_set = {
+            "api_key": "test-key",
+            "base_url": "https://api.test.com",
+            "timeout": 30.0,
+            "max_tokens": 100,
+            "temperature": 0.7,
+            "extra_params": {},
+        }
+
+        await client.create(
+            model_name="gpt-4",
+            payloads=payloads,
+            tools=[],
+            request_name="test",
+            model_set=model_set,
+            stream=False,
+        )
+
+        usage = client.pop_last_usage()
+        assert usage is not None
+        assert usage["prompt_tokens"] == 120
+        assert usage["completion_tokens"] == 30
+        assert usage["total_tokens"] == 150
+        assert usage["cache_read_input_tokens"] == 80
+        assert usage["cache_creation_input_tokens"] == 20
+        assert client.pop_last_usage() is None
 
     @pytest.mark.asyncio
     async def test_create_with_tool_calls(self):

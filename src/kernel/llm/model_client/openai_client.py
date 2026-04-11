@@ -571,6 +571,81 @@ def _parse_completion_message(
     return message_content, tool_calls
 
 
+def _usage_get_field(container: Any, key: str) -> Any:
+    """从 dict / 对象两种形态中读取 usage 字段。"""
+    if isinstance(container, dict):
+        return container.get(key)
+    return getattr(container, key, None)
+
+
+def _as_int_or_none(value: Any) -> int | None:
+    """将 usage 值规范为 int；无法转换时返回 None。"""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            parsed = int(value.strip())
+            return parsed
+        except Exception:
+            return None
+    return None
+
+
+def _extract_usage_payload(resp: Any) -> dict[str, Any] | None:
+    """从 provider 响应对象中提取 usage/caching 指标。"""
+    usage = getattr(resp, "usage", None)
+    if usage is None:
+        return None
+
+    prompt_tokens = _as_int_or_none(_usage_get_field(usage, "prompt_tokens"))
+    completion_tokens = _as_int_or_none(_usage_get_field(usage, "completion_tokens"))
+    total_tokens = _as_int_or_none(_usage_get_field(usage, "total_tokens"))
+
+    prompt_details = _usage_get_field(usage, "prompt_tokens_details")
+    cache_read_input_tokens = _as_int_or_none(
+        _usage_get_field(usage, "cache_read_input_tokens")
+    )
+    cache_creation_input_tokens = _as_int_or_none(
+        _usage_get_field(usage, "cache_creation_input_tokens")
+    )
+
+    # 兼容 OpenAI 以及部分兼容网关的 details 结构。
+    if cache_read_input_tokens is None and prompt_details is not None:
+        cache_read_input_tokens = _as_int_or_none(
+            _usage_get_field(prompt_details, "cache_read_input_tokens")
+        )
+    if cache_creation_input_tokens is None and prompt_details is not None:
+        cache_creation_input_tokens = _as_int_or_none(
+            _usage_get_field(prompt_details, "cache_creation_input_tokens")
+        )
+
+    # OpenAI 官方字段：cached_tokens（等价于 cache_read_input_tokens）。
+    if cache_read_input_tokens is None and prompt_details is not None:
+        cache_read_input_tokens = _as_int_or_none(
+            _usage_get_field(prompt_details, "cached_tokens")
+        )
+
+    data: dict[str, Any] = {}
+    if prompt_tokens is not None:
+        data["prompt_tokens"] = prompt_tokens
+    if completion_tokens is not None:
+        data["completion_tokens"] = completion_tokens
+    if total_tokens is not None:
+        data["total_tokens"] = total_tokens
+    if cache_read_input_tokens is not None:
+        data["cache_read_input_tokens"] = cache_read_input_tokens
+    if cache_creation_input_tokens is not None:
+        data["cache_creation_input_tokens"] = cache_creation_input_tokens
+
+    return data or None
+
+
 # _ClientCacheKey: (api_key, base_url, loop_id, timeout, trust_env, force_ipv4)
 _ClientCacheKey = tuple[str, str | None, int, float | None, bool, bool]
 
@@ -595,6 +670,19 @@ class OpenAIChatClient:
         self._lock = threading.Lock()
         self._clients: dict[_ClientCacheKey, Any] = {}
         self._platform_info: Any = None
+        self._last_usage: dict[str, Any] | None = None
+
+    def _set_last_usage(self, usage: dict[str, Any] | None) -> None:
+        """写入最近一次请求 usage（供上层指标采集）。"""
+        with self._lock:
+            self._last_usage = dict(usage) if isinstance(usage, dict) else None
+
+    def pop_last_usage(self) -> dict[str, Any] | None:
+        """弹出并清空最近一次请求 usage。"""
+        with self._lock:
+            usage = self._last_usage
+            self._last_usage = None
+            return dict(usage) if isinstance(usage, dict) else None
 
     # ------------------------------------------------------------------
     # 内部工具方法
@@ -821,6 +909,7 @@ class OpenAIChatClient:
         if not isinstance(model_set, dict):
             raise TypeError("OpenAIChatClient 期望 model_set 为单个模型配置 dict")
 
+        self._set_last_usage(None)
         api_key, base_url, timeout, trust_env, force_ipv4, extra_params = (
             self._extract_model_params(model_set)
         )
@@ -1019,6 +1108,7 @@ class OpenAIChatClient:
                             pass
                 raise
 
+        self._set_last_usage(_extract_usage_payload(resp))
         if not resp.choices:
             raise LLMContentFilterError(
                 f"模型返回空响应（可能触发了安全过滤器）。Response: {resp}",

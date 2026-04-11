@@ -111,6 +111,9 @@ class _FakeChatter:
     def _build_negative_behaviors_extra(self) -> str:
         return ""
 
+    def _build_user_extra(self, _chat_stream: Any) -> str:
+        return ""
+
     async def _build_classical_user_text(
         self,
         _chat_stream: Any,

@@ -590,8 +590,26 @@ class BaseChatter(ABC):
         for usable in usables:
             registry.register(usable)
 
-        if registry.get_all():
-            request.add_payload(LLMPayload(ROLE.TOOL, registry.get_all()))  # type: ignore[arg-type]
+        tool_list = registry.get_all()
+        if tool_list:
+            # 稳定排序，避免工具列表顺序抖动影响前缀缓存命中。
+            def _tool_sort_key(tool_cls: type["LLMUsable"]) -> str:
+                try:
+                    schema = tool_cls.to_schema()
+                    if isinstance(schema, dict):
+                        if schema.get("type") == "function" and isinstance(schema.get("function"), dict):
+                            name = schema["function"].get("name")
+                            if isinstance(name, str) and name:
+                                return name
+                        name = schema.get("name")
+                        if isinstance(name, str) and name:
+                            return name
+                except Exception:
+                    pass
+                return getattr(tool_cls, "__name__", str(tool_cls))
+
+            sorted_tool_list = sorted(tool_list, key=_tool_sort_key)
+            request.add_payload(LLMPayload(ROLE.TOOL, sorted_tool_list))  # type: ignore[arg-type]
 
         return registry
 
