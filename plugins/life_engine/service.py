@@ -694,6 +694,76 @@ class LifeEngineService(BaseService):
         """返回一个轻量健康信息。"""
         return self.snapshot()
 
+    async def get_state_digest_for_dfc(self) -> str:
+        """生成给 DFC 的状态摘要（简单模板，不调用 LLM）。
+
+        设计原则：
+        1. 控制在 150-200 tokens
+        2. 只包含对当前对话有用的信息
+        3. 使用简单模板，不调用 LLM
+        4. 不会保存到历史消息中
+
+        Returns:
+            格式化的状态摘要文本
+        """
+        async with self._get_lock():
+            parts = []
+
+            # 1. 调质层状态（如果启用）
+            if self._inner_state is not None:
+                try:
+                    mood_dict = self._inner_state.modulators.get_discrete_dict()
+                    mood_items = []
+                    # 只取前3个最显著的维度
+                    priority_dims = ["curiosity", "energy", "contentment"]
+                    for name in priority_dims:
+                        if name in mood_dict:
+                            mod = self._inner_state.modulators.get(name)
+                            if mod:
+                                mood_items.append(f"{mod.cn_name}{mood_dict[name]}")
+                    if mood_items:
+                        parts.append(f"【内在状态】{'、'.join(mood_items)}")
+                except Exception as e:
+                    logger.warning(f"获取调质层状态失败: {e}")
+
+            # 2. 最近思考（最近1-2条心跳独白）
+            heartbeat_events = [
+                e for e in self._event_history
+                if e.event_type == EventType.HEARTBEAT
+            ][-2:]
+
+            if heartbeat_events:
+                thoughts = []
+                for event in heartbeat_events:
+                    time_display = _format_time_display(event.timestamp)
+                    thought = _shorten_text(event.content, max_length=40)
+                    thoughts.append(f"  [{time_display}] {thought}")
+                if thoughts:
+                    parts.append("【最近思考】")
+                    parts.extend(thoughts)
+
+            # 3. 工具使用偏好（统计最近的工具调用）
+            tool_events = [
+                e for e in self._event_history[-30:]  # 最近30个事件
+                if e.event_type == EventType.TOOL_CALL
+            ]
+
+            if tool_events:
+                tool_counts: dict[str, int] = {}
+                for event in tool_events:
+                    name = event.tool_name
+                    if name and name.startswith("nucleus_"):
+                        # 简化工具名：nucleus_read_file → read_file
+                        short_name = name.replace("nucleus_", "")
+                        tool_counts[short_name] = tool_counts.get(short_name, 0) + 1
+
+                if tool_counts:
+                    top_tools = sorted(tool_counts.items(), key=lambda x: x[1], reverse=True)[:2]
+                    tool_names = [name for name, _ in top_tools]
+                    parts.append(f"【工具偏好】{', '.join(tool_names)}")
+
+            return "\n".join(parts) if parts else ""
+
     async def record_message(self, message: Message, direction: str = "received") -> None:
         """记录一条来自聊天流的消息事件。"""
         if not self._is_enabled():

@@ -18,6 +18,29 @@ from .multimodal import build_multimodal_content, extract_media_from_messages
 from .type_defs import DefaultChatterRuntime, LLMConversationState, LLMResponseLike
 from .tool_flow import append_suspend_payload_if_action_only, process_tool_calls
 
+# Life State 集成
+async def _get_life_state_for_current_turn(logger: Logger) -> str:
+    """获取当前轮次的 Life State（简单模板，不调用 LLM）。
+
+    Args:
+        logger: 日志记录器
+
+    Returns:
+        Life State 文本，如果获取失败则返回空字符串
+    """
+    try:
+        from src.app.plugin_system.api import plugin_api
+        life_service = plugin_api.get_service("life_engine:service:life_engine")
+        if not life_service:
+            return ""
+
+        # 调用 life_engine 的方法生成状态摘要
+        state_digest = await life_service.get_state_digest_for_dfc()
+        return state_digest
+    except Exception as e:
+        logger.warning(f"获取 Life State 失败: {e}")
+        return ""
+
 # LLM 返回纯文本（非 tool call）时的最大重试次数
 _MAX_PLAIN_TEXT_RETRIES = 0
 
@@ -482,6 +505,20 @@ async def run_enhanced(
 
         if rt.phase in (_ToolCallWorkflowPhase.MODEL_TURN, _ToolCallWorkflowPhase.FOLLOW_UP):
             # FOLLOW_UP 阶段严禁 flush 新未读；MODEL_TURN 才 flush 本轮采纳的 unread。
+
+            # ✅ 在发送请求前，临时添加 Life State（不保存到历史）
+            life_state_text = await _get_life_state_for_current_turn(logger)
+            life_state_payload_added = False
+
+            if life_state_text:
+                try:
+                    life_state_payload = LLMPayload(ROLE.USER, Text(f"<life_state>\n{life_state_text}\n</life_state>"))
+                    rt.response.add_payload(life_state_payload)
+                    life_state_payload_added = True
+                    logger.debug(f"已添加 Life State: {len(life_state_text)} chars")
+                except Exception as e:
+                    logger.warning(f"添加 Life State 失败: {e}")
+
             try:
                 _log_prompt_debug(chatter, rt.response, logger)
                 rt.response = await rt.response.send(stream=False)
