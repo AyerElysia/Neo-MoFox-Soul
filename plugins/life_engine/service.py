@@ -249,6 +249,8 @@ class LifeEngineService(BaseService):
         self._snn_tick_task_id: str | None = None
         # 神经调质层
         self._inner_state: Any = None
+        # 做梦系统
+        self._dream_scheduler: Any = None
 
     @property
     def memory_service(self) -> "LifeMemoryService | None":
@@ -436,6 +438,12 @@ class LifeEngineService(BaseService):
                     payload["neuromod_state"] = self._inner_state.serialize()
                 except Exception as exc:  # noqa: BLE001
                     logger.warning(f"调质层状态序列化失败: {exc}")
+            # 做梦系统状态持久化
+            if self._dream_scheduler is not None:
+                try:
+                    payload["dream_state"] = self._dream_scheduler.serialize()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(f"做梦系统状态序列化失败: {exc}")
 
         path = self._runtime_context_path()
         temp_path = path.with_suffix(path.suffix + ".tmp")
@@ -505,6 +513,8 @@ class LifeEngineService(BaseService):
         self._snn_persisted_state = raw.get("snn_state")
         # 恢复调质层状态
         self._neuromod_persisted_state = raw.get("neuromod_state")
+        # 恢复做梦系统状态
+        self._dream_persisted_state = raw.get("dream_state")
 
         logger.info(
             "life_engine 上下文恢复完成: "
@@ -1837,6 +1847,27 @@ class LifeEngineService(BaseService):
                             f"window={sleep_window_desc}"
                         )
                         self._sleep_state_active = True
+                        # 通知做梦系统进入睡眠
+                        if self._dream_scheduler is not None:
+                            self._dream_scheduler.enter_sleep()
+
+                    # 做梦检查：睡眠窗口内尝试做梦
+                    if self._dream_scheduler is not None and self._dream_scheduler.should_dream(
+                        idle_heartbeat_count=self._state.idle_heartbeat_count,
+                        in_sleep_window=True,
+                    ):
+                        try:
+                            async with self._get_lock():
+                                event_history = list(self._event_history)
+                            report = await self._dream_scheduler.run_dream_cycle(event_history)
+                            await self._save_runtime_context()
+                            logger.info(
+                                f"🌙 做梦完成: dream_id={report.dream_id} "
+                                f"duration={report.duration_seconds:.1f}s"
+                            )
+                        except Exception as exc:
+                            logger.error(f"做梦执行异常: {exc}", exc_info=True)
+
                     if should_log_heartbeat:
                         logger.info(
                             f"life_engine heartbeat tick: 睡眠中（{sleep_window_desc}），跳过"
@@ -1871,6 +1902,25 @@ class LifeEngineService(BaseService):
                     await self._record_model_reply(model_reply)
                     # SNN 心跳后更新：计算奖赏
                     await self._snn_heartbeat_post()
+                    # 白天小憩检查：连续空闲时触发做梦
+                    if (
+                        self._dream_scheduler is not None
+                        and self._dream_scheduler.should_dream(
+                            idle_heartbeat_count=self._state.idle_heartbeat_count,
+                            in_sleep_window=False,
+                        )
+                    ):
+                        try:
+                            async with self._get_lock():
+                                event_history = list(self._event_history)
+                            report = await self._dream_scheduler.run_dream_cycle(event_history)
+                            await self._save_runtime_context()
+                            logger.info(
+                                f"💤 白天小憩完成: dream_id={report.dream_id} "
+                                f"duration={report.duration_seconds:.1f}s"
+                            )
+                        except Exception as nap_exc:  # noqa: BLE001
+                            logger.error(f"白天小憩执行异常: {nap_exc}", exc_info=True)
                 except Exception as exc:  # noqa: BLE001
                     self._state.last_model_error = str(exc)
                     log_error(
@@ -2084,6 +2134,44 @@ class LifeEngineService(BaseService):
         except Exception as e:
             logger.error(f"调质层初始化失败: {e}", exc_info=True)
             self._inner_state = None
+
+        # 初始化做梦系统
+        try:
+            dream_cfg = getattr(cfg, "dream", None)
+            if dream_cfg and dream_cfg.enabled:
+                from .dream import DreamScheduler
+                self._dream_scheduler = DreamScheduler(
+                    snn=self._snn_network,
+                    inner_state=self._inner_state,
+                    memory_service=self._memory_service,
+                    snn_bridge=self._snn_bridge,
+                    nrem_replay_episodes=dream_cfg.nrem_replay_episodes,
+                    nrem_events_per_episode=dream_cfg.nrem_events_per_episode,
+                    nrem_speed_multiplier=dream_cfg.nrem_speed_multiplier,
+                    nrem_homeostatic_rate=dream_cfg.nrem_homeostatic_rate,
+                    rem_walk_rounds=dream_cfg.rem_walk_rounds,
+                    rem_seeds_per_round=dream_cfg.rem_seeds_per_round,
+                    rem_max_depth=dream_cfg.rem_max_depth,
+                    rem_decay_factor=dream_cfg.rem_decay_factor,
+                    rem_learning_rate=dream_cfg.rem_learning_rate,
+                    rem_edge_prune_threshold=dream_cfg.rem_edge_prune_threshold,
+                    dream_interval_minutes=dream_cfg.dream_interval_minutes,
+                    idle_trigger_heartbeats=dream_cfg.idle_trigger_heartbeats,
+                    nap_enabled=dream_cfg.nap_enabled,
+                )
+
+                # 恢复持久化状态
+                dream_persisted = getattr(self, "_dream_persisted_state", None)
+                if dream_persisted and isinstance(dream_persisted, dict):
+                    self._dream_scheduler.deserialize(dream_persisted)
+                self._dream_persisted_state = None
+
+                logger.info("做梦系统已初始化")
+            else:
+                logger.debug("做梦系统未启用")
+        except Exception as e:
+            logger.error(f"做梦系统初始化失败: {e}", exc_info=True)
+            self._dream_scheduler = None
 
     async def _snn_tick_loop(self, interval: float) -> None:
         """SNN 独立 tick 循环 v2。

@@ -44,9 +44,17 @@ task_name = "life"
 # 值类型：str, 默认值：""
 tavily_api_key = "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"
 
+# 多个 Tavily API Key。配置后 web_tools 会按轮询方式选择，用于负载均衡。
+# 值类型：list, 默认值：[]
+tavily_api_keys = ["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", "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"]
+
 # Tavily API 基础地址。
 # 值类型：str, 默认值："https://api.tavily.com"
 tavily_base_url = "https://api.tavily.com"
+
+# 多个 Tavily API 基础地址。配置后 web_tools 会按轮询方式选择，用于负载均衡。
+# 值类型：list, 默认值：[]
+tavily_base_urls = []
 
 # 网络搜索超时（秒）。
 # 值类型：int, 默认值：30
@@ -99,3 +107,61 @@ inject_to_heartbeat = true
 # 是否启用习惯追踪。
 # 值类型：bool, 默认值：true
 habit_tracking = true
+
+# 做梦系统配置。三阶段做梦周期：NREM 回放 → REM 联想 → 觉醒过渡。
+[dream]
+# 是否启用做梦系统。
+# 值类型：bool, 默认值：true
+enabled = true
+
+# 每次做梦 NREM 阶段回放的事件集数。
+# 值类型：int, 默认值：3
+nrem_replay_episodes = 3
+
+# 每集回放包含的事件数量。
+# 值类型：int, 默认值：20
+nrem_events_per_episode = 20
+
+# NREM 回放加速倍率（缩短 SNN tau）。
+# 值类型：float, 默认值：5.0
+nrem_speed_multiplier = 5.0
+
+# SHY 突触稳态缩减比例（每次做梦全局权重缩减百分比）。
+# 值类型：float, 默认值：0.02
+nrem_homeostatic_rate = 0.02
+
+# REM 阶段记忆图谱随机游走轮数。
+# 值类型：int, 默认值：2
+rem_walk_rounds = 2
+
+# 每轮 REM 游走的随机种子数。
+# 值类型：int, 默认值：5
+rem_seeds_per_round = 5
+
+# REM 游走激活扩散最大深度。
+# 值类型：int, 默认值：3
+rem_max_depth = 3
+
+# REM 游走激活扩散衰减因子。
+# 值类型：float, 默认值：0.6
+rem_decay_factor = 0.6
+
+# REM 阶段 Hebbian 学习率（低于清醒时 0.1）。
+# 值类型：float, 默认值：0.05
+rem_learning_rate = 0.05
+
+# REM 阶段弱边修剪阈值（仅 ASSOCIATES 边）。
+# 值类型：float, 默认值：0.08
+rem_edge_prune_threshold = 0.08
+
+# 两次做梦之间的最小间隔（分钟）。
+# 值类型：int, 默认值：90
+dream_interval_minutes = 90
+
+# 白天连续空闲心跳数触发小憩做梦。
+# 值类型：int, 默认值：10
+idle_trigger_heartbeats = 10
+
+# 是否启用白天小憩做梦（空闲触发）。
+# 值类型：bool, 默认值：true
+nap_enabled = true

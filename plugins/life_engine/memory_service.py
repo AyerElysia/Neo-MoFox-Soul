@@ -136,6 +136,15 @@ class LifeMemoryService:
         self._initialized = False
         self._chroma_collection = None
 
+    def _emit_visual_event(self, event_type: str, payload: Dict[str, Any], source: str = "memory_service") -> None:
+        """向可视化层广播事件，不影响主流程。"""
+        try:
+            from .memory_router import MemoryRouter
+
+            MemoryRouter.broadcast(event_type, payload, source=source)
+        except Exception as e:
+            logger.debug(f"可视化事件广播失败 ({event_type}): {e}")
+
     @staticmethod
     def _normalize_file_path(file_path: str) -> str:
         """规范化文件路径字符串，避免同一路径多种写法导致的节点分裂。"""
@@ -363,7 +372,20 @@ class LifeMemoryService:
         # 添加到 FTS
         if content:
             await self._update_fts(node_id, title, content[:2000])
-        
+
+        self._emit_visual_event(
+            "memory.nodes.created",
+            {
+                "node": {
+                    "id": node.node_id,
+                    "type": node.node_type.value.upper(),
+                    "title": node.title,
+                    "path": node.file_path,
+                    "activation": node.activation_strength,
+                    "importance": node.importance,
+                }
+            },
+        )
         logger.debug(f"创建文件节点: {file_path}")
         return node
     
@@ -681,6 +703,22 @@ class LifeMemoryService:
             WHERE node_id = ?
         """, (now, node_id))
         self._db.commit()
+        cursor.execute("SELECT activation_strength, access_count, last_accessed_at FROM memory_nodes WHERE node_id = ?", (node_id,))
+        row = cursor.fetchone()
+        if row:
+            self._emit_visual_event(
+                "memory.nodes.updated",
+                {
+                    "nodes": [
+                        {
+                            "id": node_id,
+                            "activation": float(row["activation_strength"] or 0.0),
+                            "access_count": int(row["access_count"] or 0),
+                            "last_accessed_at": row["last_accessed_at"],
+                        }
+                    ]
+                },
+            )
     
     # --------------------------------------------------------
     # 边操作
@@ -719,6 +757,20 @@ class LifeMemoryService:
             edge.weight = strength
             edge.reason = reason or edge.reason
             edge.last_activated_at = now
+            self._emit_visual_event(
+                "memory.edges.updated",
+                {
+                    "edge": {
+                        "id": edge.edge_id,
+                        "source": edge.source_id,
+                        "target": edge.target_id,
+                        "type": edge.edge_type.value,
+                        "weight": edge.weight,
+                        "reason": edge.reason,
+                        "last_activated_at": edge.last_activated_at,
+                    }
+                },
+            )
             return edge
         
         # 创建新边
@@ -763,6 +815,20 @@ class LifeMemoryService:
             ))
         
         self._db.commit()
+        self._emit_visual_event(
+            "memory.edges.created",
+            {
+                "edge": {
+                    "id": edge.edge_id,
+                    "source": edge.source_id,
+                    "target": edge.target_id,
+                    "type": edge.edge_type.value,
+                    "weight": edge.weight,
+                    "reason": edge.reason,
+                    "last_activated_at": edge.last_activated_at,
+                }
+            },
+        )
         logger.debug(f"创建边: {source_id} --[{edge_type.value}]--> {target_id}")
         return edge
     
@@ -980,6 +1046,14 @@ class LifeMemoryService:
         4. 激活扩散联想
         5. 强化共同激活的边
         """
+        self._emit_visual_event(
+            "memory.search.started",
+            {
+                "query": query,
+                "top_k": top_k,
+                "enable_association": enable_association,
+            },
+        )
         # Step 1 & 2: 并行执行关键词和语义检索
         fts_results = await self.fts_search(query, top_k * 2)
         vector_results = await self.vector_search(query, top_k * 2)
@@ -1009,19 +1083,28 @@ class LifeMemoryService:
         
         # 构建结果
         results = []
-        
+        seed_payload = []
+        associated_payload = []
+
         # 直接命中
         for node_id, score in seeds:
             node = await self._get_node_by_id(node_id)
             if node and node.file_path:
+                snippet = await self._get_snippet(node_id)
                 results.append(SearchResult(
                     file_path=node.file_path,
                     title=node.title,
-                    snippet=await self._get_snippet(node_id),
+                    snippet=snippet,
                     relevance=score,
                     source="direct"
                 ))
-        
+                seed_payload.append({
+                    "id": node_id,
+                    "title": node.title,
+                    "path": node.file_path,
+                    "score": score,
+                })
+
         # 联想结果
         for node_id, score, path, reason in associated:
             node = await self._get_node_by_id(node_id)
@@ -1029,16 +1112,50 @@ class LifeMemoryService:
                 # 避免重复
                 if any(r.file_path == node.file_path for r in results):
                     continue
+                snippet = await self._get_snippet(node_id)
                 results.append(SearchResult(
                     file_path=node.file_path,
                     title=node.title,
-                    snippet=await self._get_snippet(node_id),
+                    snippet=snippet,
                     relevance=score * 0.8,  # 联想结果稍微降权
                     source="associated",
                     association_path=path,
                     association_reason=reason
                 ))
-        
+                associated_payload.append({
+                    "id": node_id,
+                    "title": node.title,
+                    "path": node.file_path,
+                    "score": score,
+                    "association_path": path,
+                    "association_reason": reason,
+                })
+
+        self._emit_visual_event(
+            "memory.search.seeds",
+            {
+                "query": query,
+                "seed_ids": seed_ids,
+                "results": seed_payload,
+            },
+        )
+        if associated_payload:
+            self._emit_visual_event(
+                "memory.activation.spread",
+                {
+                    "query": query,
+                    "seed_ids": seed_ids,
+                    "results": associated_payload,
+                },
+            )
+        self._emit_visual_event(
+            "memory.search.finished",
+            {
+                "query": query,
+                "total_found": len(results),
+            },
+        )
+
         return results[:top_k * 2]  # 返回更多结果供选择
     
     def _rrf_fusion(
@@ -1228,7 +1345,8 @@ class LifeMemoryService:
 
         cursor = self._db.cursor()
         now = time.time()
-        
+        reinforced_edges = []
+
         for i, node_a in enumerate(existing_ids):
             for node_b in existing_ids[i+1:]:
                 # 查找或创建 ASSOCIATES 边
@@ -1251,6 +1369,14 @@ class LifeMemoryService:
                             activation_count = activation_count + 1, last_activated_at = ?
                         WHERE edge_id = ?
                     """, (new_weight, delta, now, row["edge_id"]))
+                    reinforced_edges.append({
+                        "id": row["edge_id"],
+                        "source": node_a,
+                        "target": node_b,
+                        "type": EdgeType.ASSOCIATES.value,
+                        "weight": new_weight,
+                        "delta": delta,
+                    })
                 else:
                     # 创建新边
                     edge_id = str(uuid.uuid4())[:8]
@@ -1263,8 +1389,23 @@ class LifeMemoryService:
                         edge_id, node_a, node_b, EdgeType.ASSOCIATES.value,
                         0.2, 0.2, 0.0, 1, now, "共同检索激活", now, 1
                     ))
+                    reinforced_edges.append({
+                        "id": edge_id,
+                        "source": node_a,
+                        "target": node_b,
+                        "type": EdgeType.ASSOCIATES.value,
+                        "weight": 0.2,
+                        "delta": self.LEARNING_RATE,
+                    })
         
         self._db.commit()
+        if reinforced_edges:
+            self._emit_visual_event(
+                "memory.edges.reinforced",
+                {
+                    "edges": reinforced_edges,
+                },
+            )
     
     # --------------------------------------------------------
     # 遗忘与衰减
@@ -1419,3 +1560,174 @@ class LifeMemoryService:
             "total_edges": edge_count,
             "avg_activation": round(avg_activation, 3)
         }
+
+    # --------------------------------------------------------
+    # 做梦系统接口
+    # --------------------------------------------------------
+
+    async def dream_walk(
+        self,
+        num_seeds: int = 5,
+        max_depth: int = 3,
+        decay_factor: float = 0.6,
+        learning_rate: float = 0.05,
+    ) -> Dict[str, Any]:
+        """REM 做梦游走：从随机种子出发进行激活扩散，Hebbian 强化共激活节点。
+
+        与搜索时的 spread_activation 的区别：
+        - 种子是随机选取的（不是查询驱动的）
+        - 衰减更慢（decay_factor=0.6 vs 0.7），扩散更远
+        - 学习率更低（0.05 vs 0.1），梦中学习更温和
+        - 不需要查询，不消耗 embedding API
+
+        Returns:
+            {"nodes_activated": int, "new_edges_created": int, "seed_ids": list}
+        """
+        if not self._initialized or not self._db:
+            return {"nodes_activated": 0, "new_edges_created": 0, "seed_ids": []}
+
+        cursor = self._db.cursor()
+
+        # 按 activation_strength 加权随机选取种子节点
+        cursor.execute(
+            "SELECT node_id, activation_strength FROM memory_nodes "
+            "WHERE activation_strength > 0.05 ORDER BY activation_strength DESC"
+        )
+        rows = cursor.fetchall()
+        if not rows:
+            return {"nodes_activated": 0, "new_edges_created": 0, "seed_ids": []}
+
+        node_ids = [r["node_id"] for r in rows]
+        strengths = np.array([r["activation_strength"] for r in rows], dtype=np.float64)
+        strengths /= strengths.sum()
+
+        actual_seeds = min(num_seeds, len(node_ids))
+        seed_indices = np.random.choice(len(node_ids), size=actual_seeds, replace=False, p=strengths)
+        seed_ids = [node_ids[i] for i in seed_indices]
+
+        # 梦游走式激活扩散
+        activation: Dict[str, float] = {sid: 1.0 for sid in seed_ids}
+        visited = set(seed_ids)
+        frontier = list(seed_ids)
+
+        for depth in range(max_depth):
+            next_frontier: List[str] = []
+            decay = decay_factor ** (depth + 1)
+
+            for node_id in frontier:
+                current_act = activation[node_id]
+                edges = await self.get_edges_from(node_id, min_weight=0.05)
+
+                for edge in edges:
+                    neighbor = edge.target_id
+                    if neighbor in visited:
+                        continue
+
+                    propagated = current_act * edge.weight * decay
+                    # 梦中阈值更低，允许更远的联想
+                    if propagated >= 0.1:
+                        activation[neighbor] = activation.get(neighbor, 0) + propagated
+                        next_frontier.append(neighbor)
+                        visited.add(neighbor)
+
+            frontier = next_frontier
+            if not frontier:
+                break
+
+        # 所有被激活的节点（包括种子）
+        all_activated = list(activation.keys())
+
+        # Hebbian 强化共激活节点（使用更低的学习率）
+        new_edges = 0
+        now = time.time()
+
+        # 只对前 N 个最强激活的节点做 Hebbian（避免 O(n²) 爆炸）
+        top_activated = sorted(activation.items(), key=lambda x: -x[1])[:15]
+        top_ids = [nid for nid, _ in top_activated]
+
+        # 验证节点存在性
+        existing_ids: List[str] = []
+        for nid in top_ids:
+            cursor.execute("SELECT node_id FROM memory_nodes WHERE node_id = ?", (nid,))
+            if cursor.fetchone():
+                existing_ids.append(nid)
+
+        for i, node_a in enumerate(existing_ids):
+            for node_b in existing_ids[i + 1 :]:
+                cursor.execute(
+                    "SELECT edge_id, weight FROM memory_edges "
+                    "WHERE source_id = ? AND target_id = ? AND edge_type = ?",
+                    (node_a, node_b, EdgeType.ASSOCIATES.value),
+                )
+                row = cursor.fetchone()
+
+                if row:
+                    old_weight = row["weight"]
+                    delta = learning_rate * (1 - old_weight)
+                    new_weight = min(old_weight + delta, 1.0)
+                    cursor.execute(
+                        "UPDATE memory_edges SET weight = ?, reinforcement = reinforcement + ?, "
+                        "activation_count = activation_count + 1, last_activated_at = ? "
+                        "WHERE edge_id = ?",
+                        (new_weight, delta, now, row["edge_id"]),
+                    )
+                else:
+                    edge_id = str(uuid.uuid4())[:8]
+                    cursor.execute(
+                        "INSERT INTO memory_edges "
+                        "(edge_id, source_id, target_id, edge_type, weight, base_strength, "
+                        "reinforcement, activation_count, last_activated_at, reason, created_at, bidirectional) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (
+                            edge_id, node_a, node_b, EdgeType.ASSOCIATES.value,
+                            0.15, 0.15, 0.0, 1, now, "REM 做梦联想", now, 1,
+                        ),
+                    )
+                    new_edges += 1
+
+        self._db.commit()
+
+        logger.info(
+            f"REM dream_walk 完成: seeds={len(seed_ids)} "
+            f"activated={len(all_activated)} new_edges={new_edges}"
+        )
+
+        return {
+            "nodes_activated": len(all_activated),
+            "new_edges_created": new_edges,
+            "seed_ids": seed_ids,
+        }
+
+    async def prune_weak_edges(
+        self,
+        threshold: float = 0.08,
+    ) -> int:
+        """修剪弱 ASSOCIATES 边（仅自动生成的联想边，保护手动关联）。
+
+        Returns:
+            被修剪的边数量。
+        """
+        if not self._initialized or not self._db:
+            return 0
+
+        cursor = self._db.cursor()
+        cursor.execute(
+            "SELECT edge_id, weight FROM memory_edges "
+            "WHERE edge_type = ? AND weight < ?",
+            (EdgeType.ASSOCIATES.value, threshold),
+        )
+        rows = cursor.fetchall()
+
+        if not rows:
+            return 0
+
+        edge_ids = [r["edge_id"] for r in rows]
+        placeholders = ",".join("?" * len(edge_ids))
+        cursor.execute(
+            f"DELETE FROM memory_edges WHERE edge_id IN ({placeholders})",
+            edge_ids,
+        )
+        self._db.commit()
+
+        logger.info(f"REM 弱边修剪完成: pruned={len(edge_ids)} threshold={threshold}")
+        return len(edge_ids)
