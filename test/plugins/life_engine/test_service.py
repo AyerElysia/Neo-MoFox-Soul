@@ -24,6 +24,18 @@ def _make_service(tmp_path: Path) -> LifeEngineService:
     return LifeEngineService(_DummyPlugin(config=config))
 
 
+def test_memory_service_property_aliases_private_field(tmp_path: Path) -> None:
+    """memory_service 公共属性应兼容映射到内部 _memory_service。"""
+    service = _make_service(tmp_path)
+
+    assert service.memory_service is None
+
+    sentinel = object()
+    service._memory_service = sentinel  # type: ignore[assignment]
+
+    assert service.memory_service is sentinel
+
+
 @pytest.mark.asyncio
 async def test_enqueue_dfc_message_appends_pending_event(tmp_path: Path) -> None:
     """DFC 留言应进入 pending 队列并持久化。"""

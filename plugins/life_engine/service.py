@@ -250,6 +250,11 @@ class LifeEngineService(BaseService):
         # 神经调质层
         self._inner_state: Any = None
 
+    @property
+    def memory_service(self) -> "LifeMemoryService | None":
+        """兼容旧调用方的公开记忆服务访问入口。"""
+        return self._memory_service
+
     def _get_lock(self) -> asyncio.Lock:
         """获取懒加载锁。"""
         if self._lock is None:
