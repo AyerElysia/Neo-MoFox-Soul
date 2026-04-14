@@ -46,7 +46,7 @@ async def _on_message_received(_: str, params: dict) -> tuple[EventDecision, dic
         return EventDecision.PASS, params
 
     # ── 命令优先检查：若消息是已注册命令，直接分发执行，不进入 Chatter ──
-    text: str = message.content or ""
+    text: str = message.content if isinstance(message.content, str) else ""
     if text:
         from src.core.managers.command_manager import get_command_manager
 

@@ -522,6 +522,12 @@ class PermCommand(BaseCommand):
         await self._reply("\n".join(lines))
         return True, "ok"
 
+    @cmd_route()
+    async def handle_root(self) -> tuple[bool, str]:
+        """无子命令时显示帮助（/权限 或 /perm）。"""
+        await self._reply(_USAGE)
+        return True, "help"
+
     @cmd_route("help")
     async def handle_help(self) -> tuple[bool, str]:
         """显示帮助信息。"""

@@ -209,6 +209,9 @@ class BaseCommand(ABC):
             return False, f"参数解析错误: {e}"
 
         if not parts:
+            # 优先检查根节点是否有根处理器（@cmd_route() 空路径）
+            if self._root.handler is not None:
+                return await self._call_handler(self._root.handler, [])
             return False, "空命令"
 
         # 遍历 Trie 树
@@ -249,8 +252,16 @@ class BaseCommand(ABC):
         Returns:
             tuple[bool, str]: (是否成功, 响应消息)
         """
+        import typing
+
         # 获取函数签名
         sig = inspect.signature(handler)
+
+        # 用 get_type_hints 解析注解，处理 from __future__ import annotations 的情况
+        try:
+            resolved_hints = typing.get_type_hints(handler)
+        except Exception:
+            resolved_hints = {}
 
         # 过滤掉 'self' 参数
         parameters = [
@@ -269,11 +280,12 @@ class BaseCommand(ABC):
 
             arg_value = args[i]
 
-            # 类型转换
-            if param.annotation != inspect.Parameter.empty:
+            # 类型转换：优先使用 get_type_hints 的解析结果
+            annotation = resolved_hints.get(arg_name, param.annotation)
+            if annotation != inspect.Parameter.empty:
                 try:
                     converted_value = self._convert_type(
-                        arg_value, param.annotation
+                        arg_value, annotation
                     )
                 except ValueError as e:
                     return False, f"参数类型错误: {arg_name} - {e}"
