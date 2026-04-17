@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 
 from plugins.default_chatter.config import DefaultChatterConfig
+from plugins.default_chatter.consult_nucleus import ConsultNucleusTool, SearchLifeMemoryTool
 from plugins.default_chatter.nucleus_bridge import MessageNucleusTool
 from plugins.default_chatter.plugin import DefaultChatter, DefaultChatterPlugin
 from src.kernel.llm import ToolRegistry
@@ -186,4 +187,67 @@ def test_default_chatter_plugin_exposes_message_nucleus_tool() -> None:
     components = plugin.get_components()
 
     assert MessageNucleusTool in components
+    assert ConsultNucleusTool in components
+    assert SearchLifeMemoryTool in components
     assert MessageNucleusTool.chatter_allow == ["default_chatter"]
+    assert ConsultNucleusTool.chatter_allow == ["default_chatter"]
+    assert SearchLifeMemoryTool.chatter_allow == ["default_chatter"]
+
+
+@pytest.mark.anyio
+async def test_consult_nucleus_tool_uses_formal_actor_context_api(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """consult_nucleus 应调用 life service 的正式状态查询接口。"""
+
+    class _FakeLifeService:
+        async def query_actor_context(self, query: str) -> str:
+            assert query == "最近在想什么"
+            return "【当前状态】一切正常"
+
+    class _FakePluginManager:
+        def get_plugin(self, name: str) -> Any:
+            if name == "life_engine":
+                return SimpleNamespace(service=_FakeLifeService())
+            return None
+
+    monkeypatch.setattr(
+        "plugins.default_chatter.consult_nucleus.get_plugin_manager",
+        lambda: _FakePluginManager(),
+    )
+
+    tool = ConsultNucleusTool(plugin=DefaultChatterPlugin(config=DefaultChatterConfig()))
+    success, result = await tool.execute(query="最近在想什么")
+
+    assert success is True
+    assert result == "【当前状态】一切正常"
+
+
+@pytest.mark.anyio
+async def test_search_life_memory_tool_uses_formal_memory_api(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """search_life_memory 应调用 life service 的正式深度记忆检索接口。"""
+
+    class _FakeLifeService:
+        async def search_actor_memory(self, query: str, top_k: int) -> str:
+            assert query == "旧计划"
+            assert top_k == 3
+            return "【直接命中的记忆】\n- 计划A"
+
+    class _FakePluginManager:
+        def get_plugin(self, name: str) -> Any:
+            if name == "life_engine":
+                return SimpleNamespace(service=_FakeLifeService())
+            return None
+
+    monkeypatch.setattr(
+        "plugins.default_chatter.consult_nucleus.get_plugin_manager",
+        lambda: _FakePluginManager(),
+    )
+
+    tool = SearchLifeMemoryTool(plugin=DefaultChatterPlugin(config=DefaultChatterConfig()))
+    success, result = await tool.execute(query="旧计划", top_k=3)
+
+    assert success is True
+    assert "计划A" in result

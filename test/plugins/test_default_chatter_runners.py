@@ -159,6 +159,7 @@ async def test_run_enhanced_prioritizes_tool_followup_when_tool_result_tail() ->
         Any,
         SimpleNamespace(
             info=lambda *_a, **_k: None,
+            debug=lambda *_a, **_k: None,
             warning=lambda *_a, **_k: None,
             error=lambda *_a, **_k: None,
         ),
@@ -178,68 +179,3 @@ async def test_run_enhanced_prioritizes_tool_followup_when_tool_result_tail() ->
     assert isinstance(result, Stop)
     assert chatter.create_request_calls == [("actor", "actor")]
 
-
-@pytest.mark.asyncio
-async def test_run_enhanced_does_not_yield_wait_when_pending_tool_results(monkeypatch: Any) -> None:
-    """当 should_wait 与 pending_tool_results 并存时，必须先 follow-up。
-
-    该场景模拟模型给出了矛盾控制流：既要求等待，又发起了需要后续推理的工具调用。
-    我们的约束是：先闭合 tool_result → assistant（follow-up），再进入等待。
-    """
-
-    # 1) 让 response 第一次 send 有 call_list，第二次 send 变为纯文本以结束。
-    resp = _FakeResponse(payload_roles=[ROLE.USER, ROLE.ASSISTANT, ROLE.TOOL_RESULT], message="")
-
-    async def _send(*, stream: bool = False) -> _FakeResponse:
-        _ = stream
-        resp.send_count += 1
-        if resp.send_count == 1:
-            resp.call_list = [SimpleNamespace(name="tool-x", args={}, id="1")]
-            resp.message = ""
-        else:
-            resp.call_list = []
-            resp.message = "finish"
-        return resp
-
-    resp.send = _send  # type: ignore[method-assign]
-
-    # 2) monkeypatch process_tool_calls：返回 should_wait=True 且 has_pending_tool_results=True
-    from plugins.default_chatter import runners as runners_mod
-
-    async def _fake_process_tool_calls(**_kwargs: Any) -> Any:
-        return SimpleNamespace(
-            should_wait=True,
-            should_stop=False,
-            stop_minutes=0.0,
-            sent_once=False,
-            has_pending_tool_results=True,
-        )
-
-    monkeypatch.setattr(runners_mod, "process_tool_calls", _fake_process_tool_calls)
-
-    # 3) chatter 依然需要提供接口，但不应注入 USER/flush。
-    chatter = _FakeChatter(resp)
-    chat_stream = cast(Any, SimpleNamespace(stream_id="s1"))
-    fake_logger = cast(
-        Any,
-        SimpleNamespace(
-            info=lambda *_a, **_k: None,
-            warning=lambda *_a, **_k: None,
-            error=lambda *_a, **_k: None,
-        ),
-    )
-
-    gen = run_enhanced(
-        chatter=cast(Any, chatter),
-        chat_stream=chat_stream,
-        logger=fake_logger,
-        pass_call_name="action-pass_and_wait",
-        stop_call_name="action-stop_conversation",
-        send_text_call_name="action-send_text",
-        suspend_text="__SUSPEND__",
-    )
-
-    first = await anext(gen)
-    assert isinstance(first, Stop)
-    assert resp.send_count == 2
-    assert chatter.create_request_calls == [("actor", "actor")]

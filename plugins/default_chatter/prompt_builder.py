@@ -89,6 +89,33 @@ class DefaultChatterPromptBuilder:
         return "\n".join(lines)
 
     @staticmethod
+    def build_scene_guide_system_block(
+        plugin_config: DefaultChatterConfig | None,
+        chat_stream: ChatStream,
+    ) -> str:
+        """构建场景引导 SYSTEM 固定块。"""
+        theme_guide = DefaultChatterPromptBuilder._select_theme_guide(
+            plugin_config,
+            chat_stream,
+        ).strip()
+        platform = str(chat_stream.platform or "unknown")
+        chat_type = str(chat_stream.chat_type or "unknown")
+        nickname = str(chat_stream.bot_nickname or "unknown")
+        bot_id = str(chat_stream.bot_id or "unknown")
+
+        lines = [
+            "## 会话场景固定引导",
+            f"- 平台：{platform}",
+            f"- 聊天类型：{chat_type}",
+            f"- 当前机器人昵称：{nickname}",
+            f"- 当前机器人ID：{bot_id}",
+        ]
+        if theme_guide:
+            lines.append("- 场景引导：")
+            lines.append(theme_guide)
+        return "\n".join(lines).strip()
+
+    @staticmethod
     async def build_system_prompt(
         plugin_config: DefaultChatterConfig | None,
         chat_stream: ChatStream,
@@ -96,7 +123,10 @@ class DefaultChatterPromptBuilder:
         """构建系统提示词。"""
         from src.app.plugin_system.api import adapter_api
 
-        bot_info = await adapter_api.get_bot_info_by_platform(chat_stream.platform) or {}
+        platform = str(chat_stream.platform or "").strip()
+        bot_info: dict[str, str] = {}
+        if platform:
+            bot_info = await adapter_api.get_bot_info_by_platform(platform) or {}
         platform_name = str(
             bot_info.get("bot_name")
             or chat_stream.bot_nickname
@@ -157,6 +187,7 @@ class DefaultChatterPromptBuilder:
         history_text: str,
         unread_lines: str,
         extra: str = "",
+        include_continuous_memory: bool = True,
     ) -> str:
         """通过 user prompt 模板构建用户提示词。"""
         stream_name = chat_stream.stream_name
@@ -167,6 +198,7 @@ class DefaultChatterPromptBuilder:
             tmpl
             .set("stream_name", stream_name)
             .set("continuous_memory", "")
+            .set("inject_continuous_memory", include_continuous_memory)
             .set("history", history_text)
             .set("unreads", unread_lines)
             .set("extra", extra)
@@ -212,4 +244,5 @@ class DefaultChatterPromptBuilder:
             history_text=history_block,
             unread_lines=unread_block,
             extra=extra,
+            include_continuous_memory=False,
         )

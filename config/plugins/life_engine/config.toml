@@ -6,7 +6,7 @@ enabled = true
 
 # 心跳间隔（秒）。
 # 值类型：int, 默认值：30
-heartbeat_interval_seconds = 180
+heartbeat_interval_seconds = 300
 
 # 睡觉时间，格式 HH:MM（24小时制）。与 wake_time 同时配置后生效。
 # 值类型：str, 默认值：""
@@ -25,7 +25,7 @@ log_heartbeat = true
 context_history_max_events = 300
 
 # 中枢文件系统操作的工作空间路径。中枢只能在此目录下进行文件操作。
-# 值类型：str, 默认值："/root/Elysia/Neo-MoFox/data/life_engine_workspace"
+# 值类型：str, 默认值："/root/Elysia/Neo-MoFox/plugins/data/life_engine_workspace"
 workspace_path = "/root/Elysia/Neo-MoFox/data/life_engine_workspace"
 
 # 单次心跳内允许模型连续进行工具调用的最大轮数（防止死循环）。

@@ -248,6 +248,55 @@ def test_build_system_prompt_falls_back_to_stream_values(
     assert prompt == "platform_name=stream-name|platform_id=stream-id"
 
 
+def test_build_system_prompt_skips_bot_lookup_when_platform_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """platform 为空时不应调用适配器查询，避免直接抛错。"""
+    stream = ChatStream(
+        stream_id="s4",
+        platform="",
+        chat_type="group",
+        bot_id="stream-id",
+        bot_nickname="stream-name",
+    )
+
+    class _FakeTemplate:
+        def __init__(self) -> None:
+            self.values: dict[str, str] = {}
+
+        def set(self, key: str, value: str):
+            self.values[key] = value
+            return self
+
+        async def build(self) -> str:
+            return (
+                f"platform_name={self.values.get('platform_name', '')}|"
+                f"platform_id={self.values.get('platform_id', '')}"
+            )
+
+    fake_template = _FakeTemplate()
+    monkeypatch.setattr(
+        "plugins.default_chatter.prompt_builder.get_prompt_manager",
+        lambda: SimpleNamespace(
+            get_template=lambda _name: fake_template,
+        ),
+    )
+
+    def _should_not_be_called(_platform: str) -> dict[str, str]:
+        raise AssertionError("platform 为空时不应查询 bot_info")
+
+    monkeypatch.setattr(
+        "src.app.plugin_system.api.adapter_api.get_bot_info_by_platform",
+        _should_not_be_called,
+    )
+
+    prompt = asyncio.run(
+        DefaultChatterPromptBuilder.build_system_prompt(None, stream)
+    )
+
+    assert prompt == "platform_name=stream-name|platform_id=stream-id"
+
+
 def test_build_system_prompt_always_injects_all_persona_fields(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

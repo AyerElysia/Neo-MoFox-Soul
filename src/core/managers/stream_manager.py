@@ -12,7 +12,9 @@
 每个 stream_id 对应一个全局唯一的 ChatStream 实例，一旦创建即永久存在。
 """
 
+import ast
 import asyncio
+import json
 import time
 from typing import TYPE_CHECKING, Any
 from async_lru import alru_cache
@@ -28,6 +30,87 @@ if TYPE_CHECKING:
 
 
 logger = get_logger("stream_manager", display="StreamMgr")
+
+_BINARY_MEDIA_TYPES: frozenset[str] = frozenset({"image", "emoji", "voice", "video"})
+_MAX_MEDIA_DATA_BYTES = 1024
+_SENSITIVE_MEDIA_KEYS: frozenset[str] = frozenset({"data", "base64"})
+
+
+def _get_content_size_bytes(content: Any) -> int:
+    """估算内容的 UTF-8 序列化字节数。"""
+    if isinstance(content, bytes):
+        return len(content)
+    if isinstance(content, str):
+        return len(content.encode("utf-8"))
+    return len(str(content).encode("utf-8"))
+
+
+def _sanitize_for_db(value: Any, *, parent_key: str | None = None) -> Any:
+    """递归清洗入库内容，移除所有 base64 / data URL 负载。"""
+    if isinstance(value, dict):
+        sanitized: dict[str, Any] = {}
+        media_type = str(value.get("type", "")) if isinstance(value.get("type", ""), str) else ""
+        for key, item in value.items():
+            if key in _SENSITIVE_MEDIA_KEYS:
+                sanitized[key] = "[removed]"
+                continue
+
+            if key == "media" and isinstance(item, list):
+                sanitized[key] = [_sanitize_for_db(child) for child in item if isinstance(child, (dict, list, str, int, float, bool, type(None)))]
+                continue
+
+            sanitized[key] = _sanitize_for_db(item, parent_key=key)
+
+        if media_type in _BINARY_MEDIA_TYPES:
+            for key in _SENSITIVE_MEDIA_KEYS:
+                if key in sanitized:
+                    sanitized[key] = "[removed]"
+        return sanitized
+
+    if isinstance(value, list):
+        return [_sanitize_for_db(item, parent_key=parent_key) for item in value]
+
+    if isinstance(value, str):
+        if parent_key in _SENSITIVE_MEDIA_KEYS:
+            return "[removed]"
+        if value.startswith("base64|") or value.startswith("data:"):
+            return "[removed]"
+    return value
+
+
+def _coerce_structured_content(content: Any) -> Any:
+    """尽量把字符串内容还原成结构化对象。"""
+    if isinstance(content, (dict, list)):
+        return content
+    if not isinstance(content, str):
+        return content
+
+    for parser in (json.loads, ast.literal_eval):
+        try:
+            parsed = parser(content)
+        except Exception:
+            continue
+        if isinstance(parsed, (dict, list)):
+            return parsed
+    return content
+
+
+def _serialize_content_for_db(content: Any, message_type: str | None = None) -> str:
+    """将消息 content 序列化为数据库存储字符串。"""
+    normalized = _coerce_structured_content(content)
+    normalized = _sanitize_for_db(normalized)
+
+    if isinstance(normalized, dict):
+        return str(normalized)
+    if isinstance(normalized, list):
+        return str(normalized)
+    if message_type in _BINARY_MEDIA_TYPES and isinstance(normalized, str) and normalized:
+        return "[removed]"
+    if isinstance(normalized, str) and (
+        normalized.startswith("base64|") or normalized.startswith("data:")
+    ):
+        return "[removed]"
+    return str(normalized)
 
 
 class StreamManager:
@@ -296,7 +379,7 @@ class StreamManager:
                 "person_id": person_id,
                 "time": message.time,
                 "message_type": message.message_type.value,
-                "content": self._sanitize_content(str(message.content)),
+                "content": _serialize_content_for_db(message.content, message.message_type.value),
                 "processed_plain_text": message.processed_plain_text,
                 "reply_to": message.reply_to,
                 "platform": message.platform,
@@ -349,7 +432,7 @@ class StreamManager:
                 "person_id": "bot",
                 "time": message.time,
                 "message_type": message.message_type.value,
-                "content": self._sanitize_content(str(message.content)),
+                "content": _serialize_content_for_db(message.content, message.message_type.value),
                 "processed_plain_text": message.processed_plain_text,
                 "reply_to": message.reply_to,
                 "platform": message.platform,
@@ -822,55 +905,9 @@ class StreamManager:
         return get_user_query_helper().generate_person_id(raw_platform, raw_user_id)
 
     @staticmethod
-    def _sanitize_content(content: str) -> str:
-        """清理 content 中的 base64 数据，减少数据库存储。
-
-        图片、视频、语音等消息的 content 中包含大量 base64 数据，
-        这些数据存储在数据库中会占用大量空间（单条可达 20MB+），
-        但实际上 LLM 使用的是 processed_plain_text 字段，
-        base64 数据存入后几乎不被使用。
-
-        该方法保留消息结构，只移除大二进制数据。
-
-        Args:
-            content: 原始 content 字符串（可能是 JSON）
-
-        Returns:
-            清理后的 content 字符串
-
-        Examples:
-            >>> _sanitize_content("{'text': '[图片]', 'media': [{'data': 'base64|...'}]}")
-            "{'text': '[图片]', 'media': [{'data': '[removed]'}]}"
-        """
-        import json
-
-        try:
-            data = json.loads(content)
-        except (json.JSONDecodeError, TypeError):
-            # 不是 JSON，直接返回原内容
-            return content
-
-        if not isinstance(data, dict):
-            return content
-
-        # 处理 media 字段中的 base64 数据
-        if "media" in data and isinstance(data["media"], list):
-            for media in data["media"]:
-                if isinstance(media, dict) and "data" in media:
-                    media_data = media["data"]
-                    if isinstance(media_data, str) and len(media_data) > 500:
-                        # 超过 500 字符的 data 几乎肯定是 base64，移除
-                        media["data"] = "[removed]"
-
-        # 处理 base64 字段（视频消息格式）
-        if "base64" in data and isinstance(data["base64"], str):
-            if len(data["base64"]) > 500:
-                data["base64"] = "[removed]"
-
-        try:
-            return json.dumps(data, ensure_ascii=False)
-        except Exception:
-            return content
+    def _sanitize_content(content: Any) -> str:
+        """兼容旧实现的 content 清理入口。"""
+        return _serialize_content_for_db(content)
 
 
 # 全局单例

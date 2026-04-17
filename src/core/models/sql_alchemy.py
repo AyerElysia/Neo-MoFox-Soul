@@ -343,9 +343,12 @@ class Images(Base):
     timestamp: Mapped[float] = mapped_column(Float, nullable=False)
     type: Mapped[str] = mapped_column(Text, nullable=False)
     vlm_processed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_banned: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")
+    query_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
 
     __table_args__ = (
         Index("idx_images_path", "path"),
+        Index("idx_images_type_banned", "type", "is_banned"),
     )
 
 

@@ -22,8 +22,12 @@ import base64
 import hashlib
 import shutil
 import time
+from collections import deque
+from dataclasses import dataclass, field
+from io import BytesIO
 from tempfile import TemporaryDirectory
 from pathlib import Path
+from threading import Lock as ThreadLock
 from typing import Any
 
 from src.kernel.logger import get_logger
@@ -32,6 +36,52 @@ logger = get_logger("media_manager")
 
 # 单例实例
 _media_manager: "MediaManager | None" = None
+_MAX_MEDIA_DATA_BYTES = 8 * 1024 * 1024
+_FAILURE_ALERT_WINDOW_SECONDS = 300.0
+_FAILURE_ALERT_THRESHOLD = 5
+
+
+@dataclass
+class MediaChainStats:
+    """媒体链路统计。"""
+
+    received: int = 0
+    rejected_too_large: int = 0
+    cache_hits: int = 0
+    cache_misses: int = 0
+    dedup_hits: int = 0
+    success: int = 0
+    failure: int = 0
+    bytes_received: int = 0
+    bytes_rejected: int = 0
+    recent_failures: dict[str, deque[float]] = field(default_factory=dict)
+    failure_types: dict[str, int] = field(default_factory=dict)
+
+    @property
+    def cache_hit_rate(self) -> float:
+        total = self.cache_hits + self.cache_misses
+        return self.cache_hits / total if total else 0.0
+
+    @property
+    def failure_rate(self) -> float:
+        total = self.success + self.failure
+        return self.failure / total if total else 0.0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "received": self.received,
+            "rejected_too_large": self.rejected_too_large,
+            "cache_hits": self.cache_hits,
+            "cache_misses": self.cache_misses,
+            "cache_hit_rate": self.cache_hit_rate,
+            "dedup_hits": self.dedup_hits,
+            "success": self.success,
+            "failure": self.failure,
+            "failure_rate": self.failure_rate,
+            "bytes_received": self.bytes_received,
+            "bytes_rejected": self.bytes_rejected,
+            "failure_types": dict(self.failure_types),
+        }
 
 
 class MediaManager:
@@ -54,9 +104,14 @@ class MediaManager:
     def __init__(self):
         """初始化媒体管理器。"""
         self._vlm_model_set = None
+        self._voice_model_set = None
         self._video_model_set = None
         self._vlm_available = False
+        self._voice_available = False
         self._skip_vlm_stream_ids: set[str] = set()  # 已注册跳过 VLM 识别的聊天流 ID
+        self._media_chain_stats = MediaChainStats()
+        self._media_stats_lock = ThreadLock()
+        self._recognition_locks: dict[str, asyncio.Lock] = {}
         self._initialize_vlm()
         self._register_prompts()
         self._setup_media_folders()
@@ -64,18 +119,25 @@ class MediaManager:
         self._start_cleanup_scheduler()
 
     def _initialize_vlm(self) -> None:
-        """初始化 VLM/视频模型配置。"""
+        """初始化 VLM/视频/ASR 模型配置。"""
         try:
             from src.app.plugin_system.api.llm_api import get_model_set_by_task
 
             self._vlm_model_set = get_model_set_by_task("vlm")
             self._vlm_available = self._vlm_model_set is not None
+            self._voice_model_set = get_model_set_by_task("voice")
+            self._voice_available = self._voice_model_set is not None
             self._video_model_set = get_model_set_by_task("video")
             
             if self._vlm_available:
                 logger.info("VLM 模型已加载，媒体识别功能可用")
             else:
                 logger.info("未配置 VLM 模型，媒体识别功能不可用")
+
+            if self._voice_available:
+                logger.info("ASR 模型已加载，语音转写功能可用")
+            else:
+                logger.info("未配置 voice 任务模型，语音转写功能不可用")
 
             if self._video_model_set:
                 logger.info("视频摘要模型已加载（非原生视频，将走抽帧摘要链路）")
@@ -231,6 +293,93 @@ class MediaManager:
     # 公共 API：媒体识别
     # ──────────────────────────────────────────
 
+    async def get_media_chain_stats(self) -> dict[str, Any]:
+        """获取媒体链路统计。"""
+        with self._media_stats_lock:
+            return self._media_chain_stats.to_dict()
+
+    async def reset_media_chain_stats(self) -> None:
+        """重置媒体链路统计。"""
+        with self._media_stats_lock:
+            self._media_chain_stats = MediaChainStats()
+
+    async def _record_media_event(
+        self,
+        *,
+        event: str,
+        media_type: str,
+        media_bytes: int = 0,
+        failure_type: str | None = None,
+    ) -> None:
+        with self._media_stats_lock:
+            stats = self._media_chain_stats
+            if event == "received":
+                stats.received += 1
+                stats.bytes_received += max(0, media_bytes)
+                return
+            if event == "rejected_too_large":
+                stats.rejected_too_large += 1
+                stats.bytes_rejected += max(0, media_bytes)
+                return
+            if event == "cache_hit":
+                stats.cache_hits += 1
+                return
+            if event == "cache_miss":
+                stats.cache_misses += 1
+                return
+            if event == "dedup_hit":
+                stats.dedup_hits += 1
+                return
+            if event == "success":
+                stats.success += 1
+                return
+            if event == "failure":
+                stats.failure += 1
+                if failure_type:
+                    stats.failure_types[failure_type] = stats.failure_types.get(failure_type, 0) + 1
+                    failure_bucket = stats.recent_failures.setdefault(media_type, deque())
+                    now = time.time()
+                    failure_bucket.append(now)
+                    while failure_bucket and now - failure_bucket[0] > _FAILURE_ALERT_WINDOW_SECONDS:
+                        failure_bucket.popleft()
+                    if len(failure_bucket) >= _FAILURE_ALERT_THRESHOLD:
+                        logger.warning(
+                            f"媒体链路失败告警: media_type={media_type}, "
+                            f"recent_failures={len(failure_bucket)}, "
+                            f"failure_type={failure_type}"
+                        )
+                return
+
+    def _estimate_media_size_bytes(self, base64_data: str) -> int:
+        """估算 base64 数据对应的原始字节大小。"""
+        clean = self._extract_clean_base64(base64_data)
+        try:
+            return len(base64.b64decode(clean, validate=False))
+        except Exception:
+            return len(clean.encode("utf-8"))
+
+    def _get_recognition_lock(self, media_hash: str) -> asyncio.Lock:
+        """获取指定媒体哈希的去重锁。"""
+        lock = self._recognition_locks.get(media_hash)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._recognition_locks[media_hash] = lock
+        return lock
+
+    def _extract_voice_payload(self, voice_data: str | dict[str, Any]) -> tuple[str, dict[str, Any]]:
+        """提取语音 base64 数据和元信息。"""
+        if isinstance(voice_data, dict):
+            for key in ("base64", "data", "voice_base64", "audio_base64"):
+                candidate = voice_data.get(key)
+                if isinstance(candidate, str) and candidate.strip():
+                    return candidate, voice_data
+            return "", voice_data
+
+        if isinstance(voice_data, str):
+            return voice_data, {}
+
+        return "", {}
+
     async def recognize_media(
         self, 
         base64_data: str, 
@@ -248,63 +397,208 @@ class MediaManager:
             媒体的文字描述，识别失败返回 None
         """
         try:
+            if media_type == "voice":
+                return await self.recognize_voice(base64_data, use_cache=use_cache)
+
             # 计算哈希值
             media_hash = self._compute_hash(base64_data)
-            
-            # 尝试从缓存读取
-            if use_cache:
-                cached_description = await self._get_cached_description(
-                    media_hash, 
+            media_bytes = self._estimate_media_size_bytes(base64_data)
+            await self._record_media_event(
+                event="received",
+                media_type=media_type,
+                media_bytes=media_bytes,
+            )
+
+            if media_bytes > _MAX_MEDIA_DATA_BYTES:
+                await self._record_media_event(
+                    event="rejected_too_large",
+                    media_type=media_type,
+                    media_bytes=media_bytes,
+                )
+                logger.warning(
+                    f"媒体过大，跳过识别: type={media_type}, "
+                    f"bytes={media_bytes}, hash={media_hash[:8]}..."
+                )
+                return None
+
+            lock = self._get_recognition_lock(media_hash)
+            async with lock:
+                # 尝试从缓存读取
+                if use_cache:
+                    cached_description = await self._get_cached_description(
+                        media_hash,
+                        media_type
+                    )
+                    if cached_description:
+                        await self._record_media_event(
+                            event="cache_hit",
+                            media_type=media_type,
+                        )
+                        await self._record_media_event(
+                            event="dedup_hit",
+                            media_type=media_type,
+                        )
+                        await self._record_media_event(
+                            event="success",
+                            media_type=media_type,
+                        )
+                        logger.debug(f"从缓存获取{media_type}描述: {media_hash[:8]}...")
+                        return cached_description
+                await self._record_media_event(
+                    event="cache_miss",
+                    media_type=media_type,
+                )
+
+                # 保存到待识别文件夹
+                pending_file_path = await self._save_to_pending(
+                    base64_data,
+                    media_hash,
                     media_type
                 )
-                if cached_description:
-                    logger.debug(f"从缓存获取{media_type}描述: {media_hash[:8]}...")
-                    return cached_description
-            
-            # 保存到待识别文件夹
-            pending_file_path = await self._save_to_pending(
-                base64_data,
-                media_hash,
-                media_type
-            )
-            
-            # VLM 识别
-            description = await self._recognize_with_vlm(base64_data, media_type)
-            
-            if description:
-                # 保存到缓存
-                await self._save_description_cache(
-                    media_hash,
-                    media_type,
-                    description
-                )
-                logger.info(f"成功识别{media_type}: {description[:50]}...")
-                
-                # 移动到对应的分类文件夹
-                await self._move_to_category_folder(
-                    pending_file_path,
-                    media_type,
-                    media_hash
-                )
-                
-                # 保存媒体信息到数据库
-                target_folder = self.images_folder if media_type == "image" else self.emojis_folder
-                target_file_path = target_folder / pending_file_path.name
-                await self.save_media_info(
-                    media_hash=media_hash,
-                    media_type=media_type,
-                    file_path=str(target_file_path),
-                    description=description,
-                    vlm_processed=True
-                )
-            else:
-                # 识别失败，保持在待识别文件夹，等待定时清理
-                logger.warning(f"识别失败，文件保留在待识别文件夹: {pending_file_path.name}")
-            
-            return description
+
+                # VLM 识别
+                description = await self._recognize_with_vlm(base64_data, media_type)
+
+                if description:
+                    await self._record_media_event(
+                        event="success",
+                        media_type=media_type,
+                    )
+                    # 保存到缓存
+                    await self._save_description_cache(
+                        media_hash,
+                        media_type,
+                        description
+                    )
+                    logger.info(f"成功识别{media_type}: {description[:50]}...")
+
+                    # 移动到对应的分类文件夹
+                    await self._move_to_category_folder(
+                        pending_file_path,
+                        media_type,
+                        media_hash
+                    )
+
+                    # 保存媒体信息到数据库
+                    target_folder = self.images_folder if media_type == "image" else self.emojis_folder
+                    target_file_path = target_folder / pending_file_path.name
+                    await self.save_media_info(
+                        media_hash=media_hash,
+                        media_type=media_type,
+                        file_path=str(target_file_path),
+                        description=description,
+                        vlm_processed=True
+                    )
+                else:
+                    await self._record_media_event(
+                        event="failure",
+                        media_type=media_type,
+                        failure_type="recognize_failed",
+                    )
+                    # 识别失败，保持在待识别文件夹，等待定时清理
+                    logger.warning(f"识别失败，文件保留在待识别文件夹: {pending_file_path.name}")
+
+                return description
             
         except Exception as e:
             logger.error(f"识别{media_type}失败: {e}", exc_info=True)
+            await self._record_media_event(
+                event="failure",
+                media_type=media_type,
+                failure_type=type(e).__name__,
+            )
+            return None
+
+    async def recognize_voice(
+        self,
+        voice_data: str | dict[str, Any],
+        use_cache: bool = True,
+    ) -> str | None:
+        """识别语音内容并返回转写文本。"""
+        try:
+            base64_data, metadata = self._extract_voice_payload(voice_data)
+            if not base64_data:
+                return None
+
+            voice_hash = self._compute_hash(base64_data)
+            voice_bytes = self._estimate_media_size_bytes(base64_data)
+            await self._record_media_event(
+                event="received",
+                media_type="voice",
+                media_bytes=voice_bytes,
+            )
+
+            if voice_bytes > _MAX_MEDIA_DATA_BYTES:
+                await self._record_media_event(
+                    event="rejected_too_large",
+                    media_type="voice",
+                    media_bytes=voice_bytes,
+                )
+                logger.warning(
+                    f"语音过大，跳过转写: bytes={voice_bytes}, hash={voice_hash[:8]}..."
+                )
+                return None
+
+            lock = self._get_recognition_lock(voice_hash)
+            async with lock:
+                if use_cache:
+                    cached_description = await self._get_cached_description(
+                        voice_hash,
+                        "voice",
+                    )
+                    if cached_description:
+                        await self._record_media_event(
+                            event="cache_hit",
+                            media_type="voice",
+                        )
+                        await self._record_media_event(
+                            event="dedup_hit",
+                            media_type="voice",
+                        )
+                        await self._record_media_event(
+                            event="success",
+                            media_type="voice",
+                        )
+                        logger.debug(f"从缓存获取 voice 转写: {voice_hash[:8]}...")
+                        return cached_description
+                await self._record_media_event(
+                    event="cache_miss",
+                    media_type="voice",
+                )
+
+                transcription = await self._recognize_with_asr(base64_data, metadata)
+                if not transcription:
+                    await self._record_media_event(
+                        event="failure",
+                        media_type="voice",
+                        failure_type="asr_failed",
+                    )
+                    return None
+
+                await self._record_media_event(
+                    event="success",
+                    media_type="voice",
+                )
+                await self._save_description_cache(
+                    voice_hash,
+                    "voice",
+                    transcription,
+                )
+                await self.save_media_info(
+                    media_hash=voice_hash,
+                    media_type="voice",
+                    file_path=str(metadata.get("filename") or f"voice:{voice_hash[:16]}"),
+                    description=transcription,
+                    vlm_processed=True,
+                )
+                return transcription
+        except Exception as e:
+            logger.error(f"语音转写失败: {e}", exc_info=True)
+            await self._record_media_event(
+                event="failure",
+                media_type="voice",
+                failure_type=type(e).__name__,
+            )
             return None
 
     async def recognize_batch(
@@ -353,52 +647,91 @@ class MediaManager:
                 return None
 
             video_hash = self._compute_hash(base64_data)
-
-            if use_cache:
-                cached = await self._get_cached_description(video_hash, "video")
-                if cached:
-                    logger.debug(f"从缓存获取 video 描述: {video_hash[:8]}...")
-                    return cached
-
-            frame_images = await self._extract_video_keyframes(
-                base64_data=base64_data,
-                filename=str(metadata.get("filename", "video.mp4") or "video.mp4"),
-                max_frames=max_frames,
-            )
-            if not frame_images:
-                return None
-
-            frame_descriptions: list[str] = []
-            for idx, frame_base64 in enumerate(frame_images, start=1):
-                try:
-                    description = await self.recognize_media(
-                        frame_base64,
-                        "image",
-                        use_cache=True,
-                    )
-                    if description:
-                        frame_descriptions.append(f"关键帧{idx}: {description}")
-                except Exception as e:
-                    logger.debug(f"视频关键帧识别失败(frame={idx}): {e}")
-
-            if not frame_descriptions:
-                return None
-
-            summary = await self._summarize_video_frames(frame_descriptions, metadata)
-            if not summary:
-                summary = "；".join(frame_descriptions[:max(1, min(3, len(frame_descriptions)))])
-
-            await self._save_description_cache(video_hash, "video", summary)
-            await self.save_media_info(
-                media_hash=video_hash,
+            video_bytes = self._estimate_media_size_bytes(base64_data)
+            await self._record_media_event(
+                event="received",
                 media_type="video",
-                file_path=str(metadata.get("filename") or f"video:{video_hash[:16]}"),
-                description=summary,
-                vlm_processed=True,
+                media_bytes=video_bytes,
             )
-            return summary
+
+            if video_bytes > _MAX_MEDIA_DATA_BYTES:
+                await self._record_media_event(
+                    event="rejected_too_large",
+                    media_type="video",
+                    media_bytes=video_bytes,
+                )
+                logger.warning(
+                    f"视频过大，跳过摘要: bytes={video_bytes}, hash={video_hash[:8]}..."
+                )
+                return None
+
+            lock = self._get_recognition_lock(video_hash)
+            async with lock:
+                if use_cache:
+                    cached = await self._get_cached_description(video_hash, "video")
+                    if cached:
+                        await self._record_media_event(event="cache_hit", media_type="video")
+                        await self._record_media_event(event="dedup_hit", media_type="video")
+                        await self._record_media_event(event="success", media_type="video")
+                        logger.debug(f"从缓存获取 video 描述: {video_hash[:8]}...")
+                        return cached
+                await self._record_media_event(event="cache_miss", media_type="video")
+
+                frame_images = await self._extract_video_keyframes(
+                    base64_data=base64_data,
+                    filename=str(metadata.get("filename", "video.mp4") or "video.mp4"),
+                    max_frames=max_frames,
+                )
+                if not frame_images:
+                    await self._record_media_event(
+                        event="failure",
+                        media_type="video",
+                        failure_type="extract_frames_failed",
+                    )
+                    return None
+
+                frame_descriptions: list[str] = []
+                for idx, frame_base64 in enumerate(frame_images, start=1):
+                    try:
+                        description = await self.recognize_media(
+                            frame_base64,
+                            "image",
+                            use_cache=True,
+                        )
+                        if description:
+                            frame_descriptions.append(f"关键帧{idx}: {description}")
+                    except Exception as e:
+                        logger.debug(f"视频关键帧识别失败(frame={idx}): {e}")
+
+                if not frame_descriptions:
+                    await self._record_media_event(
+                        event="failure",
+                        media_type="video",
+                        failure_type="frame_descriptions_empty",
+                    )
+                    return None
+
+                summary = await self._summarize_video_frames(frame_descriptions, metadata)
+                if not summary:
+                    summary = "；".join(frame_descriptions[:max(1, min(3, len(frame_descriptions)))])
+
+                await self._save_description_cache(video_hash, "video", summary)
+                await self.save_media_info(
+                    media_hash=video_hash,
+                    media_type="video",
+                    file_path=str(metadata.get("filename") or f"video:{video_hash[:16]}"),
+                    description=summary,
+                    vlm_processed=True,
+                )
+                await self._record_media_event(event="success", media_type="video")
+                return summary
         except Exception as e:
             logger.error(f"识别 video 失败: {e}", exc_info=True)
+            await self._record_media_event(
+                event="failure",
+                media_type="video",
+                failure_type=type(e).__name__,
+            )
             return None
 
     # ──────────────────────────────────────────
@@ -582,6 +915,71 @@ class MediaManager:
 
         except Exception as e:
             logger.error(f"VLM 识别失败: {e}", exc_info=True)
+            return None
+
+    async def _recognize_with_asr(
+        self,
+        base64_data: str,
+        metadata: dict[str, Any],
+    ) -> str | None:
+        """使用 ASR 模型转写语音。"""
+        try:
+            if not self._voice_model_set:
+                logger.debug("ASR 模型不可用")
+                return None
+
+            model = self._voice_model_set[0]
+            model_identifier = str(model.get("model_identifier") or "")
+            api_key = str(model.get("api_key") or "")
+            base_url = str(model.get("base_url") or "")
+            timeout = model.get("timeout")
+            if not model_identifier or not api_key:
+                return None
+
+            clean_base64 = self._extract_clean_base64(base64_data)
+            audio_bytes = base64.b64decode(clean_base64)
+            audio_file = BytesIO(audio_bytes)
+            audio_file.name = str(metadata.get("filename") or "voice.mp3")
+
+            try:
+                from openai import AsyncOpenAI
+
+                async with AsyncOpenAI(
+                    api_key=api_key,
+                    base_url=base_url or None,
+                    timeout=float(timeout) if isinstance(timeout, (int, float)) else None,
+                ) as client:
+                    response = await client.audio.transcriptions.create(
+                        model=model_identifier,
+                        file=audio_file,
+                    )
+                text = response if isinstance(response, str) else getattr(response, "text", "")
+                text = str(text).strip()
+                if len(text) > 200:
+                    text = text[:197] + "..."
+                if text:
+                    return text
+            except Exception as e:
+                logger.debug(f"ASR 专用端点失败，尝试音频多模态兜底: {e}")
+
+            from src.app.plugin_system.api.llm_api import create_llm_request
+            from src.kernel.llm import Audio, LLMContextManager, LLMPayload, ROLE, Text
+
+            request = create_llm_request(
+                self._voice_model_set,
+                "voice_asr_fallback",
+                context_manager=LLMContextManager(max_payloads=2),
+            )
+            prompt = "请将这段语音转写为简体中文纯文本，只输出转写结果，不要解释。"
+            request.add_payload(LLMPayload(ROLE.USER, [Text(prompt), Audio(base64_data)]))
+            response = await request.send(stream=False)
+            await response
+            text = str(response.message or "").strip()
+            if len(text) > 200:
+                text = text[:197] + "..."
+            return text or None
+        except Exception as e:
+            logger.error(f"ASR 转写失败: {e}", exc_info=True)
             return None
 
     async def _get_cached_description(

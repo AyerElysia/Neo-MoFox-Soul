@@ -83,9 +83,10 @@ class MessageConverter:
 
     实例无状态，可以作为单例在整个应用中复用。
     
-    支持媒体识别功能：
-    - 图片/表情包：VLM 识别
-    - 视频：关键帧摘要（非原生视频）
+支持媒体识别功能：
+- 图片/表情包：VLM 识别
+- 语音：ASR 转写
+- 视频：关键帧摘要（非原生视频）
 
     Examples:
         >>> converter = MessageConverter()
@@ -207,44 +208,20 @@ class MessageConverter:
         """
         seg_list: list[SegPayload] = []
 
-        # 非文本类型：根据 message_type 直接构建对应媒体段
-        _MEDIA_TYPES = {
-            MessageType.IMAGE,
-            MessageType.EMOJI,
-            MessageType.VOICE,
-            MessageType.VIDEO,
-            MessageType.FILE,
-        }
-        if message.message_type in _MEDIA_TYPES:
-            content = message.content
-            if isinstance(content, str):
-                content_data: str | dict[str, Any] = content
-            elif isinstance(content, dict):
-                # send_file 等 API 传入 dict（如 {"path": "...", "name": "..."}）
-                # FILE 类型取 path 字段作为数据
-                if message.message_type == MessageType.FILE:
-                    content_data = content.get("path", "")
-                else:
-                    content_data = content
-            else:
-                content_data = ""
-            if content_data:
-                seg_list.append({
-                    "type": message.message_type.value,
-                    "data": content_data,
-                })
-        else:
-            # 文本 / 混合消息
-            text = message.processed_plain_text or (
-                message.content if isinstance(message.content, str) else ""
-            )
-            if text:
-                seg_list.append({"type": "text", "data": text})
+        text = self._extract_outbound_text(message)
+        if text:
+            seg_list.append({"type": "text", "data": text})
 
-        # 构建额外媒体段（来自 extra["media"]）
-        media_list: list[dict[str, Any]] = message.extra.get("media", [])
-        for m in media_list:
-            seg_list.append({"type": m.get("type", "unknown"), "data": m.get("data", "")})
+        primary_media = self._extract_primary_outbound_media(message)
+        if primary_media:
+            seg_list.append(primary_media)
+
+        media_seed = {
+            (str(seg.get("type", "")), str(seg.get("data", "")))
+            for seg in seg_list
+            if isinstance(seg, dict) and seg.get("type") != "text"
+        }
+        seg_list.extend(self._collect_outbound_media_segments(message, seed=media_seed))
 
         # 万一消息内容完全为空，至少构造一个空文本段，以避免适配器解析异常
         if not seg_list:
@@ -321,6 +298,130 @@ class MessageConverter:
         }
 
         return envelope
+
+    @staticmethod
+    def _extract_outbound_text(message: Message) -> str:
+        """提取适合直接发送的文本内容。"""
+        if message.message_type == MessageType.TEXT:
+            if message.processed_plain_text:
+                return message.processed_plain_text
+            if isinstance(message.content, str):
+                return message.content
+            if isinstance(message.content, dict):
+                for key in ("text", "caption", "message", "content"):
+                    value = message.content.get(key)
+                    if isinstance(value, str) and value.strip():
+                        return value
+            return ""
+
+        if isinstance(message.content, dict):
+            for key in ("text", "caption", "message"):
+                value = message.content.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value
+
+        if isinstance(message.content, str) and message.message_type == MessageType.TEXT:
+            return message.content
+
+        return ""
+
+    @staticmethod
+    def _normalize_outbound_media_value(media_type: str, raw_value: Any) -> str:
+        """把媒体值规范成适合发送到 Napcat 的形式。"""
+        value = ""
+        if isinstance(raw_value, str):
+            value = raw_value.strip()
+        elif isinstance(raw_value, dict):
+            keys = ("path", "file", "url", "data", "base64") if media_type != "file" else (
+                "path",
+                "file",
+                "url",
+            )
+            for key in keys:
+                candidate = raw_value.get(key)
+                if isinstance(candidate, str) and candidate.strip():
+                    value = candidate.strip()
+                    break
+                if isinstance(candidate, dict):
+                    nested = MessageConverter._normalize_outbound_media_value(
+                        media_type,
+                        candidate,
+                    )
+                    if nested:
+                        value = nested
+                        break
+        if not value:
+            return ""
+
+        if media_type != "file":
+            if value.startswith("base64://"):
+                value = value[len("base64://") :]
+            elif value.startswith("base64|"):
+                value = value[len("base64|") :]
+            elif value.startswith("data:") and "base64," in value:
+                value = value.split("base64,", 1)[1]
+
+        return value
+
+    @classmethod
+    def _extract_primary_outbound_media(cls, message: Message) -> SegPayload | None:
+        """提取主媒体段（image/emoji/voice/video/file）。"""
+        media_type = message.message_type.value
+        if message.message_type not in {
+            MessageType.IMAGE,
+            MessageType.EMOJI,
+            MessageType.VOICE,
+            MessageType.VIDEO,
+            MessageType.FILE,
+        }:
+            return None
+
+        content = message.content
+        normalized = cls._normalize_outbound_media_value(media_type, content)
+        if not normalized and isinstance(content, dict):
+            normalized = cls._normalize_outbound_media_value(media_type, content)
+        if not normalized:
+            return None
+
+        return {"type": media_type, "data": normalized}
+
+    @classmethod
+    def _collect_outbound_media_segments(
+        cls,
+        message: Message,
+        *,
+        seed: set[tuple[str, str]] | None = None,
+    ) -> list[SegPayload]:
+        """收集附加媒体段，来源包括 content.media 和 extra.media。"""
+        collected: list[SegPayload] = []
+        seen: set[tuple[str, str]] = set(seed or set())
+
+        def add(media_type: str, raw_value: Any) -> None:
+            normalized = cls._normalize_outbound_media_value(media_type, raw_value)
+            if not normalized:
+                return
+            key = (media_type, normalized)
+            if key in seen:
+                return
+            seen.add(key)
+            collected.append({"type": media_type, "data": normalized})
+
+        if isinstance(message.content, dict):
+            media_list = message.content.get("media")
+            if isinstance(media_list, list):
+                for item in media_list:
+                    if not isinstance(item, dict):
+                        continue
+                    add(str(item.get("type", "unknown")).lower(), item)
+
+        media_list = message.extra.get("media", [])
+        if isinstance(media_list, list):
+            for item in media_list:
+                if not isinstance(item, dict):
+                    continue
+                add(str(item.get("type", "unknown")).lower(), item)
+
+        return collected
 
     # ──────────────────────────────────────────
     # 内部方法
@@ -633,6 +734,7 @@ class MessageConverter:
             
             image_descriptions: list[str | None] = []
             emoji_descriptions: list[str | None] = []
+            voice_descriptions: list[str | None] = []
             video_descriptions: list[str | None] = []
 
             has_recognition_target = False
@@ -660,6 +762,17 @@ class MessageConverter:
                         image_descriptions.append(description)
                     else:
                         emoji_descriptions.append(description)
+                elif media_type == "voice":
+                    has_recognition_target = True
+                    try:
+                        description = await manager.recognize_voice(
+                            media.get("data"),
+                            use_cache=True,
+                        )
+                    except Exception as e:
+                        logger.warning(f"识别 voice 失败: {e}")
+                        description = None
+                    voice_descriptions.append(description)
                 elif media_type == "video":
                     has_recognition_target = True
                     try:
@@ -680,6 +793,7 @@ class MessageConverter:
             new_text_parts = []
             image_idx = 0
             emoji_idx = 0
+            voice_idx = 0
             video_idx = 0
             for part in result.text_parts:
                 if part == "[图片]":
@@ -690,6 +804,10 @@ class MessageConverter:
                     description = emoji_descriptions[emoji_idx] if emoji_idx < len(emoji_descriptions) else None
                     emoji_idx += 1
                     new_text_parts.append(f"[表情包:{description}]" if description else part)
+                elif part == "[语音]":
+                    description = voice_descriptions[voice_idx] if voice_idx < len(voice_descriptions) else None
+                    voice_idx += 1
+                    new_text_parts.append(f"[语音:{description}]" if description else part)
                 elif part == "[视频]":
                     description = video_descriptions[video_idx] if video_idx < len(video_descriptions) else None
                     video_idx += 1

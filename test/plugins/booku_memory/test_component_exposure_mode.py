@@ -1,70 +1,33 @@
-"""Booku Memory 插件组件暴露模式测试。"""
+"""Booku Memory 插件运行时暴露面测试。"""
 
 from __future__ import annotations
 
-from plugins.booku_memory.agent import (
-    BookuMemoryCreateTool,
-    BookuMemoryEditInherentTool,
-    BookuMemoryReadAgent,
-    BookuMemoryRetrieveTool,
-    BookuMemoryWriteAgent,
-)
+from plugins.booku_memory.agent.tools import BookuMemoryEditInherentTool
 from plugins.booku_memory.config import BookuMemoryConfig
-from plugins.booku_memory.event_handler import (
-    BookuMemoryStartupIngestHandler,
-    MemoryFlashbackInjector,
-)
 from plugins.booku_memory.plugin import BookuMemoryAgentPlugin
-from plugins.booku_memory.service import BookuKnowledgeService, BookuMemoryService
+from plugins.booku_memory.service import BookuMemoryService
 
 
-def test_get_components_returns_agent_mode_by_default() -> None:
-    """缺少配置对象时应回退为 agent 代理模式。"""
+def test_get_components_returns_minimal_long_term_runtime_by_default() -> None:
+    """缺少配置对象时也应只暴露长期记忆最小运行面。"""
 
     plugin = BookuMemoryAgentPlugin(config=None)
 
     assert plugin.get_components() == [
-        BookuMemoryWriteAgent,
-        BookuMemoryReadAgent,
-        BookuMemoryService,
-        BookuKnowledgeService,
-        BookuMemoryStartupIngestHandler,
-        MemoryFlashbackInjector,
-    ]
-
-
-def test_get_components_returns_agent_mode_when_enabled() -> None:
-    """开启代理模式时应暴露读写 Agent。"""
-
-    cfg = BookuMemoryConfig()
-    cfg.plugin.enable_agent_proxy_mode = True
-    plugin = BookuMemoryAgentPlugin(config=cfg)
-
-    assert plugin.get_components() == [
-        BookuMemoryWriteAgent,
-        BookuMemoryReadAgent,
-        BookuMemoryService,
-        BookuKnowledgeService,
-        BookuMemoryStartupIngestHandler,
-        MemoryFlashbackInjector,
-    ]
-
-
-def test_get_components_returns_tool_mode_when_proxy_disabled() -> None:
-    """关闭代理模式时应改为直接暴露工具。"""
-
-    cfg = BookuMemoryConfig()
-    cfg.plugin.enable_agent_proxy_mode = False
-    plugin = BookuMemoryAgentPlugin(config=cfg)
-
-    assert plugin.get_components() == [
-        BookuMemoryRetrieveTool,
-        BookuMemoryCreateTool,
         BookuMemoryEditInherentTool,
         BookuMemoryService,
-        BookuKnowledgeService,
-        MemoryFlashbackInjector,
-        BookuMemoryStartupIngestHandler,
+    ]
+
+
+def test_get_components_returns_minimal_long_term_runtime_when_enabled() -> None:
+    """启用插件时只保留长期记忆编辑工具与服务。"""
+
+    cfg = BookuMemoryConfig()
+    plugin = BookuMemoryAgentPlugin(config=cfg)
+
+    assert plugin.get_components() == [
+        BookuMemoryEditInherentTool,
+        BookuMemoryService,
     ]
 
 
@@ -76,3 +39,9 @@ def test_get_components_returns_empty_when_plugin_disabled() -> None:
     plugin = BookuMemoryAgentPlugin(config=cfg)
 
     assert plugin.get_components() == []
+
+
+def test_edit_inherent_tool_is_dfc_only() -> None:
+    """长期记忆编辑只允许 default_chatter 调用。"""
+
+    assert BookuMemoryEditInherentTool.chatter_allow == ["default_chatter"]

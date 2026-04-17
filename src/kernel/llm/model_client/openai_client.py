@@ -24,7 +24,7 @@ from src.kernel.llm.tool_call_compat import (
 )
 
 from ..exceptions import LLMConfigurationError, LLMContentFilterError
-from ..payload import Image, LLMPayload, Text, ToolCall, ToolResult, Video
+from ..payload import Audio, Image, LLMPayload, Text, ToolCall, ToolResult, Video
 from ..roles import ROLE
 from ..token_counter import count_payload_tokens
 from .base import StreamEvent
@@ -517,6 +517,16 @@ def _payloads_to_openai_messages(
             elif isinstance(part, Image):
                 url = _image_to_data_url(part.value)
                 parts.append({"type": "image_url", "image_url": {"url": url}})
+            elif isinstance(part, Audio):
+                parts.append(
+                    {
+                        "type": "input_audio",
+                        "input_audio": {
+                            "data": part.value,
+                            "format": "mp3",
+                        },
+                    }
+                )
             elif isinstance(part, Video):
                 url = _video_to_data_url(part.value)
                 parts.append({"type": "video_url", "video_url": {"url": url}})
@@ -954,13 +964,9 @@ class OpenAIChatClient:
         if openai_tools and not tool_call_compat:
             params["tools"] = openai_tools
             if "tool_choice" not in params:
-                # 如果开启了思考模式，默认使用 auto 而非 required，避免 API 报错。
-                if thinking_enabled:
-                    params["tool_choice"] = "auto"
-                else:
-                    # 默认策略：统一使用 required。
-                    # 如果无法支持请在 model_set.extra_params 显式传入 tool_choice="auto"。
-                    params["tool_choice"] = "required"
+                # 默认使用 auto，避免强制 tool 调用带来的兼容性问题。
+                # 如需强制调用，请在 model_set.extra_params 显式传入 tool_choice="required"。
+                params["tool_choice"] = "auto"
         else:
             params.pop("tool_choice", None)
 

@@ -12,6 +12,7 @@ from typing import cast, Any
 import pytest
 
 from src.kernel.llm import (
+    Audio,
     Image,
     LLMPayload,
     ROLE,
@@ -217,6 +218,26 @@ class TestPayloadsToOpenAIMessages:
         assert isinstance(content, list)
         assert len(content) == 2
         assert content[1]["type"] == "video_url"
+
+    def test_multimodal_content_with_audio(self):
+        """测试多模态内容（文本+音频）。"""
+        from src.kernel.llm.model_client.openai_client import _payloads_to_openai_messages
+
+        payloads = [
+            LLMPayload(
+                ROLE.USER,
+                [Text("转写这段音频"), Audio("base64|aGVsbG8=")],
+            )
+        ]
+        messages, tools = _payloads_to_openai_messages(payloads)
+
+        assert len(messages) == 1
+        assert tools == []
+        content = messages[0]["content"]
+        assert isinstance(content, list)
+        assert len(content) == 2
+        assert content[1]["type"] == "input_audio"
+        assert content[1]["input_audio"]["format"] == "mp3"
 
     def test_tool_payload(self):
         """测试工具定义payload。"""

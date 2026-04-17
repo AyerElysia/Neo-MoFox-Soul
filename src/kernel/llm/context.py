@@ -26,7 +26,8 @@ class LLMContextManager:
     3. 在写入后执行结构校验（strict，不做自动修复）；
     4. 最后按 max_payloads/token_budget 执行裁剪。
 
-    对于 reminder：固定注入到“首个真实 USER 消息的首段”；若尚无 USER，则继续等待后续 USER。
+    对于 reminder：固定注入为前置 SYSTEM 块（靠前且稳定），
+    每次注入前会先清理旧 reminder，避免在上下文中重复堆积。
     """
 
     max_payloads: int | None = None
@@ -241,10 +242,10 @@ class LLMContextManager:
         self.reminder(content, wrap_with_system_tag=wrap_with_system_tag)
 
     def _apply_reminders(self, payloads: list[LLMPayload]) -> list[LLMPayload]:
-        """将 reminder 注入首个 USER 消息**末尾**。
+        """将 reminder 注入为靠前的 SYSTEM 块。
 
         关键：每次调用先**剥离**所有旧 reminder（通过 <system_reminder> 标签识别），
-        再注入当前最新 reminder，避免 reminder 随心跳更新在上下文中累积。
+        再注入当前最新 reminder，避免 reminder 在上下文中累积。
         """
 
         if not self._reminders:
@@ -252,28 +253,35 @@ class LLMContextManager:
 
         reminder_parts: list[Content | LLMUsable] = [Text(item.text) for item in self._reminders]
         updated = list(payloads)
+        cleaned_payloads: list[LLMPayload] = []
 
-        user_index = next((idx for idx, p in enumerate(updated) if p.role == ROLE.USER), None)
-        if user_index is None:
-            return updated
+        # 先从所有 payload 中剥离旧 reminder，兼容旧实现（曾注入在 USER 中）的遗留数据。
+        for payload in updated:
+            filtered = [
+                part
+                for part in payload.content
+                if not (
+                    isinstance(part, Text)
+                    and part.text.lstrip().startswith("<system_reminder>")
+                )
+            ]
+            if not filtered:
+                continue
+            if len(filtered) == len(payload.content):
+                cleaned_payloads.append(payload)
+            else:
+                cleaned_payloads.append(LLMPayload(payload.role, filtered))
 
-        first_user = updated[user_index]
-        existing = first_user.content
-
-        # 剥离所有旧的 <system_reminder> 标签内容（心跳更新时内容会变化）
-        clean = [
-            part for part in existing
-            if not (isinstance(part, Text) and part.text.lstrip().startswith("<system_reminder>"))
-        ]
-
-        rebuilt = clean + reminder_parts
-        if len(existing) == len(rebuilt) and all(
-            self._is_same_text_part(existing[i], rebuilt[i]) for i in range(len(rebuilt))
+        # 将 reminder 作为稳定前置 SYSTEM 块插入到最前面的 SYSTEM 区之后。
+        insert_index = 0
+        while (
+            insert_index < len(cleaned_payloads)
+            and cleaned_payloads[insert_index].role == ROLE.SYSTEM
         ):
-            return updated
+            insert_index += 1
 
-        updated[user_index] = LLMPayload(ROLE.USER, rebuilt)
-        return updated
+        cleaned_payloads.insert(insert_index, LLMPayload(ROLE.SYSTEM, reminder_parts))
+        return cleaned_payloads
 
     def _is_same_text_part(self, left: Content | LLMUsable, right: Content | LLMUsable) -> bool:
         """判断两个内容片段是否为同一文本片段。"""

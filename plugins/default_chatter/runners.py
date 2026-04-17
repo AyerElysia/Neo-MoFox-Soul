@@ -17,8 +17,6 @@ from .debug import format_prompt_for_log, log_dc_result
 from .multimodal import build_multimodal_content, extract_media_from_messages
 from .type_defs import DefaultChatterRuntime, LLMConversationState, LLMResponseLike
 from .tool_flow import append_suspend_payload_if_action_only, process_tool_calls
-
-# Life State 集成
 async def _get_life_state_for_current_turn(logger: Logger) -> str:
     """获取当前轮次的 Life State（简单模板，不调用 LLM）。
 
@@ -34,7 +32,6 @@ async def _get_life_state_for_current_turn(logger: Logger) -> str:
         if not life_service:
             return ""
 
-        # 调用 life_engine 的方法生成状态摘要
         state_digest = await life_service.get_state_digest_for_dfc()
         return state_digest
     except Exception as e:
@@ -347,54 +344,6 @@ def _drop_oldest_conversation_payloads(
     return dropped
 
 
-def _trim_payloads_if_continuous_memory_updated(
-    chatter: DefaultChatterRuntime,
-    chat_stream: ChatStream,
-    rt: _EnhancedWorkflowRuntime,
-    logger: Logger,
-) -> None:
-    """连续记忆更新后，裁剪当前请求中的最旧对话 payload。"""
-    try:
-        # 避免干扰 tool 调用闭环阶段。
-        if rt.phase != _ToolCallWorkflowPhase.WAIT_USER:
-            return
-
-        from src.app.plugin_system.api.service_api import get_service
-
-        service = get_service("diary_plugin:service:diary_service")
-        if service is None or not hasattr(service, "get_continuous_memory_summary"):
-            return
-
-        summary = service.get_continuous_memory_summary(  # type: ignore[attr-defined]
-            chat_stream.stream_id,
-            chat_stream.chat_type,
-        )
-        updated_at = str(summary.get("updated_at", "") or "").strip()
-        if not updated_at or updated_at == rt.last_continuous_memory_updated_at:
-            return
-        rt.last_continuous_memory_updated_at = updated_at
-
-        trim_count = 0
-        cfg = getattr(getattr(service, "plugin", None), "config", None)
-        if cfg is not None:
-            cm_cfg = getattr(cfg, "continuous_memory", None)
-            trim_count = int(
-                getattr(cm_cfg, "payload_history_trim_count_on_update", 0) or 0
-            )
-        if trim_count <= 0:
-            return
-
-        dropped = _drop_oldest_conversation_payloads(rt.response, trim_count)
-        if dropped > 0:
-            # 下一次采纳用户消息时重新带一次历史块，避免“历史区看起来空了”。
-            rt.history_merged = False
-            logger.info(
-                f"[cache] 检测到连续记忆更新，已裁剪最旧 payloads：{dropped} 条"
-            )
-    except Exception as exc:
-        logger.debug(f"连续记忆更新触发 payloads 裁剪失败：{exc}")
-
-
 async def run_enhanced(
     chatter: DefaultChatterRuntime,
     chat_stream: ChatStream,
@@ -402,8 +351,10 @@ async def run_enhanced(
     pass_call_name: str,
     send_text_call_name: str,
     suspend_text: str,
+    stop_call_name: str = "action-stop_conversation",
 ) -> AsyncGenerator[Wait | Success | Failure | Stop, None]:
     """enhanced 模式执行流程。"""
+    _ = stop_call_name
     try:
         request = chatter.create_request("actor", with_reminder="actor")
     except (ValueError, KeyError) as error:
@@ -429,7 +380,6 @@ async def run_enhanced(
 
     while True:
         _, unread_msgs = await chatter.fetch_unreads()
-        _trim_payloads_if_continuous_memory_updated(chatter, chat_stream, rt, logger)
 
         # 安全兜底：若上下文尾部为 TOOL_RESULT，必须进入 FOLLOW_UP
         if rt.phase == _ToolCallWorkflowPhase.WAIT_USER and rt.has_tool_result_tail():
@@ -508,13 +458,11 @@ async def run_enhanced(
 
             # ✅ 在发送请求前，临时添加 Life State（不保存到历史）
             life_state_text = await _get_life_state_for_current_turn(logger)
-            life_state_payload_added = False
 
             if life_state_text:
                 try:
                     life_state_payload = LLMPayload(ROLE.USER, Text(f"<life_state>\n{life_state_text}\n</life_state>"))
                     rt.response.add_payload(life_state_payload)
-                    life_state_payload_added = True
                     logger.debug(f"已添加 Life State: {len(life_state_text)} chars")
                 except Exception as e:
                     logger.warning(f"添加 Life State 失败: {e}")
@@ -622,8 +570,10 @@ async def run_classical(
     pass_call_name: str,
     send_text_call_name: str,
     suspend_text: str,
+    stop_call_name: str = "action-stop_conversation",
 ) -> AsyncGenerator[Wait | Success | Failure | Stop, None]:
     """classical 模式执行流程。"""
+    _ = stop_call_name
     try:
         base_request = chatter.create_request("actor", with_reminder="actor")
     except (ValueError, KeyError) as error:
