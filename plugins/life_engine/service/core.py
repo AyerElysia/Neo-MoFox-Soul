@@ -65,9 +65,6 @@ if TYPE_CHECKING:
 
 logger = get_logger("life_engine", display="life_engine")
 
-# 全局单例引用
-_service_instance: "LifeEngineService | None" = None
-
 
 class LifeEngineService(BaseService):
     """life_engine 心跳服务。
@@ -83,7 +80,9 @@ class LifeEngineService(BaseService):
     @classmethod
     def get_instance(cls) -> "LifeEngineService | None":
         """获取服务单例（供工具使用）。"""
-        return _service_instance
+        from .registry import get_life_engine_service
+
+        return get_life_engine_service()
 
     def __init__(self, plugin) -> None:
         super().__init__(plugin)
@@ -1341,7 +1340,7 @@ class LifeEngineService(BaseService):
 
     async def start(self) -> None:
         """启动心跳。"""
-        global _service_instance
+        from .registry import register_life_engine_service
 
         if self._state.running:
             return
@@ -1376,7 +1375,7 @@ class LifeEngineService(BaseService):
         self._state.history_event_count = len(self._event_history)
         self._state.pending_event_count = len(self._pending_events)
 
-        _service_instance = self
+        register_life_engine_service(self)
 
         self._stop_event = asyncio.Event()
         task = get_task_manager().create_task(
@@ -1406,7 +1405,7 @@ class LifeEngineService(BaseService):
 
     async def stop(self) -> None:
         """停止心跳。"""
-        global _service_instance
+        from .registry import unregister_life_engine_service
 
         pending_before_stop = len(self._pending_events)
         self._state.running = False
@@ -1424,7 +1423,7 @@ class LifeEngineService(BaseService):
             safe_cancel_task(self._snn_tick_task_id, get_task_manager())
             self._snn_tick_task_id = None
         self._stop_event = None
-        _service_instance = None
+        unregister_life_engine_service()
         await self._save_runtime_context()
 
         logger.info("life_engine 已停止")

@@ -47,8 +47,36 @@ _BLOCKED_HOSTS = {
     "::1",
 }
 
-_TAVILY_TARGET_LOCK = threading.Lock()
-_TAVILY_TARGET_CURSOR = 0
+
+class TavilyTargetSelector:
+    """Tavily API 目标选择器（线程安全）。"""
+
+    def __init__(self) -> None:
+        """初始化选择器。"""
+        self._lock = threading.Lock()
+        self._cursor = 0
+
+    def next_target(
+        self, keys: list[str], base_urls: list[str]
+    ) -> tuple[str, str]:
+        """选择下一个 API key 和 base URL。
+
+        Args:
+            keys: API key 列表
+            base_urls: Base URL 列表
+
+        Returns:
+            (api_key, base_url) 元组
+        """
+        with self._lock:
+            cursor = self._cursor
+            self._cursor += 1
+            api_key = keys[cursor % len(keys)]
+            base_url = base_urls[cursor % len(base_urls)]
+            return api_key, base_url
+
+
+_tavily_selector = TavilyTargetSelector()
 
 
 def _get_life_config(plugin: Any) -> LifeEngineConfig | None:
@@ -119,14 +147,7 @@ def _pick_tavily_target(plugin: Any) -> tuple[str, str]:
     if not base_urls:
         base_urls = [_DEFAULT_TAVILY_BASE_URL]
 
-    global _TAVILY_TARGET_CURSOR
-    with _TAVILY_TARGET_LOCK:
-        cursor = _TAVILY_TARGET_CURSOR
-        _TAVILY_TARGET_CURSOR += 1
-
-    api_key = keys[cursor % len(keys)]
-    base_url = base_urls[cursor % len(base_urls)]
-    return api_key, base_url
+    return _tavily_selector.next_target(keys, base_urls)
 
 
 def _resolve_search_timeout(plugin: Any) -> int:
