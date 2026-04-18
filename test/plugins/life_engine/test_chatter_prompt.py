@@ -23,6 +23,8 @@ def test_life_chatter_prompt_states_single_subject_runtime_modes() -> None:
     assert "同一个主体" in prompt
     assert "运行模式" in prompt
     assert "不是两个意识体" in prompt
+    assert "分段策略" in prompt
+    assert "content: [\"第一段\", \"第二段\", ...]" in prompt
 
 
 def test_tell_dfc_tool_description_frames_as_runtime_mode_sync() -> None:

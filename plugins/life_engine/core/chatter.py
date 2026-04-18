@@ -42,6 +42,13 @@ _THINK_ONLY_RETRY_REMINDER = (
     "请立刻再来一轮，至少补充一个可执行动作（例如 action-life_send_text、"
     "action-life_pass_and_wait，或其他可用的 tool/action）。）"
 )
+_SEGMENT_ENCOURAGE_MIN_CHARS = 56
+_SEGMENT_SEND_RETRY_REMINDER = (
+    "（系统提醒：你刚才把较长回复作为单段发送。"
+    "请优先使用 action-life_send_text 的 content 数组分段表达，"
+    "把同一条长回复拆成 2~4 段，每段只放一个核心意图。"
+    "这样更自然，也更符合当前对话规范。）"
+)
 _REASON_LEAK_PATTERN = re.compile(
     r'[,，]?\s*["\']?reason["\']?\s*[:：]',
     re.IGNORECASE,
@@ -411,6 +418,7 @@ class LifeChatter(BaseChatter):
 - think: 发送回复前记录内心活动；如果你准备回复用户，优先先 think，再调用 `life_send_text`。
   严禁单独调用 think，think 必须与至少一个可执行动作同轮出现。
 - life_send_text: 发送文本消息。content 只能写纯文本正文，禁止塞入元信息。
+  长回复优先使用 `content: ["第一段", "第二段", ...]` 分段发送，不要把大段文字塞进一条。
 - pass_and_wait: 不需要回复时使用，等待用户新消息。
 - schedule_followup_message: 觉得当前话题还想过一会儿再补一句时使用，只登记续话意图，不要当场连发。
 - 其他 tool/agent: 查询信息或执行功能。收到结果后，继续回复或进一步调用。
@@ -422,6 +430,12 @@ class LifeChatter(BaseChatter):
 3. 推荐顺序：先 `action-think`，再 `action-life_send_text`。
 4. 如果本轮决定不回复：不要调用 think，直接用 `action-life_pass_and_wait`。
 5. 禁止把最终给用户看的正文只写在 think 里，用户可见内容必须写进 `life_send_text.content`。
+
+### life_send_text 分段策略（强烈建议）
+1. 默认优先分段发送，尤其是解释型、安抚型、叙事型回复。
+2. 当回复超过两句话或明显较长时，拆成 2~4 段；每段只表达一个核心意图。
+3. 追问、补充、转折、情绪递进，尽量另起一段。
+4. 除非回复非常短（如“嗯嗯”“收到啦”），否则不要只发单段长文本。
 
 ## 安全准则
 - 保护用户隐私，不泄露个人信息。
@@ -692,6 +706,24 @@ class LifeChatter(BaseChatter):
         response.add_payload(LLMPayload(ROLE.SYSTEM, Text(_THINK_ONLY_RETRY_REMINDER)))
         logger.warning("检测到本轮仅调用 action-think，已注入系统提醒并触发重试")
 
+    @staticmethod
+    def _should_encourage_segment_send(call_name: str, call_args: dict[str, object]) -> bool:
+        if call_name != _SEND_TEXT:
+            return False
+        content = call_args.get("content")
+        if content is None:
+            return False
+        segments = LifeSendTextAction._normalize_content_segments(content)  # type: ignore[arg-type]
+        if len(segments) != 1:
+            return False
+        text = str(segments[0]).strip()
+        return len(text) >= _SEGMENT_ENCOURAGE_MIN_CHARS
+
+    @staticmethod
+    def _append_segment_send_retry_instruction(response: Any) -> None:
+        response.add_payload(LLMPayload(ROLE.SYSTEM, Text(_SEGMENT_SEND_RETRY_REMINDER)))
+        logger.info("检测到长文本单段发送，已注入分段发送提醒")
+
     # ── main execute ─────────────────────────────────────────
 
     async def execute(self) -> AsyncGenerator[Wait | Success | Failure | Stop, None]:
@@ -880,6 +912,13 @@ class LifeChatter(BaseChatter):
                         call, llm_response, usable_map,
                         rt.unreads[-1] if rt.unreads else None,
                     )
+
+                    if (
+                        success
+                        and isinstance(getattr(call, "args", None), dict)
+                        and self._should_encourage_segment_send(call_name, call.args)
+                    ):
+                        self._append_segment_send_retry_instruction(llm_response)
 
                     if appended and not call_name.startswith("action-"):
                         has_pending_tool_results = True

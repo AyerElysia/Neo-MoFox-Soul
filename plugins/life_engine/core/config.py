@@ -379,6 +379,8 @@ class LifeEngineConfig(BaseConfig):
     snn: SNNSection = Field(default_factory=SNNSection)
     neuromod: NeuromodSection = Field(default_factory=NeuromodSection)
     dream: DreamSection = Field(default_factory=DreamSection)
+    thresholds: ThresholdsSection = Field(default_factory=ThresholdsSection)
+    memory_algorithm: MemoryAlgorithmSection = Field(default_factory=MemoryAlgorithmSection)
     chatter: ChatterSection = Field(default_factory=ChatterSection)
 
     @field_validator("settings")

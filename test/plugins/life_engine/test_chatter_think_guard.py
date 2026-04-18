@@ -36,3 +36,22 @@ def test_append_think_only_retry_instruction_adds_system_payload() -> None:
     assert len(response.payloads) == 1
     payload = response.payloads[0]
     assert getattr(payload, "role", None) == ROLE.SYSTEM
+
+
+def test_should_encourage_segment_send_for_long_single_content() -> None:
+    call_args = {"content": "这是一条比较长的消息" * 8}
+    assert LifeChatter._should_encourage_segment_send("action-life_send_text", call_args) is True
+
+
+def test_should_not_encourage_segment_send_for_segment_array() -> None:
+    call_args = {"content": ["第一段", "第二段"]}
+    assert LifeChatter._should_encourage_segment_send("action-life_send_text", call_args) is False
+
+
+def test_append_segment_send_retry_instruction_adds_system_payload() -> None:
+    response = _FakeResponse()
+    LifeChatter._append_segment_send_retry_instruction(response)
+
+    assert len(response.payloads) == 1
+    payload = response.payloads[0]
+    assert getattr(payload, "role", None) == ROLE.SYSTEM

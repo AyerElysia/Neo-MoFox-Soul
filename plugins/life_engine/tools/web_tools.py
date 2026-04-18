@@ -1,9 +1,9 @@
-“””life_engine 网络搜索与浏览工具。
+"""life_engine 网络搜索与浏览工具。
 
 提供两类能力（均基于 Tavily API）：
 1. nucleus_web_search：联网检索最新信息
-2. nucleus_browser_fetch：像”浏览器打开页面”一样提取网页正文
-“””
+2. nucleus_browser_fetch：像"浏览器打开页面"一样提取网页正文
+"""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from typing import Any
 
 from src.app.plugin_system.api.log_api import get_logger
 
-logger = get_logger(“life_engine.web_tools”)
+logger = get_logger("life_engine.web_tools")
 import ipaddress
 import json
 import os
