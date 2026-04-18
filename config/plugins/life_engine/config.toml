@@ -166,6 +166,50 @@ idle_trigger_heartbeats = 10
 # 值类型：bool, 默认值：true
 nap_enabled = true
 
+# 阈值配置。
+[thresholds]
+# 外部消息活跃时间窗口（分钟）
+# 值类型：int, 默认值：5
+external_active_minutes = 5
+
+# 心跳空闲警告阈值
+# 值类型：int, 默认值：2
+idle_warning_threshold = 2
+
+# 心跳空闲严重警告阈值
+# 值类型：int, 默认值：5
+idle_critical_threshold = 5
+
+# TODO 紧急截止天数阈值
+# 值类型：int, 默认值：3
+todo_urgent_days = 3
+
+# 记忆算法参数配置。
+[memory_algorithm]
+# RRF 融合参数
+# 值类型：int, 默认值：60
+rrf_k = 60
+
+# 激活扩散衰减系数
+# 值类型：float, 默认值：0.7
+spread_decay = 0.7
+
+# 激活扩散阈值
+# 值类型：float, 默认值：0.3
+spread_threshold = 0.3
+
+# 遗忘衰减系数
+# 值类型：float, 默认值：0.05
+decay_lambda = 0.05
+
+# 边剪枝阈值
+# 值类型：float, 默认值：0.1
+prune_threshold = 0.1
+
+# 梦境学习率
+# 值类型：float, 默认值：0.05
+dream_learning_rate = 0.05
+
 # 统一对话器配置。
 [chatter]
 # 启用后 life_engine 直接处理对话，作为同一主体的对外运行模式。

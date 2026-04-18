@@ -271,13 +271,15 @@ class LLMRequest:
             try:
                 with timer:
                     timeout_seconds = model.get("timeout")
+                    force_stream_mode = bool(model.get("force_stream_mode", False))
+                    effective_stream = stream or force_stream_mode
                     create_task = client.create(
                         model_name=model_identifier,
                         payloads=trimmed_payloads,
                         tools=tools,
                         request_name=self.request_name,
                         model_set=model,
-                        stream=stream,
+                        stream=effective_stream,
                     )
 
                     if (
@@ -441,6 +443,10 @@ def _validate_model_entry(model: dict[str, Any]) -> ModelEntry:
         model.get("tool_call_compat"), bool
     ):
         raise LLMConfigurationError("model.tool_call_compat 必须是 bool")
+    if "force_stream_mode" in model and not isinstance(
+        model.get("force_stream_mode"), bool
+    ):
+        raise LLMConfigurationError("model.force_stream_mode 必须是 bool")
     if "max_context" in model and not isinstance(model.get("max_context"), int):
         raise LLMConfigurationError("model.max_context 必须是 int")
 
@@ -460,6 +466,7 @@ def _validate_model_entry(model: dict[str, Any]) -> ModelEntry:
             )
 
     model.setdefault("tool_call_compat", False)
+    model.setdefault("force_stream_mode", False)
     model.setdefault("max_context", 0)
 
     return model  # type: ignore[return-value]
