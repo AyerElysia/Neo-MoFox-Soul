@@ -8,6 +8,12 @@ from __future__ import annotations
 import asyncio
 import json
 import traceback
+from datetime import datetime
+from typing import Any
+
+from src.app.plugin_system.api.log_api import get_logger
+
+logger = get_logger("life_engine.integrations")
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
@@ -53,15 +59,15 @@ def to_jsonable(value: Any) -> Any:
     if callable(tolist):
         try:
             return to_jsonable(tolist())
-        except Exception:
-            pass
+        except (TypeError, ValueError, AttributeError) as e:
+            logger.debug(f"tolist() conversion failed for {type(value)}: {e}")
 
     item = getattr(value, "item", None)
     if callable(item):
         try:
             return item()
-        except Exception:
-            pass
+        except (TypeError, ValueError, AttributeError) as e:
+            logger.debug(f"item() conversion failed for {type(value)}: {e}")
 
     enum_value = getattr(value, "value", None)
     if isinstance(enum_value, (str, int, float, bool)):

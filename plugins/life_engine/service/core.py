@@ -1223,11 +1223,24 @@ class LifeEngineService(BaseService):
             f"tools_count={len(tools)}"
         )
 
+        from .error_handling import retry_with_backoff
+
+        async def _send_heartbeat_request() -> Any:
+            return await asyncio.wait_for(
+                request.send(stream=False), timeout=timeout_seconds
+            )
+
         try:
-            response = await asyncio.wait_for(request.send(stream=False), timeout=timeout_seconds)
-        except asyncio.TimeoutError:
-            logger.warning(f"life_engine heartbeat request timeout after {timeout_seconds}s")
-            response = await asyncio.wait_for(request.send(stream=False), timeout=timeout_seconds * 3)
+            response = await retry_with_backoff(
+                _send_heartbeat_request,
+                max_retries=2,
+                initial_delay=2.0,
+                backoff_factor=1.5,
+                exceptions=(asyncio.TimeoutError,),
+            )
+        except Exception as e:
+            logger.error(f"Heartbeat request failed after all retries: {e}")
+            return
 
         max_rounds = max(1, int(cfg.settings.max_rounds_per_heartbeat))
         last_text = ""
@@ -1401,20 +1414,15 @@ class LifeEngineService(BaseService):
         if self._stop_event is not None:
             self._stop_event.set()
 
+        from .error_handling import safe_cancel_task
+
         if self._heartbeat_task_id:
-            try:
-                get_task_manager().cancel_task(self._heartbeat_task_id)
-            except Exception:
-                pass
+            safe_cancel_task(self._heartbeat_task_id, get_task_manager())
+            self._heartbeat_task_id = None
 
         if self._snn_tick_task_id:
-            try:
-                get_task_manager().cancel_task(self._snn_tick_task_id)
-            except Exception:
-                pass
+            safe_cancel_task(self._snn_tick_task_id, get_task_manager())
             self._snn_tick_task_id = None
-
-        self._heartbeat_task_id = None
         self._stop_event = None
         _service_instance = None
         await self._save_runtime_context()

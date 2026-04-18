@@ -1,13 +1,20 @@
-"""life_engine 网络搜索与浏览工具。
+“””life_engine 网络搜索与浏览工具。
 
 提供两类能力（均基于 Tavily API）：
 1. nucleus_web_search：联网检索最新信息
-2. nucleus_browser_fetch：像“浏览器打开页面”一样提取网页正文
-"""
+2. nucleus_browser_fetch：像”浏览器打开页面”一样提取网页正文
+“””
 
 from __future__ import annotations
 
 import asyncio
+import urllib.parse
+from pathlib import Path
+from typing import Any
+
+from src.app.plugin_system.api.log_api import get_logger
+
+logger = get_logger(“life_engine.web_tools”)
 import ipaddress
 import json
 import os
@@ -157,8 +164,10 @@ def _resolve_endpoint(base_url: str, path: str) -> str:
     try:
         parsed = urllib.parse.urlparse(base)
         if parsed.scheme not in ("http", "https"):
+            logger.warning(f"Invalid URL scheme in base: {base}, using default")
             base = _DEFAULT_TAVILY_BASE_URL
-    except Exception:
+    except ValueError as e:
+        logger.warning(f"URL parse failed for base '{base}': {e}, using default")
         base = _DEFAULT_TAVILY_BASE_URL
     return base.rstrip("/") + "/" + path.lstrip("/")
 
@@ -242,7 +251,8 @@ def _is_blocked_host(hostname: str) -> bool:
 def _validate_public_url(url: str) -> tuple[bool, str]:
     try:
         parsed = urllib.parse.urlparse(url)
-    except Exception:
+    except ValueError as e:
+        logger.debug(f"URL parse failed: {e}")
         return False, "URL 格式无效"
 
     if parsed.scheme not in ("http", "https"):
@@ -278,7 +288,8 @@ def _sync_post_json(url: str, payload: dict[str, Any], timeout_seconds: int) -> 
         detail = ""
         try:
             detail = exc.read().decode("utf-8", errors="replace")
-        except Exception:
+        except (OSError, UnicodeDecodeError) as e:
+            logger.debug(f"Failed to read HTTP error detail: {e}")
             detail = str(exc)
         raise RuntimeError(f"Tavily 请求失败（HTTP {exc.code}）: {detail[:500]}") from exc
     except urllib.error.URLError as exc:
