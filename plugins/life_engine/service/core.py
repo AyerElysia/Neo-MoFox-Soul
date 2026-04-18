@@ -12,7 +12,7 @@ import traceback
 from dataclasses import asdict
 from datetime import datetime, time as dtime
 from pathlib import Path
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from src.app.plugin_system.api.llm_api import create_llm_request, get_model_set_by_task
 from src.app.plugin_system.api.log_api import get_logger
@@ -21,6 +21,13 @@ from src.core.components.base import BaseService
 from src.core.models.message import Message
 from src.kernel.concurrency import get_task_manager
 from src.kernel.llm import LLMPayload, ROLE, Text, ToolRegistry, ToolResult
+
+if TYPE_CHECKING:
+    from ..dream.scheduler import DreamScheduler
+    from ..memory.service import LifeMemoryService
+    from ..neuromod.engine import InnerStateEngine
+    from ..snn.bridge import SNNBridge
+    from ..snn.core import DriveCoreNetwork
 
 from .audit import (
     get_life_log_file,
@@ -93,19 +100,19 @@ class LifeEngineService(BaseService):
         self._event_history: list[LifeEngineEvent] = []
         self._lock: asyncio.Lock | None = None
         self._sleep_state_active: bool = False
-        self._memory_service: "LifeMemoryService | None" = None
+        self._memory_service: LifeMemoryService | None = None
         self._last_decay_date: str | None = None
 
         # SNN 皮层下系统
-        self._snn_network: Any = None
-        self._snn_bridge: Any = None
+        self._snn_network: DriveCoreNetwork | None = None
+        self._snn_bridge: SNNBridge | None = None
         self._snn_tick_task_id: str | None = None
 
         # 神经调质层
-        self._inner_state: Any = None
+        self._inner_state: InnerStateEngine | None = None
 
         # 做梦系统
-        self._dream_scheduler: Any = None
+        self._dream_scheduler: DreamScheduler | None = None
         self._injected_dream_ids: set[str] = set()
 
         # 集成管理器
@@ -120,7 +127,7 @@ class LifeEngineService(BaseService):
         self._state_persistence: StatePersistence | None = None
 
     @property
-    def memory_service(self) -> "LifeMemoryService | None":
+    def memory_service(self) -> LifeMemoryService | None:
         """兼容旧调用方的公开记忆服务访问入口。"""
         return self._memory_service
 
