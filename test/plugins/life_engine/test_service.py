@@ -14,7 +14,7 @@ from plugins.life_engine.service import LifeEngineService
 
 @dataclass
 class _DummyPlugin:
-    config: LifeEngineConfig
+    config: object
 
 
 def _make_service(tmp_path: Path) -> LifeEngineService:
@@ -34,6 +34,40 @@ def test_memory_service_property_aliases_private_field(tmp_path: Path) -> None:
     service._memory_service = sentinel  # type: ignore[assignment]
 
     assert service.memory_service is sentinel
+
+
+def test_cfg_auto_migrates_legacy_config_without_thresholds(tmp_path: Path) -> None:
+    """旧版配置对象缺少 thresholds 时，_cfg 应自动迁移为新结构。"""
+
+    class _LegacyConfig:
+        def model_dump(self, mode: str = "python") -> dict[str, object]:
+            return {
+                "settings": {
+                    "enabled": True,
+                    "workspace_path": str(tmp_path),
+                    "heartbeat_interval_seconds": 30,
+                    "context_history_max_events": 100,
+                    "max_rounds_per_heartbeat": 3,
+                    "sleep_time": "",
+                    "wake_time": "",
+                    "log_heartbeat": True,
+                },
+                "model": {"task_name": "life"},
+                "web": {},
+                "snn": {"enabled": False, "shadow_only": True, "inject_to_heartbeat": False},
+                "neuromod": {"enabled": True, "inject_to_heartbeat": True},
+                "dream": {"enabled": True},
+                "chatter": {"enabled": False, "mode": "enhanced", "max_rounds_per_chat": 5},
+            }
+
+    plugin = _DummyPlugin(config=_LegacyConfig())
+    service = LifeEngineService(plugin)
+
+    cfg = service._cfg()
+    assert isinstance(cfg, LifeEngineConfig)
+    assert hasattr(cfg, "thresholds")
+    assert hasattr(cfg, "memory_algorithm")
+    assert isinstance(plugin.config, LifeEngineConfig)
 
 
 @pytest.mark.asyncio

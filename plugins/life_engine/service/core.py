@@ -39,6 +39,10 @@ from .audit import (
     log_wake_context_injected,
 )
 from ..core.config import LifeEngineConfig
+from ..constants import (
+    HEARTBEAT_IDLE_CRITICAL_THRESHOLD,
+    HEARTBEAT_IDLE_WARNING_THRESHOLD,
+)
 from .event_builder import (
     EventBuilder,
     EventType,
@@ -125,6 +129,7 @@ class LifeEngineService(BaseService):
 
         # 状态持久化
         self._state_persistence: StatePersistence | None = None
+        self._legacy_config_warning_emitted: bool = False
 
     @property
     def memory_service(self) -> LifeMemoryService | None:
@@ -140,8 +145,63 @@ class LifeEngineService(BaseService):
     def _cfg(self) -> LifeEngineConfig:
         config = getattr(self.plugin, "config", None)
         if isinstance(config, LifeEngineConfig):
-            return config
+            if hasattr(config, "thresholds") and hasattr(config, "memory_algorithm"):
+                return config
+            if not self._legacy_config_warning_emitted:
+                logger.warning(
+                    "检测到旧版 LifeEngineConfig 对象（缺少 thresholds/memory_algorithm），"
+                    "将自动迁移为最新配置结构；建议完整重启进程。"
+                )
+                self._legacy_config_warning_emitted = True
+            migrated = self._migrate_legacy_config(config)
+            if migrated is not None:
+                return migrated
+            return LifeEngineConfig()
+        migrated = self._migrate_legacy_config(config)
+        if migrated is not None:
+            return migrated
         return LifeEngineConfig()
+
+    def _migrate_legacy_config(self, config: object | None) -> LifeEngineConfig | None:
+        """将旧版/异构配置对象迁移为当前 LifeEngineConfig。"""
+        if config is None:
+            return None
+        dump_method = getattr(config, "model_dump", None)
+        payload: dict[str, Any] | None = None
+        if callable(dump_method):
+            try:
+                dumped = dump_method(mode="python")
+                if isinstance(dumped, dict):
+                    payload = dumped
+            except TypeError:
+                try:
+                    dumped = dump_method()
+                    if isinstance(dumped, dict):
+                        payload = dumped
+                except Exception:
+                    payload = None
+            except Exception:
+                payload = None
+        if payload is None:
+            dict_method = getattr(config, "dict", None)
+            if callable(dict_method):
+                try:
+                    dumped = dict_method()
+                    if isinstance(dumped, dict):
+                        payload = dumped
+                except Exception:
+                    payload = None
+        if payload is None:
+            return None
+        try:
+            migrated = LifeEngineConfig.model_validate(payload)
+        except Exception:
+            migrated = LifeEngineConfig()
+        try:
+            setattr(self.plugin, "config", migrated)
+        except Exception:
+            pass
+        return migrated
 
     def _is_enabled(self) -> bool:
         """判断插件当前是否启用。"""
@@ -938,8 +998,13 @@ class LifeEngineService(BaseService):
         period_label, suggested_activities = self._get_period_info()
 
         cfg = self._cfg()
-        warning_threshold = cfg.thresholds.idle_warning_threshold
-        critical_threshold = cfg.thresholds.idle_critical_threshold
+        thresholds = getattr(cfg, "thresholds", None)
+        warning_threshold = int(
+            getattr(thresholds, "idle_warning_threshold", HEARTBEAT_IDLE_WARNING_THRESHOLD)
+        )
+        critical_threshold = int(
+            getattr(thresholds, "idle_critical_threshold", HEARTBEAT_IDLE_CRITICAL_THRESHOLD)
+        )
 
         idle_warning = ""
         if idle_heartbeats >= critical_threshold:
