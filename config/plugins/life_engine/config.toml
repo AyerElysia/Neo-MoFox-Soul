@@ -6,7 +6,7 @@ enabled = true
 
 # 心跳间隔（秒）。
 # 值类型：int, 默认值：30
-heartbeat_interval_seconds = 300
+heartbeat_interval_seconds = 120
 
 # 睡觉时间，格式 HH:MM（24小时制）。与 wake_time 同时配置后生效。
 # 值类型：str, 默认值：""
