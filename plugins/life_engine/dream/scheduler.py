@@ -47,6 +47,7 @@ from .seeds import (
     collect_unfinished_tension,
     collect_dream_lag,
     collect_self_theme,
+    collect_thought_stream_seeds,
     select_seed_candidates,
     collect_seed_node_ids,
     _event_type_value,
@@ -197,7 +198,7 @@ class DreamScheduler:
                 report.nrem = await self._run_nrem(event_history)
                 logger.info(
                     f"🌙 Dream [{report.dream_id}] NREM phase completed: "
-                    f"{len(report.nrem.replayed_episodes) if report.nrem else 0} episodes replayed"
+                    f"{report.nrem.episodes_replayed if report.nrem else 0} episodes replayed"
                 )
 
             # 梦种子生成
@@ -405,6 +406,11 @@ class DreamScheduler:
         candidates.extend(await collect_unfinished_tension(memory_candidates, self._workspace))
         candidates.extend(await collect_dream_lag(memory_candidates, self._workspace))
         candidates.extend(await collect_self_theme(memory_candidates))
+        # 思考流作为入梦种子
+        from ..service.registry import get_life_engine_service
+        life_service = get_life_engine_service()
+        if life_service and life_service._thought_manager:
+            candidates.extend(await collect_thought_stream_seeds(life_service._thought_manager))
 
         # 海马体重复抑制
         recent_titles: set[str] = set()

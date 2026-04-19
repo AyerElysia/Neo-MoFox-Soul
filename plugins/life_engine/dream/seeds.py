@@ -449,6 +449,61 @@ def select_seed_candidates(
     return selected[:_MAX_DREAM_SEEDS]
 
 
+async def collect_thought_stream_seeds(
+    thought_manager: Any,
+) -> list[DreamSeed]:
+    """从活跃的思考流中收集入梦种子。
+
+    思考流是爱莉持续在意的兴趣线索——它们带有未完成的张力，
+    是天然的入梦材料。做梦可以巩固白天的思考，
+    或在看似无关的记忆间发现新关联。
+    """
+    if thought_manager is None:
+        return []
+
+    try:
+        active_streams = thought_manager.list_active()
+    except Exception:  # noqa: BLE001
+        return []
+
+    if not active_streams:
+        return []
+
+    seeds: list[DreamSeed] = []
+    for ts in active_streams[:3]:
+        # 思考流的好奇心越高、推进次数越多 → 梦境价值越高
+        curiosity = getattr(ts, "curiosity_score", 0.5)
+        advance_count = getattr(ts, "advance_count", 0)
+        last_thought = getattr(ts, "last_thought", "")
+        title = getattr(ts, "title", "未命名的思考")
+        ts_id = getattr(ts, "id", "unknown")
+
+        # 未完成张力：好奇心高且推进次数少 = 正在琢磨但还没想通
+        unfinished = curiosity * max(0.3, 1.0 - advance_count / 10.0)
+
+        # 梦境价值：好奇心 + 未完成度 + 情感唤起
+        dreamability = min(0.4 + curiosity * 0.3 + unfinished * 0.2, 1.0)
+
+        seeds.append(DreamSeed(
+            seed_id=f"seed_ts_{ts_id}_{uuid.uuid4().hex[:4]}",
+            seed_type=DreamSeedType.UNFINISHED_TENSION.value,
+            title=f"思考流: {title}",
+            summary=last_thought[:200] if last_thought else f"关于「{title}」的持续思考",
+            source_events=[f"thought_stream:{ts_id}"],
+            affect_valence=curiosity * 0.2 - 0.1,
+            affect_arousal=min(curiosity * 0.6, 0.8),
+            importance=curiosity,
+            novelty=max(0.1, 1.0 - advance_count / 5.0),
+            recurrence=min(advance_count / 8.0, 1.0),
+            unfinished_score=unfinished,
+            dreamability=dreamability,
+            score=dreamability * 0.7 + unfinished * 0.3,
+            tension_reason=f"关于「{title}」的思考尚未完成，好奇心仍在。",
+        ))
+
+    return seeds
+
+
 def collect_seed_node_ids(seeds: list[DreamSeed]) -> list[str]:
     """收集 REM 的主种子节点 ID。"""
     return _unique_preserve(
