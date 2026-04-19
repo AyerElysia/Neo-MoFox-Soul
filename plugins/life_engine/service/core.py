@@ -1041,13 +1041,9 @@ class LifeEngineService(BaseService):
             period_label, heartbeat_interval, external_activity, idle_heartbeats
         ))
 
-        if self._snn_network is not None and self._snn_bridge is not None:
-            if not self._cfg().snn.shadow_only and self._cfg().snn.inject_to_heartbeat:
-                drive_text = self._snn_bridge.format_drive_for_prompt(
-                    self._snn_network.get_drive_discrete()
-                )
-                if drive_text:
-                    lines.extend([f"**{drive_text}**", ""])
+        # SNN 驱动注入已降级：shadow_only 模式下不注入 prompt
+        # 神经调质层（neuromod）已提供更清晰的驱动状态摘要
+        # SNN 仍作为底层信号处理器运行，提供特征提取和奖赏计算
 
         cfg = self._cfg()
         if self._inner_state is not None and getattr(cfg, "neuromod", None) is not None:
