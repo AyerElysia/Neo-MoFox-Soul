@@ -40,6 +40,8 @@ from .audit import (
 )
 from ..core.config import LifeEngineConfig
 from ..streams.manager import ThoughtStreamManager
+from ..drives.impulse import ImpulseEngine
+from ..drives.rules import DEFAULT_RULES
 from ..constants import (
     HEARTBEAT_IDLE_CRITICAL_THRESHOLD,
     HEARTBEAT_IDLE_WARNING_THRESHOLD,
@@ -130,6 +132,9 @@ class LifeEngineService(BaseService):
 
         # 思考流系统
         self._thought_manager: ThoughtStreamManager | None = None
+
+        # 冲动引擎
+        self._impulse_engine: ImpulseEngine | None = None
 
         # 状态持久化
         self._state_persistence: StatePersistence | None = None
@@ -1060,6 +1065,29 @@ class LifeEngineService(BaseService):
                 if streams_text:
                     lines.extend([streams_text, ""])
 
+        # 冲动建议注入
+        if self._impulse_engine is not None:
+            drives_cfg = getattr(cfg, "drives", None)
+            if drives_cfg is None or getattr(drives_cfg, "inject_to_heartbeat", True):
+                neuromod_state = {}
+                if self._inner_state is not None:
+                    try:
+                        neuromod_state = self._inner_state.get_full_state()
+                    except Exception:  # noqa: BLE001
+                        pass
+                context = {
+                    "silence_minutes": minutes_since_external or 0,
+                    "idle_heartbeats": idle_heartbeats,
+                    "has_active_thoughts": bool(self._thought_manager and self._thought_manager.list_active()),
+                    "has_urgent_todos": False,  # TODO: integrate with TODO system
+                }
+                suggestions = self._impulse_engine.evaluate(neuromod_state, context)
+                impulse_text = self._impulse_engine.format_for_prompt(
+                    suggestions, neuromod_state, max_items=3
+                )
+                if impulse_text:
+                    lines.extend([impulse_text, ""])
+
         if idle_warning:
             lines.extend([idle_warning, ""])
 
@@ -1469,6 +1497,12 @@ class LifeEngineService(BaseService):
                 dormancy_hours=dormancy_hours,
             )
             logger.info(f"思考流系统已初始化: max_active={max_active}")
+
+        # 初始化冲动引擎
+        drives_cfg = getattr(cfg, "drives", None)
+        if drives_cfg is None or getattr(drives_cfg, "enabled", True):
+            self._impulse_engine = ImpulseEngine(list(DEFAULT_RULES))
+            logger.info("冲动引擎已初始化")
 
         self._state.running = True
         self._state.started_at = _now_iso()

@@ -440,6 +440,41 @@ class LifeEngineConfig(BaseConfig):
             description="对话模式单轮最大工具调用轮数。",
         )
 
+    @config_section("drives")
+    class DrivesSection(SectionBase):
+        """冲动引擎配置。"""
+
+        enabled: bool = Field(
+            default=True,
+            description="是否启用冲动引擎。冲动引擎将神经调质状态转化为具体行为建议。",
+        )
+
+        inject_to_heartbeat: bool = Field(
+            default=True,
+            description="是否将冲动建议注入心跳 prompt。",
+        )
+
+        curiosity_threshold: float = Field(
+            default=0.65,
+            ge=0.3,
+            le=0.9,
+            description="好奇心冲动触发阈值。",
+        )
+
+        sociability_threshold: float = Field(
+            default=0.6,
+            ge=0.3,
+            le=0.9,
+            description="社交欲冲动触发阈值。",
+        )
+
+        silence_trigger_minutes: int = Field(
+            default=30,
+            ge=5,
+            le=120,
+            description="沉默多久后触发社交冲动（分钟）。",
+        )
+
     @config_section("streams")
     class StreamsSection(SectionBase):
         """思考流系统配置。"""
@@ -479,6 +514,7 @@ class LifeEngineConfig(BaseConfig):
     memory_algorithm: MemoryAlgorithmSection = Field(default_factory=MemoryAlgorithmSection)
     chatter: ChatterSection = Field(default_factory=ChatterSection)
     streams: StreamsSection = Field(default_factory=StreamsSection)
+    drives: DrivesSection = Field(default_factory=DrivesSection)
 
     @field_validator("settings")
     @classmethod
