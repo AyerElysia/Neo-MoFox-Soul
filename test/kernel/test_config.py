@@ -575,7 +575,11 @@ foo = \"bar\"
             shutil.rmtree(temp_dir)
 
     def test_multiline_default_generates_valid_toml_and_comment(self) -> None:
-        """测试 Field(default=多行字符串) 时，生成的 TOML 合法且注释使用占位文字。"""
+        """测试 Field(default=多行字符串) 时，生成的 TOML 合法且注释只显示第一行加 ..."""
+        import shutil
+        import tempfile
+        import tomllib
+        from pathlib import Path
 
         class MultilineConfig(ConfigBase):
             @config_section("general")
@@ -602,16 +606,20 @@ foo = \"bar\"
 
             content = config_file.read_text(encoding="utf-8")
 
-            # 文件必须是合法 TOML（不会抛出异常）
-            import tomllib
+            # 文件必须是合法 TOML
             parsed = tomllib.loads(content)
             assert parsed["general"]["instructions"] == "第一行\n第二行\n第三行"
 
-            # 签名注释行应使用占位文字而非多行文本
-            assert "# 值类型：str, 默认值：（多行默认值）" in content
+            # 签名注释应显示第一行内容加 ...
+            assert '# 值类型：str, 默认值："第一行..."' in content
 
             # 单行默认值的字段不受影响
             assert '# 值类型：str, 默认值："hello"' in content
+
+            # 确保注释行中不会泄露多行默认值的完整原始内容
+            for line in content.splitlines():
+                if line.lstrip().startswith("#"):
+                    assert "第二行" not in line
         finally:
             shutil.rmtree(temp_dir)
 
