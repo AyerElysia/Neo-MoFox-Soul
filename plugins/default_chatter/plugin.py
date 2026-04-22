@@ -689,8 +689,8 @@ class DefaultChatterPlugin(BasePlugin):
                 .then(min_len(10))
                 .then(
                     wrap(
-                        "# 背景故事\\n", 
-                        "\\n- （以上为背景知识，请理解并作为行动依据，但不要在对话中直接复述。）"
+                        "# 背景故事\n", 
+                        "\n- （以上为背景知识，请理解并作为行动依据，但不要在对话中直接复述。）"
                     )
                 ),
                 "reply_style": optional(personality.reply_style),
