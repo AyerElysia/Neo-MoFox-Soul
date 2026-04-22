@@ -48,7 +48,7 @@ class LifeThinkAction(BaseAction):
         mood: Annotated[str, "此刻的心情/情绪状态（必填）。"],
         decision: Annotated[str, "你决定的下一步行动（必填）。"],
         expected_response: Annotated[str, "你预期用户看到回复后的反应（必填）。"],
-        thought: Annotated[str | None, "你的心理活动。"] = None,
+        thought: Annotated[str, "你的心理活动（必填）。"],
         **extra_kwargs: object,
     ) -> tuple[bool, str]:
         legacy_content = extra_kwargs.pop("content", None)

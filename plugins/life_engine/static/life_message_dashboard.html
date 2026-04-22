@@ -234,6 +234,23 @@
       background: rgba(52, 211, 153, 0.14);
     }
 
+    .input {
+      appearance: none;
+      border: 1px solid rgba(255,255,255,0.14);
+      background: rgba(255,255,255,0.05);
+      color: var(--text);
+      padding: 9px 12px;
+      border-radius: 999px;
+      min-width: 220px;
+      font: inherit;
+      outline: none;
+    }
+
+    .input:focus {
+      border-color: rgba(125, 211, 252, 0.5);
+      box-shadow: 0 0 0 3px rgba(125, 211, 252, 0.18);
+    }
+
     .layout {
       display: grid;
       grid-template-columns: 1.05fr 1.2fr;
@@ -463,6 +480,18 @@
       background: rgba(255,255,255,0.03);
     }
 
+    .history-panel {
+      margin-top: 18px;
+    }
+
+    .history-list {
+      display: grid;
+      gap: 10px;
+      max-height: 34vh;
+      overflow: auto;
+      padding-right: 4px;
+    }
+
     @media (max-width: 1180px) {
       .hero, .layout { grid-template-columns: 1fr; }
       .feed { max-height: none; }
@@ -498,6 +527,8 @@
     <div class="toolbar">
       <div id="status-text">正在连接快照接口…</div>
       <div class="toolbar-actions">
+        <input class="input" id="history-query" placeholder="历史检索关键词（会查被刷走上下文）" />
+        <button class="button" id="history-search-btn">检索历史</button>
         <button class="button" id="refresh-btn">立即刷新</button>
         <button class="button active" id="auto-btn">自动刷新：开</button>
       </div>
@@ -525,6 +556,17 @@
         <div class="streams-grid" id="streams"></div>
       </article>
     </section>
+
+    <section class="panel history-panel">
+      <div class="panel-head">
+        <div>
+          <h2>历史检索（DB + NapCat 回补）</h2>
+          <div class="panel-sub">输入关键词后调用 `/message_timeline/api/history_search`，可找回被上下文窗口刷走的消息。</div>
+        </div>
+      </div>
+      <div id="history-meta" class="panel-sub">尚未执行历史检索</div>
+      <div class="history-list" id="history-results"></div>
+    </section>
   </main>
 
   <script>
@@ -534,6 +576,7 @@
       lastLifeId: null,
       lastStreamIds: new Map(),
       timer: null,
+      history: null,
     };
 
     const el = (id) => document.getElementById(id);
@@ -687,6 +730,54 @@
         : "快照已更新";
     }
 
+    function renderHistoryResult(data) {
+      state.history = data;
+      const matches = data?.matches || [];
+      const stats = data?.stats || {};
+      el("history-meta").textContent =
+        `返回 ${fmt(stats.returned_matches, 0)} 条 · 本地命中 ${fmt(stats.local_matches, 0)} · ` +
+        `回补命中 ${fmt(stats.backfill_matches, 0)} · 候选流 ${fmt(stats.candidate_streams, 0)}`;
+
+      const wrap = el("history-results");
+      if (!matches.length) {
+        wrap.innerHTML = `<div class="empty">没有匹配结果</div>`;
+        return;
+      }
+
+      wrap.innerHTML = matches.map((item) => `
+        <div class="feed-item ${item.source === "adapter_backfill" ? "chat" : "life"}">
+          <div class="feed-top">
+            <div class="feed-name">${esc(item.stream_id || "unknown")} · ${esc(item.source || "unknown")}</div>
+            <div class="feed-time">${esc(item.time || "—")}</div>
+          </div>
+          <div class="panel-sub">${esc(item.sender_name || item.sender_id || "unknown")} · ${esc(item.platform || "—")} · ${esc(item.chat_type || "—")}</div>
+          <div class="feed-content">${esc(item.content_full || item.content || "")}</div>
+        </div>
+      `).join("");
+    }
+
+    async function runHistorySearch() {
+      const query = el("history-query").value || "";
+      const params = new URLSearchParams({
+        query,
+        cross_stream: "true",
+        limit: "20",
+        source_mode: "auto",
+        include_tool_calls: "true",
+      });
+      try {
+        const res = await fetch(`./api/history_search?${params.toString()}`, { cache: "no-store" });
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data?.error || `HTTP ${res.status}`);
+        }
+        renderHistoryResult(data);
+      } catch (error) {
+        el("history-meta").textContent = `历史检索失败：${error.message}`;
+        el("history-results").innerHTML = `<div class="empty">历史检索失败，请检查日志</div>`;
+      }
+    }
+
     async function loadSnapshot() {
       try {
         const res = await fetch("./api/snapshot?event_limit=24&stream_limit=12&message_limit=8", {
@@ -719,6 +810,10 @@
 
     el("refresh-btn").addEventListener("click", loadSnapshot);
     el("auto-btn").addEventListener("click", toggleAuto);
+    el("history-search-btn").addEventListener("click", runHistorySearch);
+    el("history-query").addEventListener("keydown", (event) => {
+      if (event.key === "Enter") runHistorySearch();
+    });
 
     loadSnapshot();
     state.timer = setInterval(loadSnapshot, 1500);

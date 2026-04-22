@@ -1015,7 +1015,7 @@ class LifeEngineService(BaseService):
             getattr(thresholds, "idle_critical_threshold", HEARTBEAT_IDLE_CRITICAL_THRESHOLD)
         )
 
-            idle_warning = ""
+        idle_warning = ""
         if idle_heartbeats >= critical_threshold:
             idle_warning = f"🌿 已经安静了 {idle_heartbeats} 次心跳了。如果有想做的事，现在是个好时机；如果没有，继续休息也很好。"
         elif idle_heartbeats >= warning_threshold:

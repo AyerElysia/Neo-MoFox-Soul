@@ -30,7 +30,7 @@ followup_min_delay_seconds = 5.0
 
 # 延迟续话的最长等待秒数
 # 值类型：float, 默认值：90.0
-followup_max_delay_seconds = 30.0
+followup_max_delay_seconds = 120.0
 
 # 同一轮延迟续话链允许的最大补充次数
 # 值类型：int, 默认值：2
@@ -46,4 +46,4 @@ monologue_history_limit = 20
 
 # 忽略的聊天类型列表，如 ['group'] 表示群聊不触发
 # 值类型：list, 默认值：["group"]
-ignored_chat_types = ["group"]
+ignored_chat_types = []

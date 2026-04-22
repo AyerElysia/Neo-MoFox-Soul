@@ -36,11 +36,18 @@ _PASS_AND_WAIT = "action-life_pass_and_wait"
 _SEND_TEXT = "action-life_send_text"
 _SUSPEND_TEXT = "__SUSPEND__"
 _MAX_THINK_ONLY_RETRIES = 1
+_MAX_MUST_REPLY_RETRIES = 2
 _THINK_ONLY_RETRY_REMINDER = (
     "（系统提醒：你本轮只调用了 action-think。"
     "think 只能用于内在思考，不能作为唯一动作。"
     "请立刻再来一轮，至少补充一个可执行动作（例如 action-life_send_text、"
     "action-life_pass_and_wait，或其他可用的 tool/action）。）"
+)
+_MUST_REPLY_RETRY_REMINDER = (
+    "（系统提醒：当前批消息已判定为“需要回复”。"
+    "这一轮不能使用 action-life_pass_and_wait 结束。"
+    "请调用 action-life_send_text 输出给用户可见的回复内容。"
+    "如需先整理思路，可先 action-think，再 action-life_send_text。）"
 )
 _SEGMENT_ENCOURAGE_MIN_CHARS = 56
 _SEGMENT_SEND_RETRY_REMINDER = (
@@ -75,6 +82,8 @@ class _WorkflowRuntime:
     plain_text_retry_count: int = 0
     follow_up_rounds: int = 0
     think_only_retry_count: int = 0
+    must_reply: bool = False
+    must_reply_retry_count: int = 0
 
 
 # ── Actions ───────────────────────────────────────────────────
@@ -728,6 +737,11 @@ class LifeChatter(BaseChatter):
         response.add_payload(LLMPayload(ROLE.SYSTEM, Text(_SEGMENT_SEND_RETRY_REMINDER)))
         logger.info("检测到长文本单段发送，已注入分段发送提醒")
 
+    @staticmethod
+    def _append_must_reply_retry_instruction(response: Any) -> None:
+        response.add_payload(LLMPayload(ROLE.SYSTEM, Text(_MUST_REPLY_RETRY_REMINDER)))
+        logger.warning("检测到应回复轮次却未发送文本，已注入强制回复提醒")
+
     # ── main execute ─────────────────────────────────────────
 
     async def execute(self) -> AsyncGenerator[Wait | Success | Failure | Stop, None]:
@@ -807,6 +821,8 @@ class LifeChatter(BaseChatter):
 
                 if not decision.get("should_respond", False):
                     logger.info("决定不响应，继续等待...")
+                    rt.must_reply = False
+                    rt.must_reply_retry_count = 0
                     await self.flush_unreads(unread_msgs)
                     yield Wait()
                     continue
@@ -824,6 +840,8 @@ class LifeChatter(BaseChatter):
                     formatted_content=Text(user_prompt_text),
                 )
                 rt.history_merged = True
+                rt.must_reply = True
+                rt.must_reply_retry_count = 0
                 self._transition(rt, _Phase.MODEL_TURN, "accepted unread batch")
                 rt.unread_msgs_to_flush = unread_msgs
                 continue
@@ -871,6 +889,7 @@ class LifeChatter(BaseChatter):
                 should_wait = False
                 has_pending_tool_results = False
                 seen_sigs: set[str] = set()
+                sent_text_this_round = False
 
                 for call in call_list:
                     get_watchdog().feed_dog(self.stream_id)
@@ -902,6 +921,18 @@ class LifeChatter(BaseChatter):
 
                     # pass_and_wait
                     if call_name == _PASS_AND_WAIT:
+                        if rt.must_reply:
+                            llm_response.add_payload(
+                                LLMPayload(
+                                    ROLE.TOOL_RESULT,
+                                    ToolResult(
+                                        value="当前轮已判定需要回复，不能 pass_and_wait；请改为 life_send_text。",
+                                        call_id=call.id,
+                                        name=call_name,
+                                    ),
+                                )
+                            )
+                            continue
                         llm_response.add_payload(
                             LLMPayload(
                                 ROLE.TOOL_RESULT,
@@ -924,6 +955,11 @@ class LifeChatter(BaseChatter):
                     ):
                         self._append_segment_send_retry_instruction(llm_response)
 
+                    if success and call_name == _SEND_TEXT:
+                        sent_text_this_round = True
+                        rt.must_reply = False
+                        rt.must_reply_retry_count = 0
+
                     if appended and not call_name.startswith("action-"):
                         has_pending_tool_results = True
 
@@ -941,6 +977,16 @@ class LifeChatter(BaseChatter):
                     logger.warning("连续仅调用 action-think，达到重试上限，本轮按 action-only 收敛等待")
                 else:
                     rt.think_only_retry_count = 0
+
+                if rt.must_reply and not sent_text_this_round:
+                    rt.must_reply_retry_count += 1
+                    self._append_must_reply_retry_instruction(llm_response)
+                    if rt.must_reply_retry_count <= _MAX_MUST_REPLY_RETRIES:
+                        self._transition(rt, _Phase.FOLLOW_UP, "must-reply guard retry")
+                        continue
+                    logger.warning("应回复约束达到重试上限，本轮放弃强制回复以避免死循环")
+                    rt.must_reply = False
+                    rt.must_reply_retry_count = 0
 
                 # pass_and_wait 最高优先级
                 if should_wait:

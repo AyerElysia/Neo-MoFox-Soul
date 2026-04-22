@@ -57,3 +57,28 @@ class MessageTimelineRouter(BaseRouter):
                 if str(stream.get("stream_id", "")) == stream_id:
                     return stream
             return JSONResponse(content={"error": "stream not found"}, status_code=404)
+
+        @self.app.get("/api/history_search")
+        async def history_search(
+            query: str = "",
+            stream_id: str = "",
+            cross_stream: bool = True,
+            limit: int = 20,
+            source_mode: str = "auto",
+            include_tool_calls: bool = True,
+        ) -> Any:
+            from ..tools.chat_history_tools import LifeEngineFetchChatHistoryTool
+
+            plugin: "LifeEnginePlugin" = self.plugin  # type: ignore
+            tool = LifeEngineFetchChatHistoryTool(plugin=plugin)
+            ok, data = await tool.execute(
+                query=query,
+                stream_ids=[stream_id] if stream_id.strip() else [],
+                cross_stream=cross_stream,
+                limit=limit,
+                source_mode=source_mode if source_mode in {"auto", "local_db", "napcat"} else "auto",
+                include_tool_calls=include_tool_calls,
+            )
+            if ok:
+                return data
+            return JSONResponse(content={"error": str(data)}, status_code=400)

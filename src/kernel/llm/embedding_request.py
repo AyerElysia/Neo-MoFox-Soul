@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from typing import Any, Self
+from typing import Self
 
 from .exceptions import LLMConfigurationError, classify_exception
 from .model_client import ModelClientRegistry

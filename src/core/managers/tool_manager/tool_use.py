@@ -10,6 +10,7 @@ from typing import Any, TYPE_CHECKING
 from src.kernel.logger import get_logger
 from src.core.components.registry import get_global_registry
 from src.core.components.utils import should_strip_auto_reason_argument
+from rich.markup import escape as escape_rich_markup
 
 if TYPE_CHECKING:
     from src.core.components.base.plugin import BasePlugin
@@ -17,6 +18,38 @@ if TYPE_CHECKING:
     from src.core.models.message import Message
 
 logger = get_logger("tool_use")
+_TOOL_RESULT_PREVIEW_MAX_CHARS = 2000
+_TOOL_RESULT_PREVIEW_MAX_LINES = 24
+
+
+def _build_result_preview(result: Any) -> str:
+    """将工具结果转换为适合终端显示的预览文本。"""
+    if result is None:
+        return ""
+
+    if isinstance(result, str):
+        text = result
+    elif isinstance(result, dict):
+        text = json.dumps(result, ensure_ascii=False, indent=2, default=str)
+    elif isinstance(result, (list, tuple, set)):
+        text = json.dumps(list(result), ensure_ascii=False, indent=2, default=str)
+    else:
+        text = str(result)
+
+    text = text.strip()
+    if not text:
+        return ""
+
+    lines = text.splitlines()
+    truncated_by_lines = len(lines) > _TOOL_RESULT_PREVIEW_MAX_LINES
+    preview = "\n".join(lines[:_TOOL_RESULT_PREVIEW_MAX_LINES])
+    truncated_by_chars = len(preview) > _TOOL_RESULT_PREVIEW_MAX_CHARS
+    if truncated_by_chars:
+        preview = preview[:_TOOL_RESULT_PREVIEW_MAX_CHARS].rstrip()
+
+    if truncated_by_lines or truncated_by_chars:
+        preview += "\n...(结果过长，已截断)"
+    return preview
 
 
 class ToolUse:
@@ -165,6 +198,12 @@ class ToolUse:
             # 记录执行完成
             status_emoji = "✅" if success else "❌"
             logger.info(f"{status_emoji} 工具执行完成: {tool_instance.tool_name}, 耗时: {execution_time:.2f}s")
+            preview = _build_result_preview(result)
+            if preview:
+                logger.info(
+                    f"工具返回结果预览 ({tool_instance.tool_name}):\n"
+                    f"{escape_rich_markup(preview)}"
+                )
 
             return success, result
 

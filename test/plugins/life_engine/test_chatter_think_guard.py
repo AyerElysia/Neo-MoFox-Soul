@@ -55,3 +55,12 @@ def test_append_segment_send_retry_instruction_adds_system_payload() -> None:
     assert len(response.payloads) == 1
     payload = response.payloads[0]
     assert getattr(payload, "role", None) == ROLE.SYSTEM
+
+
+def test_append_must_reply_retry_instruction_adds_system_payload() -> None:
+    response = _FakeResponse()
+    LifeChatter._append_must_reply_retry_instruction(response)
+
+    assert len(response.payloads) == 1
+    payload = response.payloads[0]
+    assert getattr(payload, "role", None) == ROLE.SYSTEM

@@ -6,7 +6,7 @@ enabled = true
 
 # 心跳间隔（秒）。
 # 值类型：int, 默认值：30
-heartbeat_interval_seconds = 120
+heartbeat_interval_seconds = 180
 
 # 睡觉时间，格式 HH:MM（24小时制）。与 wake_time 同时配置后生效。
 # 值类型：str, 默认值：""
@@ -37,6 +37,48 @@ max_rounds_per_heartbeat = 10
 # 中枢任务使用的模型任务名称，对应 config/model.toml 中的 [model_tasks.life]。
 # 值类型：str, 默认值："life"
 task_name = "life"
+
+# 聊天历史检索与回补配置。
+[history_retrieval]
+# 是否启用聊天历史检索工具。
+# 值类型：bool, 默认值：true
+enabled = true
+
+# 未显式指定 stream_id 时，是否默认跨 stream 检索。
+# 值类型：bool, 默认值：true
+default_cross_stream = true
+
+# 用于回补历史的适配器签名。
+# 值类型：str, 默认值："napcat_adapter:adapter:napcat_adapter"
+adapter_signature = "napcat_adapter:adapter:napcat_adapter"
+
+# 群聊历史回补 action 候选列表（按顺序尝试）。
+# 值类型：list, 默认值：["get_group_msg_history"]
+group_history_actions = ["get_group_msg_history"]
+
+# 私聊历史回补 action 候选列表（按顺序尝试）。
+# 值类型：list, 默认值：["get_friend_msg_history", "get_private_msg_history"]
+private_history_actions = ["get_friend_msg_history", "get_private_msg_history"]
+
+# 适配器回补超时时间（秒）。
+# 值类型：int, 默认值：8
+adapter_timeout_seconds = 8
+
+# 跨 stream 检索时最多扫描多少个候选流。
+# 值类型：int, 默认值：12
+max_candidate_streams = 12
+
+# 每个 stream 最多扫描多少条历史消息。
+# 值类型：int, 默认值：240
+max_scan_rows_per_stream = 240
+
+# 历史检索工具默认返回条数。
+# 值类型：int, 默认值：20
+tool_default_limit = 20
+
+# 历史检索工具允许返回的最大条数。
+# 值类型：int, 默认值：100
+tool_max_limit = 100
 
 # 网络搜索与网页提取能力配置（Tavily）。
 [web]
@@ -173,11 +215,11 @@ nap_enabled = true
 external_active_minutes = 5
 
 # 心跳空闲警告阈值
-# 值类型：int, 默认值：2
+# 值类型：int, 默认值：5
 idle_warning_threshold = 2
 
 # 心跳空闲严重警告阈值
-# 值类型：int, 默认值：5
+# 值类型：int, 默认值：12
 idle_critical_threshold = 5
 
 # TODO 紧急截止天数阈值
@@ -223,3 +265,43 @@ mode = "enhanced"
 # 对话模式单轮最大工具调用轮数。
 # 值类型：int, 默认值：5
 max_rounds_per_chat = 5
+
+# 思考流系统配置。
+[streams]
+# 是否启用思考流系统。思考流给爱莉持久在意的兴趣线索，让她在心跳间有事可想。
+# 值类型：bool, 默认值：true
+enabled = true
+
+# 同时活跃的思考流上限。超过后自动将好奇心最低的转入休眠。
+# 值类型：int, 默认值：5
+max_active_streams = 5
+
+# 多久不推进后自动进入休眠（小时）。
+# 值类型：int, 默认值：24
+dormancy_threshold_hours = 24
+
+# 是否将思考流状态注入心跳 prompt。
+# 值类型：bool, 默认值：true
+inject_to_heartbeat = true
+
+# 冲动引擎配置。
+[drives]
+# 是否启用冲动引擎。冲动引擎将神经调质状态转化为具体行为建议。
+# 值类型：bool, 默认值：true
+enabled = true
+
+# 是否将冲动建议注入心跳 prompt。
+# 值类型：bool, 默认值：true
+inject_to_heartbeat = true
+
+# 好奇心冲动触发阈值。
+# 值类型：float, 默认值：0.65
+curiosity_threshold = 0.65
+
+# 社交欲冲动触发阈值。
+# 值类型：float, 默认值：0.6
+sociability_threshold = 0.6
+
+# 沉默多久后触发社交冲动（分钟）。
+# 值类型：int, 默认值：30
+silence_trigger_minutes = 30

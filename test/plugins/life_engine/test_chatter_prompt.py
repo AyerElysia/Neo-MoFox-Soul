@@ -32,5 +32,5 @@ def test_tell_dfc_tool_description_frames_as_runtime_mode_sync() -> None:
     """nucleus_tell_dfc 的叙事应指向运行模式同步，而不是双意识。"""
     description = LifeEngineWakeDFCTool.tool_description
 
-    assert "对外运行模式" in description
-    assert "两个意识体" not in description
+    assert "同一主体的表达层" in description
+    assert "不是在和另一个意识体对话" in description

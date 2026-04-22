@@ -109,6 +109,7 @@
 - `/message_timeline`
 - 里面会同时展示 life 的最新事件流和每个聊天流的最新消息
 - 适合你直接盯“life 刚记了什么”“对话器刚收到了什么/刚发了什么”
+- 面板内可直接调用历史检索（本地 DB + NapCat 回补）来找回被上下文窗口刷走的消息
 
 ### 机制补完清单（细节版，一次讲全）
 
@@ -135,7 +136,7 @@
 
 ## 2. 她会用哪些能力（工具全览）
 
-总共 23 种能力，按 5 组：
+总共 24 种能力，按 6 组：
 
 ### A. 文件与空间整理（10）
 
@@ -154,7 +155,11 @@
 
 - `nucleus_grep_file` 在私人空间里找关键词/句子
 
-### C. 愿望清单（5）
+### C. 聊天历史回放（1）
+
+- `fetch_chat_history` 检索历史消息（支持跨流、时间范围、NapCat 回补）
+
+### D. 愿望清单（5）
 
 - `nucleus_create_todo`
 - `nucleus_edit_todo`
@@ -162,7 +167,7 @@
 - `nucleus_get_todo`
 - `nucleus_delete_todo`
 
-### D. 记忆网络（5）
+### E. 记忆网络（5）
 
 - `nucleus_search_memory` 找记忆 + 联想  
 - `nucleus_relate_file` 建立“这两件事有关”  
@@ -170,7 +175,7 @@
 - `nucleus_forget_relation` 弱化/删除关系  
 - `nucleus_memory_stats` 看记忆整体状态
 
-### E. 网络世界（2）
+### F. 网络世界（2）
 
 - `nucleus_web_search` 联网搜索（Tavily）
 - `nucleus_browser_fetch` 打开网页并提取正文（Tavily Extract）

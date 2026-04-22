@@ -14,7 +14,7 @@ from __future__ import annotations
 import inspect
 from pathlib import Path
 from dataclasses import dataclass
-from typing import Any, Callable, ClassVar, Literal, TypeVar, Self, get_args, get_origin
+from typing import Any, Callable, Literal, TypeVar, Self, get_args, get_origin
 
 import tomllib
 from pydantic import BaseModel, ConfigDict, TypeAdapter
