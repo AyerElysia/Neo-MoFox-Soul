@@ -89,15 +89,11 @@ logs/*
 htmlcov/
 .ruff_cache/
 old/
-data/*
+data/
 .claude/
-config/*
+config/
+
 plugins/*
-
-!config/plugins/
-!config/plugins/default_chatter/
-!config/plugins/default_chatter/config.toml
-
 
 !plugins/default_chatter/
 !plugins/napcat_adapter/
