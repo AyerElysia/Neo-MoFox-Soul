@@ -1352,7 +1352,12 @@ class OpenAIChatClient:
             "model": model_name,
             "input": inputs,
         }
-        params.update(extra_params)
+        # 过滤掉 embedding API 不支持的参数
+        embedding_safe_params = {
+            k: v for k, v in extra_params.items()
+            if k not in ("enable_thinking", "thinking", "reasoning_effort")
+        }
+        params.update(embedding_safe_params)
 
         _log_openai_request_body("embeddings.create", params)
         resp = await client.embeddings.create(**params)
