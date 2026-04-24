@@ -487,6 +487,17 @@ def _normalize_reasoning_value(value: Any) -> str | None:
     return None
 
 
+def _should_backfill_reasoning_content(messages: list[dict[str, Any]]) -> bool:
+    """当上下文中已存在 reasoning_content 时，为缺失的 assistant 历史统一回填。"""
+    for message in messages:
+        if message.get("role") != "assistant":
+            continue
+        reasoning_content = message.get("reasoning_content")
+        if isinstance(reasoning_content, str) and reasoning_content.strip():
+            return True
+    return False
+
+
 # _ClientCacheKey: (api_key, base_url, loop_id, timeout, trust_env, force_ipv4)
 _ClientCacheKey = tuple[str, str | None, int, float | None, bool, bool]
 
@@ -800,16 +811,9 @@ class OpenAIChatClient:
             else:
                 params["extra_body"] = extra_body
 
-        # 兼容：部分 OpenAI 兼容网关（如 Kimi）在开启 thinking 时，
-        # 要求 assistant 历史消息回传 reasoning_content 字段。
-        # 若旧上下文里缺失该字段，则做保底补齐，避免直接 400。
-        thinking_enabled = False
-        extra_body_params = params.get("extra_body")
-        if isinstance(extra_body_params, dict):
-            enable_thinking = extra_body_params.get("enable_thinking")
-            thinking_enabled = bool(enable_thinking) if enable_thinking is not None else False
-
-        if thinking_enabled:
+        # 若上下文中已存在带 reasoning_content 的 assistant 响应，
+        # 则为其余缺失字段的 assistant 历史统一回填，避免 follow-up 400。
+        if _should_backfill_reasoning_content(messages):
             for msg in messages:
                 if (
                     msg.get("role") == "assistant"

@@ -46,6 +46,7 @@ class LLMResponse:
     tool_call_compat: bool = False
 
     _consumed: bool = False
+    _appended_to_context: bool = False
 
     def __post_init__(self) -> None:
         """确保 message 和 call_list 不为 None，方便后续处理；如果 context_manager 为空且上层存在，则继承上层的 context_manager。"""
@@ -178,10 +179,12 @@ class LLMResponse:
         assistant_payload = LLMPayload(ROLE.ASSISTANT, content_parts)  # type: ignore[arg-type]
         if self.context_manager is not None:
             self.payloads = self.context_manager.add_payload(self.payloads, assistant_payload)
+            self._appended_to_context = True
             return
 
         self.payloads.append(assistant_payload)
         self._maybe_apply_context_manager()
+        self._appended_to_context = True
 
     def _maybe_apply_context_manager(self) -> None:
         """如果启用了上下文管理器，则尝试裁剪 payloads，以适应上下文限制。"""
@@ -248,6 +251,13 @@ class LLMResponse:
         Returns:
             LLMResponse: 新的请求的响应对象。
         """
+        if not self._consumed:
+            await self._collect_full_response()
+
+        if not self._appended_to_context:
+            self.add_payload(self.to_payload())
+            self._appended_to_context = True
+
         # 延迟导入，避免循环依赖
         from .request import LLMRequest
 
