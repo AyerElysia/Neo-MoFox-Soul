@@ -439,6 +439,64 @@ class TestMetricsCollector:
         # Stats should be aggregated for 2 models
         assert len(collector._stats) == 2
 
+    def test_json_persistence_restores_history_and_stats(self, tmp_path) -> None:
+        """JSON 持久化应能在新 collector 中恢复历史与聚合统计。"""
+        json_path = tmp_path / "llm_metrics.json"
+        collector = MetricsCollector(json_path=json_path, flush_interval=9999)
+        collector.record_request(
+            RequestMetrics(
+                model_name="gpt-4",
+                request_name="first",
+                latency=1.0,
+                tokens_in=10,
+                tokens_out=5,
+            )
+        )
+        collector.record_request(
+            RequestMetrics(
+                model_name="gpt-4",
+                request_name="second",
+                latency=2.0,
+                tokens_in=20,
+                tokens_out=8,
+            )
+        )
+        collector.flush()
+        collector.shutdown()
+
+        restored = MetricsCollector(json_path=json_path, flush_interval=9999)
+        try:
+            history = restored.get_recent_history(limit=2)
+            stats = restored.get_stats(model_name="gpt-4")
+
+            assert [item.request_name for item in history] == ["first", "second"]
+            assert stats["total_requests"] == 2
+            assert stats["total_tokens_in"] == 30
+            assert stats["total_tokens_out"] == 13
+        finally:
+            restored.shutdown()
+
+    def test_flush_does_not_stop_persist_thread(self, tmp_path) -> None:
+        """手动 flush 只应刷盘，不应让后续记录失去后台定时持久化。"""
+        collector = MetricsCollector(json_path=tmp_path / "llm_metrics.json", flush_interval=9999)
+        try:
+            collector.record_request(RequestMetrics(model_name="gpt-4", request_name="first", latency=1.0))
+            collector.flush()
+
+            assert collector._persist_thread is not None
+            assert collector._persist_thread.is_alive()
+
+            collector.record_request(RequestMetrics(model_name="gpt-4", request_name="second", latency=1.0))
+            collector.flush()
+
+            restored = MetricsCollector(json_path=tmp_path / "llm_metrics.json", flush_interval=9999)
+            try:
+                assert [item.request_name for item in restored.get_recent_history(limit=2)] == ["first", "second"]
+            finally:
+                restored.shutdown()
+        finally:
+            collector.shutdown()
+
 
 class TestGlobalCollector:
     """Test cases for global collector."""

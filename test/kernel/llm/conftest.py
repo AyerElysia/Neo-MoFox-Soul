@@ -10,8 +10,25 @@ from unittest.mock import AsyncMock, MagicMock, Mock
 import pytest
 
 from src.kernel.llm.model_client.base import ChatModelClient, StreamEvent
-from src.kernel.llm.payload import LLMPayload, Text, ToolResult, ToolCall
+from src.kernel.llm.payload import LLMUsable, LLMPayload, Text, ToolResult, ToolCall
 from src.kernel.llm.roles import ROLE
+
+
+@pytest.fixture(autouse=True)
+def isolated_global_metrics_collector(tmp_path, monkeypatch):
+    """LLM 测试不应读写真实的默认统计文件。"""
+    from src.kernel.llm import monitor
+
+    if monitor._global_collector is not None:
+        monitor._global_collector.shutdown()
+    monkeypatch.setattr(monitor, "_global_collector", None)
+    monkeypatch.setenv("MOFOX_LLM_METRICS_PATH", str(tmp_path / "llm_metrics.json"))
+
+    yield
+
+    if monitor._global_collector is not None:
+        monitor._global_collector.shutdown()
+    monkeypatch.setattr(monitor, "_global_collector", None)
 
 
 # ============================================================================
@@ -123,7 +140,7 @@ def mock_chat_client() -> ChatModelClient:
         *,
         model_name: str,
         payloads: list[LLMPayload],
-        tools: list[Tool],
+        tools: list[LLMUsable],
         request_name: str,
         model_set: Any,
         stream: bool,
@@ -256,6 +273,6 @@ def assert_payloads_equal(
         if compare_content:
             assert len(p1.content) == len(p2.content)
             for c1, c2 in zip(p1.content, p2.content):
-                assert type(c1) == type(c2), f"Content type mismatch: {type(c1)} != {type(c2)}"
+                assert type(c1) is type(c2), f"Content type mismatch: {type(c1)} != {type(c2)}"
                 if isinstance(c1, Text) and isinstance(c2, Text):
                     assert c1.text == c2.text, f"Text content mismatch: {c1.text} != {c2.text}"

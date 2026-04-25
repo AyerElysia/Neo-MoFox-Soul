@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import atexit
 import json
+import logging
 import os
 import threading
 import time
@@ -16,6 +17,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -148,7 +151,7 @@ class MetricsCollector:
         self._stats: dict[str, ModelStats] = {}
 
         # 持久化相关
-        self._json_path: str | None = str(json_path) if json_path else None
+        self._json_path: Path | None = _resolve_json_path(json_path) if json_path else None
         self._flush_interval = flush_interval
         self._persist_queue: list[RequestMetrics] = []
         self._persist_lock = threading.Lock()
@@ -159,26 +162,48 @@ class MetricsCollector:
             self._ensure_dir()
             self._restore_from_json()
             self._start_persist_thread()
-            atexit.register(self.flush)
+            atexit.register(self.shutdown)
 
     def _ensure_dir(self) -> None:
         if self._json_path:
-            os.makedirs(os.path.dirname(self._json_path), exist_ok=True)
+            self._json_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def _empty_content(self) -> dict[str, Any]:
+        return {"version": _METRICS_VERSION, "max_history": self._max_history, "history": []}
+
+    def _backup_corrupt_json(self, exc: Exception) -> None:
+        """备份损坏的 JSON，避免下一次写入直接覆盖原始文件。"""
+        if not self._json_path or not self._json_path.exists():
+            return
+        backup_path = self._json_path.with_name(f"{self._json_path.name}.corrupt.{int(time.time())}")
+        try:
+            os.replace(self._json_path, backup_path)
+            logger.warning("LLM metrics JSON 损坏，已备份到 %s: %s", backup_path, exc)
+        except Exception as backup_exc:
+            logger.warning("LLM metrics JSON 损坏且备份失败 %s: %s", self._json_path, backup_exc)
 
     def _get_json_content(self) -> dict[str, Any]:
         """读取现有 JSON 文件内容。"""
+        if not self._json_path:
+            return self._empty_content()
         try:
             with open(self._json_path, "r", encoding="utf-8") as f:
                 return json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError):
-            return {"version": _METRICS_VERSION, "max_history": self._max_history, "history": []}
+        except FileNotFoundError:
+            return self._empty_content()
+        except json.JSONDecodeError as exc:
+            self._backup_corrupt_json(exc)
+            return self._empty_content()
 
     def _restore_from_json(self) -> None:
         """启动时从 JSON 文件恢复历史数据到内存。"""
         content = self._get_json_content()
         history_raw = content.get("history", [])
+        if not isinstance(history_raw, list):
+            logger.warning("LLM metrics JSON history 不是列表，跳过恢复: %s", self._json_path)
+            history_raw = []
         metrics_list = []
-        for item in reversed(history_raw[-self._max_history:]):
+        for item in history_raw[-self._max_history:]:
             try:
                 metrics_list.append(RequestMetrics.from_dict(item))
             except Exception:
@@ -227,12 +252,14 @@ class MetricsCollector:
         if not self._persist_queue or not self._json_path:
             return
 
-        batch = self._persist_queue
-        self._persist_queue = []
+        batch = list(self._persist_queue)
 
         try:
             content = self._get_json_content()
             history = content.get("history", [])
+            if not isinstance(history, list):
+                logger.warning("LLM metrics JSON history 不是列表，将重建: %s", self._json_path)
+                history = []
 
             for m in batch:
                 history.append(m.to_dict())
@@ -246,13 +273,14 @@ class MetricsCollector:
             content["max_history"] = self._max_history
 
             # 原子写入：先写临时文件再 rename
-            tmp_path = self._json_path + ".tmp"
+            tmp_path = self._json_path.with_name(f"{self._json_path.name}.tmp")
             with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump(content, f, ensure_ascii=False, indent=2)
             os.replace(tmp_path, self._json_path)
-        except Exception:
-            # 持久化失败不影响主流程
-            pass
+            del self._persist_queue[: len(batch)]
+        except Exception as exc:
+            # 持久化失败不影响主流程，但不能丢弃待写队列。
+            logger.warning("LLM metrics 持久化失败 %s: %s", self._json_path, exc)
 
     def _start_persist_thread(self) -> None:
         """启动定时刷写线程。"""
@@ -265,20 +293,27 @@ class MetricsCollector:
 
     def _persist_worker(self) -> None:
         """定时将队列数据刷写到 JSON 文件。"""
-        while not self._shutdown_event.is_set():
-            self._shutdown_event.wait(timeout=self._flush_interval)
+        while not self._shutdown_event.wait(timeout=self._flush_interval):
             with self._persist_lock:
                 self._do_persist()
+        with self._persist_lock:
+            self._do_persist()
 
     def flush(self) -> None:
         """刷写所有待持久化的数据到 JSON 文件。"""
         if not self._json_path:
             return
-        self._shutdown_event.set()
         with self._persist_lock:
             self._do_persist()
+
+    def shutdown(self) -> None:
+        """停止后台刷写线程并进行最后一次落盘。"""
+        if not self._json_path:
+            return
+        self._shutdown_event.set()
         if self._persist_thread and self._persist_thread.is_alive():
             self._persist_thread.join(timeout=5.0)
+        self.flush()
 
     def get_stats(self, model_name: str | None = None) -> dict[str, Any] | list[dict[str, Any]]:
         """获取统计数据。"""
@@ -312,7 +347,7 @@ class MetricsCollector:
                 self._persist_queue.clear()
             try:
                 content = {"version": _METRICS_VERSION, "max_history": self._max_history, "history": []}
-                tmp_path = self._json_path + ".tmp"
+                tmp_path = self._json_path.with_name(f"{self._json_path.name}.tmp")
                 with open(tmp_path, "w", encoding="utf-8") as f:
                     json.dump(content, f, ensure_ascii=False, indent=2)
                 os.replace(tmp_path, self._json_path)
@@ -346,7 +381,16 @@ _global_collector: MetricsCollector | None = None
 _global_collector_lock = threading.Lock()
 
 # 默认 JSON 持久化路径
-_DEFAULT_JSON_PATH = "data/json_storage/llm_metrics.json"
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+_DEFAULT_JSON_PATH = _PROJECT_ROOT / "data/json_storage/llm_metrics.json"
+
+
+def _resolve_json_path(json_path: str | Path) -> Path:
+    """解析 metrics JSON 路径，避免进程 cwd 变化导致重启读写不同文件。"""
+    path = Path(json_path).expanduser()
+    if path.is_absolute():
+        return path
+    return (_PROJECT_ROOT / path).resolve()
 
 
 def get_global_collector(json_path: str | Path | None = None) -> MetricsCollector:
@@ -361,6 +405,6 @@ def get_global_collector(json_path: str | Path | None = None) -> MetricsCollecto
     with _global_collector_lock:
         if _global_collector is not None:
             return _global_collector
-        path = json_path if json_path is not None else _DEFAULT_JSON_PATH
+        path = json_path if json_path is not None else os.environ.get("MOFOX_LLM_METRICS_PATH", _DEFAULT_JSON_PATH)
         _global_collector = MetricsCollector(json_path=path)
         return _global_collector
