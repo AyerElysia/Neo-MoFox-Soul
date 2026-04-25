@@ -957,6 +957,51 @@ class LifeChatter(BaseChatter):
         response.add_payload(LLMPayload(ROLE.SYSTEM, Text(_MUST_REPLY_RETRY_REMINDER)))
         logger.warning("检测到应回复轮次却未发送文本，已注入强制回复提醒")
 
+    @staticmethod
+    def _should_compact_successful_tool_result(call_name: str) -> bool:
+        """仅压缩低信息动作回执，不压缩查询/读取类 tool 结果。"""
+        normalized = str(call_name or "").strip().lower()
+        return normalized in {
+            "action-think",
+            "think",
+            _SEND_TEXT,
+            _PASS_AND_WAIT,
+        }
+
+    @staticmethod
+    def _compact_successful_tool_result(response: Any, call_id: str | None) -> None:
+        """把低信息 TOOL_RESULT 压成结构占位，避免污染长上下文。"""
+        if not call_id:
+            return
+        payloads = getattr(response, "payloads", None)
+        if not isinstance(payloads, list):
+            return
+
+        for payload in reversed(payloads):
+            if getattr(payload, "role", None) != ROLE.TOOL_RESULT:
+                continue
+            for part in getattr(payload, "content", []) or []:
+                if isinstance(part, ToolResult) and str(part.call_id or "") == str(call_id):
+                    object.__setattr__(part, "value", "ok")
+                    return
+
+    async def run_tool_call(
+        self,
+        call: Any,
+        response: Any,
+        usable_map: Any,
+        trigger_msg: Message | None,
+    ) -> tuple[bool, bool]:
+        """执行工具；只压缩低信息动作回执，保留查询型 tool 结果。"""
+        appended, success = await super().run_tool_call(call, response, usable_map, trigger_msg)
+        call_name = str(getattr(call, "name", "") or "")
+        if appended and success and self._should_compact_successful_tool_result(call_name):
+            self._compact_successful_tool_result(
+                response,
+                str(getattr(call, "id", "") or ""),
+            )
+        return appended, success
+
     # ── main execute ─────────────────────────────────────────
 
     async def execute(self) -> AsyncGenerator[Wait | Success | Failure | Stop, None]:
@@ -1169,7 +1214,7 @@ class LifeChatter(BaseChatter):
                         llm_response.add_payload(
                             LLMPayload(
                                 ROLE.TOOL_RESULT,
-                                ToolResult(value="已跳过，等待用户新消息", call_id=call.id, name=call_name),
+                                ToolResult(value="ok", call_id=call.id, name=call_name),
                             )
                         )
                         should_wait = True

@@ -5,7 +5,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from plugins.life_engine.core.chatter import LifeChatter, LifeSendTextAction
-from src.kernel.llm import ROLE
+from src.kernel.llm import LLMPayload, ROLE, ToolResult
 
 
 class _FakeResponse:
@@ -74,3 +74,31 @@ def test_append_must_reply_retry_instruction_adds_system_payload() -> None:
     assert len(response.payloads) == 1
     payload = response.payloads[0]
     assert getattr(payload, "role", None) == ROLE.SYSTEM
+
+
+def test_compact_successful_tool_result_only_targets_low_information_actions() -> None:
+    assert LifeChatter._should_compact_successful_tool_result("action-life_send_text") is True
+    assert LifeChatter._should_compact_successful_tool_result("action-think") is True
+    assert LifeChatter._should_compact_successful_tool_result("search_life_memory") is False
+    assert LifeChatter._should_compact_successful_tool_result("nucleus_search_memory") is False
+    assert LifeChatter._should_compact_successful_tool_result("fetch_life_memory") is False
+
+
+def test_compact_successful_tool_result_preserves_other_tool_results() -> None:
+    response = _FakeResponse()
+    response.add_payload(
+        LLMPayload(
+            ROLE.TOOL_RESULT,
+            [
+                ToolResult(value="已发送3条消息: hello", call_id="send-1", name="action-life_send_text"),
+                ToolResult(value="记忆检索结果正文", call_id="memory-1", name="search_life_memory"),
+            ],
+        )
+    )
+
+    LifeChatter._compact_successful_tool_result(response, "send-1")
+
+    payload = response.payloads[0]
+    send_result, memory_result = payload.content
+    assert send_result.value == "ok"
+    assert memory_result.value == "记忆检索结果正文"
