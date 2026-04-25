@@ -12,7 +12,6 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 import shutil
 import time
@@ -26,6 +25,13 @@ from src.app.plugin_system.api import log_api
 from src.core.models.message import Message, MessageType
 
 from ..core.config import LifeEngineConfig
+from ..constants import (
+    EXTERNAL_MESSAGE_ACTIVE_WINDOW_MINUTES,
+    PROACTIVE_WAKE_MIN_REASON_CHARS,
+    PROACTIVE_WAKE_MIN_SEGMENTS,
+    PROACTIVE_WAKE_REQUIRED_IMPORTANCE,
+    PROACTIVE_WAKE_KEYWORDS,
+)
 
 
 logger = log_api.get_logger("life_engine.tools")
@@ -170,15 +176,6 @@ async def _sync_memory_embedding_for_file(plugin: Any, path: str, content: str) 
         logger.warning(f"同步记忆 embedding 失败 {path}: {e}")
 
 
-from ..constants import (
-    EXTERNAL_MESSAGE_ACTIVE_WINDOW_MINUTES,
-    PROACTIVE_WAKE_MIN_REASON_CHARS,
-    PROACTIVE_WAKE_MIN_SEGMENTS,
-    PROACTIVE_WAKE_REQUIRED_IMPORTANCE,
-    PROACTIVE_WAKE_KEYWORDS,
-)
-
-
 def _is_detailed_proactive_wake_reason(reason: str) -> bool:
     """检查主动唤醒理由是否足够明确和详尽。"""
     text = " ".join(str(reason or "").split())
@@ -198,6 +195,7 @@ class LifeEngineWakeDFCTool(BaseTool):
         "向同一主体的表达层传递内在碎片——把心里话说出来。"
         "\n\n"
         "**你不是在写报告，而是在让自己知道——就像心里冒出一个念头，然后自然地说出口。**"
+        " 这不是在和另一个意识体对话，而是同一个你在不同运行状态之间同步感受。"
         "\n\n"
         "**何时使用：**\n"
         "- 你有想法想说出来（不只是「新信息」——也包括感受、冲动、想分享的事）\n"
@@ -824,7 +822,7 @@ class LifeEngineDeleteFileTool(BaseTool):
                 return False, f"不支持的文件类型: {path}"
         except OSError as e:
             if "not empty" in str(e).lower() or "目录非空" in str(e):
-                return False, f"目录非空，如需删除请设置 recursive=True"
+                return False, "目录非空，如需删除请设置 recursive=True"
             return False, f"删除失败: {e}"
         except Exception as e:
             logger.error(f"删除文件失败 {path}: {e}", exc_info=True)
@@ -1259,7 +1257,6 @@ class FetchLifeMemoryTool(BaseTool):
         if len(file_paths) > 10:
             return False, {"error": "单次最多读取 10 个文件"}
 
-        workspace = _get_workspace(self.plugin)
         files_data: list[dict] = []
         successful = 0
         failed = 0

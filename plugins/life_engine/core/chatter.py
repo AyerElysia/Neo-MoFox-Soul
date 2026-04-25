@@ -426,10 +426,14 @@ class LifeChatter(BaseChatter):
         """构建 100% 静态可缓存系统提示词。"""
         parts: list[str] = []
 
-        # 1) SOUL.md
-        soul_text = self._load_soul_md(service)
+        # 1) SOUL.md + MEMORY.md
+        # TOOL.md 不在聊天态注入；life_mode 与 chat_mode 的工具规则不同。
+        soul_text = self._load_workspace_markdown(service, "SOUL.md")
         if soul_text:
             parts.append(soul_text)
+        memory_text = self._load_workspace_markdown(service, "MEMORY.md")
+        if memory_text:
+            parts.append(memory_text)
 
         # 2) 固定对话框架
         parts.append(self._build_fixed_chat_framework(chat_stream))
@@ -441,23 +445,32 @@ class LifeChatter(BaseChatter):
 
         return "\n\n".join(parts)
 
-    def _load_soul_md(self, service: LifeEngineService | None) -> str:
-        """读取 SOUL.md。"""
+    def _resolve_workspace_path(self, service: LifeEngineService | None) -> str:
+        """解析 life_engine 工作空间路径。"""
         cfg = self._get_config()
         workspace = ""
         if cfg is not None:
             workspace = getattr(getattr(cfg, "settings", None), "workspace_path", "")
         if not workspace and service is not None:
             workspace = getattr(service, "_workspace_path", "")
+        return str(workspace or "")
+
+    def _load_workspace_markdown(
+        self,
+        service: LifeEngineService | None,
+        filename: str,
+    ) -> str:
+        """读取工作空间中的静态 Markdown 提示词文件。"""
+        workspace = self._resolve_workspace_path(service)
         if not workspace:
             return ""
 
-        soul_path = Path(workspace) / "SOUL.md"
+        path = Path(workspace) / filename
         try:
-            if soul_path.exists():
-                return soul_path.read_text(encoding="utf-8").strip()
+            if path.exists() and path.is_file():
+                return path.read_text(encoding="utf-8").strip()
         except Exception as e:
-            logger.warning(f"读取 SOUL.md 失败: {e}")
+            logger.warning(f"读取 {filename} 失败: {e}")
         return ""
 
     @staticmethod
