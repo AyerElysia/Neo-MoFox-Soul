@@ -5,11 +5,13 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
+from plugins.life_engine.core.config import LifeEngineConfig
 from plugins.life_engine.core.chatter import (
     LifeChatter,
     consume_runtime_assistant_injections,
     push_runtime_assistant_injection,
 )
+from src.core.models.message import Message, MessageType
 from src.kernel.llm import LLMPayload, ROLE, Text
 
 
@@ -27,6 +29,22 @@ def _payload_text(payload: Any) -> str:
         part = content[0]
         return str(getattr(part, "text", part))
     return str(content)
+
+
+def _message(index: int, content: str) -> Message:
+    return Message(
+        message_id=f"m{index}",
+        time=1_700_000_000 + index,
+        content=content,
+        processed_plain_text=content,
+        message_type=MessageType.TEXT,
+        sender_id=f"u{index}",
+        sender_name=f"user{index}",
+        sender_role="user",
+        platform="qq",
+        chat_type="private",
+        stream_id="stream_history",
+    )
 
 
 def test_life_chatter_runtime_queue_is_per_stream() -> None:
@@ -72,3 +90,49 @@ def test_life_chatter_keeps_runtime_context_for_first_user_prompt() -> None:
     assert "<runtime_assistant_context>" in prompt
     assert "[内心独白] 先记下来" in prompt
     assert consume_runtime_assistant_injections(stream.stream_id) == []
+
+
+def test_life_chatter_history_text_can_keep_short_tail_after_first_merge() -> None:
+    stream = SimpleNamespace(
+        context=SimpleNamespace(
+            history_messages=[
+                _message(1, "第一条旧消息"),
+                _message(2, "第二条旧消息"),
+                _message(3, "刚刚真正讨论的重点"),
+                _message(4, "上一句追问"),
+            ]
+        )
+    )
+
+    full_history = LifeChatter._build_history_text(stream, max_messages=None)
+    tail_history = LifeChatter._build_history_text(stream, max_messages=2)
+
+    assert "第一条旧消息" in full_history
+    assert "刚刚真正讨论的重点" in tail_history
+    assert "上一句追问" in tail_history
+    assert "第二条旧消息" not in tail_history
+
+
+def test_life_chatter_recent_history_tail_limit_reads_config() -> None:
+    config = LifeEngineConfig()
+    config.chatter.recent_history_tail_messages = 4
+    chatter = LifeChatter.__new__(LifeChatter)
+    chatter.plugin = SimpleNamespace(config=config)
+
+    assert chatter._get_recent_history_tail_limit() == 4
+
+
+def test_life_chatter_user_prompt_tells_model_to_use_chat_history_for_references() -> None:
+    chatter = LifeChatter.__new__(LifeChatter)
+    prompt = chatter._build_fixed_chat_framework(
+        SimpleNamespace(
+            bot_nickname="爱莉希雅",
+            platform="qq",
+            chat_type="private",
+            bot_id="bot",
+        )
+    )
+
+    assert "<chat_history>" in prompt
+    assert "必须先结合 <chat_history> 和 <new_messages>" in prompt
+    assert "fetch_chat_history" in prompt

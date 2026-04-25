@@ -449,6 +449,15 @@ class LifeEngineConfig(BaseConfig):
             description="对话模式单轮最大工具调用轮数。",
         )
 
+        recent_history_tail_messages: int = Field(
+            default=12,
+            ge=0,
+            description=(
+                "对话器首轮合并完整历史后，后续每次新消息仍注入的最近聊天尾巴条数。"
+                "用于保持刚刚聊过内容的近因连续性；设为 0 可关闭。"
+            ),
+        )
+
     @config_section("drives")
     class DrivesSection(SectionBase):
         """冲动引擎配置。"""

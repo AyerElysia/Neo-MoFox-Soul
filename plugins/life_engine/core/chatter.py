@@ -514,8 +514,11 @@ class LifeChatter(BaseChatter):
 - 你的内在状态（情绪、驱力等）会以 <inner_state> 标签呈现在用户消息中。
 - 这些状态反映你当前的心理感受，请自然地融入对话，而非机械地报告。
 - 近期事件会以 <recent_context> 标签呈现，帮助你了解最近发生了什么。
+- 聊天历史会以 <chat_history> 标签呈现；当用户说“刚刚/这个/那你觉得呢/感觉如何”等依赖前文的话时，
+  必须先结合 <chat_history> 和 <new_messages> 理解语境，不要只根据最后一句泛泛回应。
 - 运行时注入的内心独白会以 <runtime_assistant_context> 标签呈现，
-  它代表你此前已经产生但尚未进入当前 payload 的心理活动。"""
+  它代表你此前已经产生但尚未进入当前 payload 的心理活动。
+- 如果 <chat_history> 仍不足以判断前文，可调用 fetch_chat_history 检索当前聊天流的历史。"""
 
     @staticmethod
     def _build_scene_guide(chat_stream: ChatStream) -> str:
@@ -720,15 +723,34 @@ class LifeChatter(BaseChatter):
 
     # ── history builder ──────────────────────────────────────
 
+    def _get_recent_history_tail_limit(self) -> int:
+        """获取后续轮次仍注入的最近聊天尾巴条数。"""
+        cfg = self._get_config()
+        if cfg is None:
+            return 12
+        chatter_cfg = getattr(cfg, "chatter", None)
+        if chatter_cfg is None:
+            return 12
+        return max(0, int(getattr(chatter_cfg, "recent_history_tail_messages", 12) or 0))
+
     @staticmethod
-    def _build_history_text(chat_stream: ChatStream) -> str:
+    def _build_history_text(
+        chat_stream: ChatStream,
+        *,
+        max_messages: int | None = 30,
+    ) -> str:
         """从 chat_stream 构建历史消息文本。"""
         context = chat_stream.context
         history_msgs = list(context.history_messages) if context.history_messages else []
         if not history_msgs:
             return ""
 
-        lines = [BaseChatter.format_message_line(msg) for msg in history_msgs[-30:]]
+        if max_messages is not None:
+            if max_messages <= 0:
+                return ""
+            history_msgs = history_msgs[-max_messages:]
+
+        lines = [BaseChatter.format_message_line(msg) for msg in history_msgs]
         return "\n".join(lines)
 
     # ── FSM helpers ──────────────────────────────────────────
@@ -961,15 +983,16 @@ class LifeChatter(BaseChatter):
                     )
 
                 # 构建 user prompt
+                history_tail_limit = self._get_recent_history_tail_limit()
+                history_text = self._build_history_text(
+                    chat_stream,
+                    max_messages=None if not rt.history_merged else history_tail_limit,
+                )
                 user_prompt_text = self._build_chat_user_prompt(
                     chat_stream,
                     service,
                     unread_lines=unread_lines,
-                    history_text=(
-                        self._build_history_text(chat_stream)
-                        if not rt.history_merged
-                        else ""
-                    ),
+                    history_text=history_text,
                     runtime_context_text=runtime_context_text,
                 )
 
