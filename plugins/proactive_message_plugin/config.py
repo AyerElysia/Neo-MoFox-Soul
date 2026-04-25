@@ -28,6 +28,14 @@ class ProactiveMessageConfig(BaseConfig):
             description="是否启用主动发消息功能。设为 false 可临时禁用，无需从 core.toml 移除插件。",
         )
 
+        decision_mode: str = Field(
+            default="chatter",
+            description=(
+                "主动机会的决策模式。chatter 表示只产生机会并唤醒当前对话器决定是否开口；"
+                "legacy_private_llm 表示使用旧版私有内心独白 LLM 流程。"
+            ),
+        )
+
         # 首次触发内心独白的等待时间（分钟）
         first_check_minutes: float = Field(
             default=10.0,
@@ -49,6 +57,11 @@ class ProactiveMessageConfig(BaseConfig):
         post_send_followup_minutes: float = Field(
             default=10.0,
             description="主动发送后若无人回复，再次触发内心独白前的等待时间（分钟）",
+        )
+
+        declined_opportunity_wait_minutes: float = Field(
+            default=30.0,
+            description="对话器收到主动机会但选择不回复后，下一次主动检查前的等待时间（分钟）",
         )
 
         followup_enabled: bool = Field(

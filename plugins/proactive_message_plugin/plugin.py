@@ -26,7 +26,6 @@ from src.app.plugin_system.api.event_api import register_handler
 
 from .service import PendingFollowup, ProactiveMessageService, get_proactive_message_service
 from .config import ProactiveMessageConfig
-from .inner_monologue import generate_inner_monologue
 from .actions.schedule_followup_message import ScheduleFollowupMessageAction
 from .tools.wait_longer import WaitLongerTool
 
@@ -176,6 +175,8 @@ class ProactiveMessagePlugin(BasePlugin):
         config = self.config
         if not isinstance(config, ProactiveMessageConfig):
             return True
+        if not bool(getattr(config.settings, "enabled", True)):
+            return True
         ignored_types = config.settings.ignored_chat_types
         return chat_type in ignored_types
 
@@ -278,6 +279,10 @@ class ProactiveMessagePlugin(BasePlugin):
 
             self.service.record_bot_message(stream_id, text)
             state = self.service.get_state(stream_id)
+            if state is not None and state.proactive_opportunity_active:
+                self.service.mark_proactive_opportunity_sent(stream_id)
+                logger.info(f"[{stream_id[:8]}] 主动机会已由对话器发送显式消息")
+
             if state is not None and state.followup_trigger_active:
                 if self.service.mark_followup_trigger_sent(stream_id):
                     logger.info(
@@ -293,6 +298,34 @@ class ProactiveMessagePlugin(BasePlugin):
         from src.core.components.base.chatter import Wait, Stop
 
         if isinstance(result, (Wait, Stop)):
+            state = self.service.get_state(stream_id)
+            if state is not None and state.proactive_opportunity_active:
+                sent_message = state.proactive_opportunity_sent_message
+                self.service.clear_proactive_opportunity(stream_id)
+                if sent_message:
+                    logger.debug(f"[{stream_id[:8]}] 主动机会轮次已发送，进入发送后等待")
+                    self.service.prepare_post_send_state(
+                        stream_id,
+                        reset_followup_chain=True,
+                    )
+                    await self._schedule_post_send_followup(stream_id)
+                else:
+                    wait_minutes = float(
+                        getattr(
+                            self.config.settings,
+                            "declined_opportunity_wait_minutes",
+                            30.0,
+                        )
+                        or 30.0
+                    )
+                    logger.debug(
+                        f"[{stream_id[:8]}] 主动机会被对话器放弃，"
+                        f"{wait_minutes:.1f} 分钟后再次检查"
+                    )
+                    self.service.checkpoint_wait(stream_id)
+                    await self._schedule_continue_waiting(stream_id, wait_minutes)
+                return
+
             state = self.service.get_state(stream_id)
             if state is not None and state.followup_trigger_active:
                 self.service.clear_followup_trigger(stream_id)
@@ -427,6 +460,16 @@ class ProactiveMessagePlugin(BasePlugin):
             # 获取用户名称
             user_name = getattr(chat_stream, "stream_name", "用户")
 
+            if self._decision_mode() == "chatter":
+                await self._wake_stream_for_proactive_opportunity(
+                    chat_stream,
+                    elapsed_minutes=elapsed,
+                    user_name=user_name,
+                )
+                return
+
+            from .inner_monologue import generate_inner_monologue
+
             # 生成内心独白
             result = await generate_inner_monologue(
                 chat_stream=chat_stream,
@@ -448,6 +491,13 @@ class ProactiveMessagePlugin(BasePlugin):
             logger.error(f"内心独白处理失败：{e}", exc_info=True)
             # 失败则继续等待
             await self._schedule_continue_waiting(stream_id, 30)
+
+    def _decision_mode(self) -> str:
+        mode = str(getattr(self.config.settings, "decision_mode", "chatter") or "chatter")
+        normalized = mode.strip().lower().replace("-", "_")
+        if normalized in {"legacy", "private_llm", "legacy_private_llm"}:
+            return "legacy_private_llm"
+        return "chatter"
 
     async def _handle_decision(
         self,
@@ -618,6 +668,91 @@ class ProactiveMessagePlugin(BasePlugin):
             )
             await self._schedule_post_send_followup(stream_id)
 
+    async def _wake_stream_for_proactive_opportunity(
+        self,
+        chat_stream: ChatStream,
+        *,
+        elapsed_minutes: float,
+        user_name: str,
+    ) -> None:
+        """把沉默检查转换为一条由当前对话器判断的主动机会。"""
+        from src.core.models.message import Message
+        from src.core.transport.distribution.stream_loop_manager import get_stream_loop_manager
+        import time
+        import uuid
+
+        stream_id = chat_stream.stream_id
+        target_user_id, target_user_name = self._resolve_followup_target(chat_stream)
+        target_user_name = target_user_name or str(user_name or "对方")
+        state = self.service.get_state(stream_id)
+        last_bot_message = state.last_bot_message_excerpt if state else ""
+        elapsed_text = f"{float(elapsed_minutes or 0):.0f}"
+
+        prompt = (
+            "[主动续话机会] 这不是用户的新消息，而是沉默等待到点后产生的一次主动机会。"
+            "请作为当前对话器判断要不要自然开口。"
+            "如果你觉得现在主动说一句是自然、有价值的，就像平时一样使用当前动作回复；"
+            "如果只是为了说而说，就使用 pass_and_wait 继续等待。"
+            f"\n- 当前执行者：{chat_stream.bot_nickname or '你'}"
+            f"\n- 对方：{target_user_name}"
+            f"\n- 距离上次外界消息已过去约 {elapsed_text} 分钟"
+            f"\n- 你最近一条显式消息：{last_bot_message or '（暂无记录）'}"
+            "\n- 重要：这是机会，不是命令；不要机械续话，不要假装对方刚刚发了新消息。"
+        )
+
+        await self._record_proactive_opportunity_event(
+            chat_stream,
+            prompt,
+        )
+
+        self.service.mark_proactive_opportunity_active(stream_id)
+
+        trigger_message = Message(
+            message_id=f"proactive_opportunity_{uuid.uuid4().hex[:12]}",
+            platform=chat_stream.platform or "unknown",
+            stream_id=stream_id,
+            sender_id=target_user_id or "system",
+            sender_name="系统（主动机会）",
+            sender_role="other",
+            content=prompt,
+            processed_plain_text=prompt,
+            time=time.time(),
+            target_user_id=target_user_id,
+            target_user_name=target_user_name,
+            is_proactive_opportunity_trigger=True,
+        )
+        chat_stream.context.add_unread_message(trigger_message)
+
+        loop_mgr = get_stream_loop_manager()
+        removed = loop_mgr._wait_states.pop(stream_id, None)
+        if removed:
+            logger.debug(f"[{stream_id[:8]}] 已清除等待锁，准备让对话器处理主动机会")
+        logger.info(
+            f"[{stream_id[:8]}] 已注入主动续话机会，由当前对话器判断是否开口"
+        )
+
+    @staticmethod
+    async def _record_proactive_opportunity_event(chat_stream: ChatStream, content: str) -> None:
+        """把主动机会写入 life_engine 事件流；life_engine 不可用时静默降级。"""
+        try:
+            from plugins.life_engine.service import LifeEngineService
+
+            service = LifeEngineService.get_instance()
+            if service is None:
+                return
+            enqueue = getattr(service, "enqueue_proactive_opportunity", None)
+            if not callable(enqueue):
+                return
+            await enqueue(
+                content,
+                stream_id=chat_stream.stream_id,
+                platform=chat_stream.platform,
+                chat_type=chat_stream.chat_type,
+                sender_name="主动机会调度器",
+            )
+        except Exception as error:
+            logger.debug(f"写入主动机会事件失败：{error}")
+
     async def _wake_stream_for_followup(self, chat_stream: ChatStream, followup: PendingFollowup) -> None:
         """向目标流注入一条续话机会触发消息，并唤醒当前运行模式。"""
         from src.core.models.message import Message
@@ -749,7 +884,7 @@ class ProactiveMessagePlugin(BasePlugin):
         import re
 
         if isinstance(content, list):
-            return [s for s in content if isinstance(s, str) and s.strip()]
+            return [s.strip() for s in content if isinstance(s, str) and s.strip()]
 
         if not isinstance(content, str):
             return []

@@ -96,3 +96,32 @@ def test_mark_followup_trigger_sent_only_counts_once() -> None:
     assert second is False
     assert current.followup_chain_count == 1
     assert current.followup_trigger_active is False
+
+
+def test_proactive_opportunity_trigger_clears_waiting_state() -> None:
+    """主动机会交给 chatter 决策时，应先释放原等待态。"""
+
+    service = ProactiveMessageService()
+    service.clear_all()
+
+    state = service.get_or_create_state("sid_d")
+    state.is_waiting = True
+    state.active_check_kind = "silence_wait"
+    state.scheduler_task_name = "proactive_check_sid_d"
+
+    service.mark_proactive_opportunity_active("sid_d")
+    current = service.get_state("sid_d")
+
+    assert current is not None
+    assert current.proactive_opportunity_active is True
+    assert current.proactive_opportunity_sent_message is False
+    assert current.is_waiting is False
+    assert current.active_check_kind is None
+    assert current.scheduler_task_name is None
+
+    assert service.mark_proactive_opportunity_sent("sid_d") is True
+    assert service.mark_proactive_opportunity_sent("sid_d") is False
+    service.clear_proactive_opportunity("sid_d")
+
+    assert current.proactive_opportunity_active is False
+    assert current.proactive_opportunity_sent_message is False

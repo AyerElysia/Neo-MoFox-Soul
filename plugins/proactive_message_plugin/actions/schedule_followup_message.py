@@ -14,7 +14,7 @@ class ScheduleFollowupMessageAction(BaseAction):
         "可能还想补一句时使用。它不会立刻发送消息，而是登记一条延迟续话计划。"
     )
 
-    chatter_allow: list[str] = ["default_chatter", "proactive_message_plugin"]
+    chatter_allow: list[str] = ["default_chatter", "life_chatter", "proactive_message_plugin"]
 
     async def execute(
         self,

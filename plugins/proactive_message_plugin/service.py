@@ -49,6 +49,8 @@ class StreamState:
     followup_cooldown_until: datetime | None = None
     followup_trigger_active: bool = False
     followup_trigger_sent_message: bool = False
+    proactive_opportunity_active: bool = False
+    proactive_opportunity_sent_message: bool = False
 
     def elapsed_minutes(self) -> float:
         """获取距离上次用户消息过去了多少分钟"""
@@ -68,6 +70,8 @@ class StreamState:
         self.followup_cooldown_until = None
         self.followup_trigger_active = False
         self.followup_trigger_sent_message = False
+        self.proactive_opportunity_active = False
+        self.proactive_opportunity_sent_message = False
 
 
 class ProactiveMessageService:
@@ -188,6 +192,8 @@ class ProactiveMessageService:
             state.followup_cooldown_until = None
         state.followup_trigger_active = False
         state.followup_trigger_sent_message = False
+        state.proactive_opportunity_active = False
+        state.proactive_opportunity_sent_message = False
         return state
 
     def mark_followup_trigger_active(self, stream_id: str) -> None:
@@ -216,6 +222,32 @@ class ProactiveMessageService:
             return
         state.followup_trigger_active = False
         state.followup_trigger_sent_message = False
+
+    def mark_proactive_opportunity_active(self, stream_id: str) -> None:
+        """标记当前会话正在执行一次主动机会判断。"""
+        state = self.get_or_create_state(stream_id)
+        state.proactive_opportunity_active = True
+        state.proactive_opportunity_sent_message = False
+        state.next_check_time = None
+        state.is_waiting = False
+        state.scheduler_task_name = None
+        state.active_check_kind = None
+
+    def mark_proactive_opportunity_sent(self, stream_id: str) -> bool:
+        """标记主动机会触发后已经发送过显式消息。"""
+        state = self.get_or_create_state(stream_id)
+        if state.proactive_opportunity_sent_message:
+            return False
+        state.proactive_opportunity_sent_message = True
+        return True
+
+    def clear_proactive_opportunity(self, stream_id: str) -> None:
+        """清除主动机会执行态。"""
+        state = self._states.get(stream_id)
+        if not state:
+            return
+        state.proactive_opportunity_active = False
+        state.proactive_opportunity_sent_message = False
 
     def on_user_message(self, chat_stream: ChatStream, cancel_task: bool = True) -> None:
         """当收到用户消息时调用

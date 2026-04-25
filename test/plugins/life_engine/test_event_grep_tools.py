@@ -134,3 +134,29 @@ async def test_life_engine_grep_can_search_tool_name() -> None:
     assert isinstance(payload, dict)
     assert payload["stats"]["matched_events"] == 1
     assert payload["matches"][0]["event"]["tool_name"] == "nucleus_web_search"
+
+
+@pytest.mark.asyncio
+async def test_proactive_opportunity_is_searchable_from_event_stream() -> None:
+    service = LifeEngineService(SimpleNamespace(config=None))
+    await service.enqueue_proactive_opportunity(
+        "主动续话机会：对方已经沉默约 20 分钟",
+        stream_id="s-proactive",
+        platform="qq",
+        chat_type="private",
+    )
+
+    import plugins.life_engine.service.registry as registry
+
+    registry.register_life_engine_service(service)
+
+    result = await grep_life_events(
+        query="主动续话机会",
+        fields=["content", "content_type", "source"],
+    )
+
+    assert result["stats"]["matched_events"] == 1
+    event = result["matches"][0]["event"]
+    assert event["stream_id"] == "s-proactive"
+    assert event["source"] == "proactive_message_plugin"
+    assert event["content_type"] == "proactive_opportunity"

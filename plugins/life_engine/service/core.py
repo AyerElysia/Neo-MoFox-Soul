@@ -824,6 +824,49 @@ class LifeEngineService(BaseService):
             "channel": "direct_command",
         }
 
+    async def enqueue_proactive_opportunity(
+        self,
+        message: str,
+        *,
+        stream_id: str = "",
+        platform: str = "",
+        chat_type: str = "",
+        sender_name: str = "",
+    ) -> dict[str, Any]:
+        """接收 proactive 插件产生的主动机会事件。"""
+        if not self._is_enabled():
+            raise RuntimeError("life_engine 未启用")
+
+        text = str(message or "").strip()
+        if not text:
+            raise ValueError("message 不能为空")
+
+        event = self._event_builder.build_proactive_opportunity_event(
+            text,
+            stream_id=stream_id,
+            platform=platform,
+            chat_type=chat_type,
+            sender_name=sender_name,
+        )
+
+        async with self._get_lock():
+            self._pending_events.append(event)
+            self._state.pending_event_count = len(self._pending_events)
+        await self._save_runtime_context()
+
+        logger.info(
+            "life_engine 已接收主动机会事件: "
+            f"stream_id={event.stream_id or 'unknown'} "
+            f"pending={self._state.pending_event_count}"
+        )
+        return {
+            "event_id": event.event_id,
+            "stream_id": event.stream_id or "",
+            "pending_event_count": self._state.pending_event_count,
+            "queued": True,
+            "channel": "proactive_opportunity",
+        }
+
     async def record_tool_call(self, tool_name: str, tool_args: dict[str, Any]) -> None:
         """记录工具调用事件。"""
         event = self._event_builder.build_tool_call_event(tool_name, tool_args)

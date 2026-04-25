@@ -368,3 +368,41 @@ class EventBuilder:
             chat_type=chat_type_name,
             stream_id=target_stream_id or None,
         )
+
+    def build_proactive_opportunity_event(
+        self,
+        message: str,
+        *,
+        stream_id: str = "",
+        platform: str = "",
+        chat_type: str = "",
+        sender_name: str = "",
+    ) -> LifeEngineEvent:
+        """构建 proactive 插件产生的主动机会事件。"""
+        seq = self._next_sequence()
+        target_stream_id = str(stream_id or "").strip()
+        platform_name = str(platform or "proactive_message_plugin").strip() or "proactive_message_plugin"
+        chat_type_name = str(chat_type or "unknown").strip().lower() or "unknown"
+        sender_display = str(sender_name or "主动机会调度器").strip() or "主动机会调度器"
+        detail_parts = [
+            platform_name,
+            "内部机会",
+            "proactive",
+            "交给当前对话器判断是否主动开口",
+        ]
+        if target_stream_id:
+            detail_parts.append(f"stream_id={target_stream_id}")
+
+        return LifeEngineEvent(
+            event_id=f"proactive_opportunity_{seq}",
+            event_type=EventType.MESSAGE,
+            timestamp=_now_iso(),
+            sequence=seq,
+            source="proactive_message_plugin",
+            source_detail=" | ".join(detail_parts),
+            content=_shorten_text(str(message or "").strip(), max_length=500),
+            content_type="proactive_opportunity",
+            sender=sender_display,
+            chat_type=chat_type_name,
+            stream_id=target_stream_id or None,
+        )
