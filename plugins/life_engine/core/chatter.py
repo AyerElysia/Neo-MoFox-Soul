@@ -142,6 +142,7 @@ class _WorkflowRuntime:
     think_only_retry_count: int = 0
     must_reply: bool = False
     must_reply_retry_count: int = 0
+    pending_transient_context_text: str = ""
 
 
 # ── Actions ───────────────────────────────────────────────────
@@ -583,42 +584,65 @@ class LifeChatter(BaseChatter):
         unread_lines: str,
         history_text: str = "",
         runtime_context_text: str = "",
+        include_dynamic_context: bool = False,
     ) -> str:
-        """构建包含动态状态的用户提示词。"""
+        """构建持久用户提示词。
+
+        长生命周期上下文中只保留聊天历史和新消息；内在状态、近期事件等
+        动态快照由发送前的 transient context 注入，避免多轮后堆积旧状态。
+        """
+        _ = service
         parts: list[str] = []
 
         stream_name = str(getattr(chat_stream, "stream_name", "") or chat_stream.stream_id[:16])
         parts.append(f'你当前正在名为"{stream_name}"的对话中。')
         parts.append("消息格式说明：【时间】<群组角色> [平台ID] 昵称$群名片 [消息ID]： 消息内容\n")
 
-        # 1) 内在状态
-        inner_state_text = self._read_inner_state(service)
-        if inner_state_text:
-            parts.append(f"<inner_state>\n{inner_state_text}\n</inner_state>\n")
-
-        # 2) 近期事件上下文
-        recent_context = self._read_recent_events(service, chat_stream.stream_id)
-        if recent_context:
-            parts.append(f"<recent_context>\n{recent_context}\n</recent_context>\n")
-
-        # 3) 运行时注入上下文（例如主动插件的内心独白）
-        if runtime_context_text:
-            parts.append(
-                "<runtime_assistant_context>\n"
-                f"{runtime_context_text}\n"
-                "</runtime_assistant_context>\n"
+        if include_dynamic_context:
+            dynamic_context = self._build_dynamic_context_text(
+                chat_stream,
+                service,
+                runtime_context_text=runtime_context_text,
             )
+            if dynamic_context:
+                parts.append(dynamic_context)
 
-        # 4) 聊天历史
+        # 1) 聊天历史
         if history_text:
             parts.append(f"<chat_history>\n{history_text}\n</chat_history>\n")
 
-        # 5) 新未读消息
+        # 2) 新未读消息
         if unread_lines:
             parts.append(f"<new_messages>\n{unread_lines}\n</new_messages>\n")
 
         parts.append("---\n请基于上述信息决定接下来的动作。")
         return "\n".join(parts)
+
+    def _build_dynamic_context_text(
+        self,
+        chat_stream: ChatStream,
+        service: LifeEngineService | None,
+        runtime_context_text: str = "",
+    ) -> str:
+        """构建仅本次请求可见的动态上下文快照。"""
+        parts: list[str] = []
+
+        inner_state_text = self._read_inner_state(service)
+        if inner_state_text:
+            parts.append(f"<inner_state>\n{inner_state_text}\n</inner_state>")
+
+        recent_context = self._read_recent_events(service, chat_stream.stream_id)
+        if recent_context:
+            parts.append(f"<recent_context>\n{recent_context}\n</recent_context>")
+
+        if runtime_context_text:
+            parts.append(
+                "<runtime_assistant_context>\n"
+                f"{runtime_context_text}\n"
+                "</runtime_assistant_context>"
+            )
+
+        return "\n\n".join(parts)
 
     @staticmethod
     def _read_inner_state(service: LifeEngineService | None) -> str:
@@ -751,16 +775,6 @@ class LifeChatter(BaseChatter):
 
     # ── history builder ──────────────────────────────────────
 
-    def _get_recent_history_tail_limit(self) -> int:
-        """获取后续轮次仍注入的最近聊天尾巴条数。"""
-        cfg = self._get_config()
-        if cfg is None:
-            return 12
-        chatter_cfg = getattr(cfg, "chatter", None)
-        if chatter_cfg is None:
-            return 12
-        return max(0, int(getattr(chatter_cfg, "recent_history_tail_messages", 12) or 0))
-
     @staticmethod
     def _build_history_text(
         chat_stream: ChatStream,
@@ -780,6 +794,42 @@ class LifeChatter(BaseChatter):
 
         lines = [BaseChatter.format_message_line(msg) for msg in history_msgs]
         return "\n".join(lines)
+
+    @staticmethod
+    def _append_transient_context(response: Any, context_text: str) -> None:
+        """把动态上下文临时挂到最后一个 USER payload。"""
+        text = str(context_text or "").strip()
+        if not text:
+            return
+        payloads = getattr(response, "payloads", None)
+        if not isinstance(payloads, list):
+            return
+        for payload in reversed(payloads):
+            if getattr(payload, "role", None) == ROLE.USER:
+                payload.content.append(
+                    Text(
+                        "<transient_life_context>\n"
+                        f"{text}\n"
+                        "</transient_life_context>"
+                    )
+                )
+                return
+
+    @staticmethod
+    def _strip_transient_context(response: Any) -> None:
+        """从 payload 中移除发送前临时注入的动态上下文。"""
+        payloads = getattr(response, "payloads", None)
+        if not isinstance(payloads, list):
+            return
+        for payload in payloads:
+            if getattr(payload, "role", None) != ROLE.USER:
+                continue
+            cleaned = []
+            for part in getattr(payload, "content", []) or []:
+                if isinstance(part, Text) and "<transient_life_context>" in part.text:
+                    continue
+                cleaned.append(part)
+            payload.content = cleaned
 
     # ── FSM helpers ──────────────────────────────────────────
 
@@ -813,13 +863,6 @@ class LifeChatter(BaseChatter):
         response.add_payload(LLMPayload(ROLE.USER, payload_content))
 
     @staticmethod
-    def _has_user_payload(response: Any) -> bool:
-        payloads = getattr(response, "payloads", None)
-        if not isinstance(payloads, list):
-            return False
-        return any(getattr(payload, "role", None) == ROLE.USER for payload in payloads)
-
-    @staticmethod
     def _format_runtime_context_text(texts: list[str]) -> str:
         lines = [str(text or "").strip() for text in texts if str(text or "").strip()]
         if not lines:
@@ -842,33 +885,6 @@ class LifeChatter(BaseChatter):
             logger.debug(f"读取 life_chatter 运行时 assistant 注入失败：{exc}")
             return []
         return [str(text or "").strip() for text in texts if str(text or "").strip()]
-
-    def _inject_runtime_assistant_payloads(
-        self,
-        response: Any,
-        chat_stream: ChatStream,
-    ) -> int:
-        """将运行时 assistant 文本写入当前 payload。
-
-        只在已有 user payload 时注入，避免对话以 assistant 开头。
-        """
-        payloads = getattr(response, "payloads", None)
-        if not isinstance(payloads, list) or not payloads:
-            return 0
-        if not self._has_user_payload(response):
-            return 0
-
-        texts = self._consume_runtime_assistant_context(chat_stream)
-        injected_count = 0
-        for text in texts:
-            response.add_payload(LLMPayload(ROLE.ASSISTANT, Text(text)))
-            injected_count += 1
-
-        if injected_count > 0:
-            logger.info(
-                f"[payload] 已注入 life_chatter 运行时 assistant 上下文 {injected_count} 条"
-            )
-        return injected_count
 
     @staticmethod
     def _has_tool_result_tail(response: Any) -> bool:
@@ -947,6 +963,9 @@ class LifeChatter(BaseChatter):
         system_text = self._build_chat_system_prompt(chat_stream, service)
         request.add_payload(LLMPayload(ROLE.SYSTEM, Text(system_text)))
 
+        # 历史文本只在首轮合并一次；后续依赖长连接 payload 中的真实对话链。
+        history_text = self._build_history_text(chat_stream)
+
         # 注入工具
         usable_map = await self.inject_usables(request)
 
@@ -972,7 +991,6 @@ class LifeChatter(BaseChatter):
             # ── WAIT_USER ────────────────────────────────
             if rt.phase == _Phase.WAIT_USER:
                 if not unread_msgs:
-                    self._inject_runtime_assistant_payloads(rt.response, chat_stream)
                     yield Wait()
                     continue
 
@@ -1002,25 +1020,20 @@ class LifeChatter(BaseChatter):
                     yield Wait()
                     continue
 
-                runtime_context_text = ""
-                if self._has_user_payload(rt.response):
-                    self._inject_runtime_assistant_payloads(rt.response, chat_stream)
-                else:
-                    runtime_context_text = self._format_runtime_context_text(
-                        self._consume_runtime_assistant_context(chat_stream)
-                    )
+                runtime_context_text = self._format_runtime_context_text(
+                    self._consume_runtime_assistant_context(chat_stream)
+                )
 
                 # 构建 user prompt
-                history_tail_limit = self._get_recent_history_tail_limit()
-                history_text = self._build_history_text(
-                    chat_stream,
-                    max_messages=None if not rt.history_merged else history_tail_limit,
-                )
                 user_prompt_text = self._build_chat_user_prompt(
                     chat_stream,
                     service,
                     unread_lines=unread_lines,
-                    history_text=history_text,
+                    history_text=history_text if not rt.history_merged else "",
+                )
+                rt.pending_transient_context_text = self._build_dynamic_context_text(
+                    chat_stream,
+                    service,
                     runtime_context_text=runtime_context_text,
                 )
 
@@ -1037,16 +1050,25 @@ class LifeChatter(BaseChatter):
 
             # ── MODEL_TURN / FOLLOW_UP ───────────────────
             if rt.phase in (_Phase.MODEL_TURN, _Phase.FOLLOW_UP):
+                if rt.phase == _Phase.MODEL_TURN:
+                    self._append_transient_context(
+                        rt.response,
+                        rt.pending_transient_context_text,
+                    )
                 try:
                     rt.response = await rt.response.send(stream=False)
+                    self._strip_transient_context(rt.response)
                     await rt.response
+                    self._strip_transient_context(rt.response)
 
                     if rt.phase == _Phase.MODEL_TURN:
                         if rt.unread_msgs_to_flush:
                             await self.flush_unreads(rt.unread_msgs_to_flush)
                         rt.unread_msgs_to_flush = []
+                        rt.pending_transient_context_text = ""
 
                 except Exception as error:
+                    self._strip_transient_context(rt.response)
                     logger.error(f"LLM 请求失败: {error}", exc_info=True)
                     yield Failure("LLM 请求失败", error)
                     self._transition(rt, _Phase.WAIT_USER, "request failed")

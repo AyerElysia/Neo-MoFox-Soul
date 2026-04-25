@@ -450,11 +450,11 @@ class LifeEngineConfig(BaseConfig):
         )
 
         recent_history_tail_messages: int = Field(
-            default=12,
+            default=0,
             ge=0,
             description=(
-                "对话器首轮合并完整历史后，后续每次新消息仍注入的最近聊天尾巴条数。"
-                "用于保持刚刚聊过内容的近因连续性；设为 0 可关闭。"
+                "已废弃：life_chatter 不再在后续轮次重复注入历史尾巴，"
+                "避免长连接 payload 中出现重复 chat_history。保留字段仅兼容旧配置。"
             ),
         )
 

@@ -6,7 +6,9 @@ from types import SimpleNamespace
 
 from plugins.life_engine.core.config import LifeEngineConfig
 from plugins.life_engine.core.chatter import LifeChatter
+from plugins.life_engine.service.event_builder import EventType, LifeEngineEvent
 from plugins.life_engine.tools.file_tools import LifeEngineWakeDFCTool
+from src.kernel.llm import LLMPayload, ROLE, Text
 
 
 def test_life_chatter_prompt_states_single_subject_runtime_modes() -> None:
@@ -52,6 +54,104 @@ def test_life_chatter_system_prompt_includes_memory_not_tool(tmp_path) -> None:
     assert "SOUL_CONTENT" in prompt
     assert "MEMORY_CONTENT" in prompt
     assert "TOOL_CONTENT" not in prompt
+
+
+def test_life_chatter_persistent_user_prompt_excludes_dynamic_context() -> None:
+    """持久 USER prompt 不应写入 inner_state/recent_context 等动态快照。"""
+    chatter = LifeChatter.__new__(LifeChatter)
+    chat_stream = SimpleNamespace(stream_name="Test", stream_id="stream-1")
+
+    prompt = chatter._build_chat_user_prompt(
+        chat_stream,
+        service=SimpleNamespace(),
+        unread_lines="新消息",
+        history_text="历史消息",
+        runtime_context_text="运行时上下文",
+    )
+
+    assert "<chat_history>" in prompt
+    assert "<new_messages>" in prompt
+    assert "<inner_state>" not in prompt
+    assert "<recent_context>" not in prompt
+    assert "<runtime_assistant_context>" not in prompt
+
+
+def test_life_chatter_dynamic_context_is_separate_snapshot() -> None:
+    """动态上下文应能单独构建，用于本次请求 transient 注入。"""
+    chatter = LifeChatter.__new__(LifeChatter)
+    chat_stream = SimpleNamespace(stream_id="stream-1")
+    service = SimpleNamespace(
+        _inner_state=SimpleNamespace(
+            format_full_state_for_prompt=lambda _today: "STATE_NOW"
+        ),
+        _event_history=[
+            LifeEngineEvent(
+                event_id="evt-1",
+                event_type=EventType.HEARTBEAT,
+                timestamp="2026-04-25T22:00:00+08:00",
+                sequence=1,
+                source="life_engine",
+                source_detail="heartbeat",
+                content="RECENT_EVENT",
+                heartbeat_index=1,
+            )
+        ],
+    )
+
+    dynamic = chatter._build_dynamic_context_text(
+        chat_stream,
+        service,
+        runtime_context_text="RUNTIME_NOW",
+    )
+
+    assert "<inner_state>" in dynamic
+    assert "STATE_NOW" in dynamic
+    assert "<recent_context>" in dynamic
+    assert "RECENT_EVENT" in dynamic
+    assert "<runtime_assistant_context>" in dynamic
+    assert "RUNTIME_NOW" in dynamic
+
+
+def test_life_chatter_transient_context_can_be_stripped() -> None:
+    """发送前临时注入的动态上下文不应残留在持久 payload。"""
+    response = SimpleNamespace(
+        payloads=[LLMPayload(ROLE.USER, Text("PERSISTENT_USER"))]
+    )
+
+    LifeChatter._append_transient_context(response, "STATE_NOW")
+    assert any(
+        isinstance(part, Text) and "STATE_NOW" in part.text
+        for part in response.payloads[0].content
+    )
+
+    LifeChatter._strip_transient_context(response)
+
+    assert response.payloads[0].content == [response.payloads[0].content[0]]
+    assert response.payloads[0].content[0].text == "PERSISTENT_USER"
+
+
+def test_life_chatter_second_turn_prompt_does_not_repeat_history() -> None:
+    """第二轮应只追加新消息，不重复注入 chat_history 尾巴。"""
+    chatter = LifeChatter.__new__(LifeChatter)
+    chat_stream = SimpleNamespace(stream_name="Test", stream_id="stream-1")
+
+    first_turn = chatter._build_chat_user_prompt(
+        chat_stream,
+        service=None,
+        unread_lines="第一轮新消息",
+        history_text="首轮历史",
+    )
+    second_turn = chatter._build_chat_user_prompt(
+        chat_stream,
+        service=None,
+        unread_lines="第二轮新消息",
+        history_text="",
+    )
+
+    assert "<chat_history>" in first_turn
+    assert "首轮历史" in first_turn
+    assert "<chat_history>" not in second_turn
+    assert "第二轮新消息" in second_turn
 
 
 def test_tell_dfc_tool_description_frames_as_runtime_mode_sync() -> None:
