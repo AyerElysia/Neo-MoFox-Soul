@@ -598,16 +598,16 @@ async def run_enhanced(
             else:
                 rt.think_only_retry_count = 0
 
-            # pass_and_wait 具有最高优先级：即使同轮有非 action 工具结果，也直接等待用户。
+            if call_outcome.has_pending_tool_results:
+                _transition(rt=rt, to_phase=_ToolCallWorkflowPhase.FOLLOW_UP, logger=logger, reason="pending tool results")
+                continue
+
+            # pass_and_wait 只在工具链已闭合时结束本轮。
             # 为避免下一轮被“尾部 TOOL_RESULT”强制 FOLLOW_UP，这里补一个 ASSISTANT 占位。
             if call_outcome.should_wait:
                 _append_suspend_if_tool_result_tail(rt.response, suspend_text, logger)
                 yield Wait()
                 _transition(rt=rt, to_phase=_ToolCallWorkflowPhase.WAIT_USER, logger=logger, reason="pass_and_wait priority")
-                continue
-
-            if call_outcome.has_pending_tool_results:
-                _transition(rt=rt, to_phase=_ToolCallWorkflowPhase.FOLLOW_UP, logger=logger, reason="pending tool results")
                 continue
 
             append_suspend_payload_if_action_only(
@@ -700,7 +700,6 @@ async def run_classical(
         response = request
         cross_round_seen_signatures: set[str] = set()
         has_pending_tool_results = False
-        plain_text_retry_count = 0
         think_only_retry_count = 0
 
         while True:

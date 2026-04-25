@@ -87,6 +87,10 @@ class _FakeLogger:
         return None
 
     @staticmethod
+    def debug(*_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    @staticmethod
     def error(*_args: Any, **_kwargs: Any) -> None:
         return None
 
@@ -175,8 +179,8 @@ class _FakeChatterAllowUser(_FakeChatter):
     """允许 enhanced 正常注入 USER payload 的 chatter 替身。"""
 
     @staticmethod
-    def _upsert_pending_unread_payload(response: Any, formatted_text: str) -> None:
-        _ = formatted_text
+    def _upsert_pending_unread_payload(response: Any, formatted_content: Any) -> None:
+        _ = formatted_content
         response.add_payload(SimpleNamespace(role=ROLE.USER))
 
     async def flush_unreads(self, _unread_messages: list[Any]) -> int:
@@ -303,8 +307,7 @@ async def test_run_enhanced_does_not_yield_wait_when_pending_tool_results(monkey
     assert fake_logger.panels == [
         (
             "聊天流名称：s1\n\n"
-            "思考：（无）\n"
-            "独白：（无）\n"
+            "独白：（无）\n\n"
             "调用工具：\n"
             "    tool-x",
             "Actor 决策",
@@ -360,8 +363,7 @@ async def test_run_enhanced_prints_actor_decision_panel_before_processing_tool_c
     assert fake_logger.panels == [
         (
             "聊天流名称：测试流\n\n"
-            "思考：（无）\n"
-            "独白：先回一句，再调工具\n"
+            "独白：先回一句，再调工具\n\n"
             "调用工具：\n"
             "    tool-x (foo: bar)\n"
             "    tool-y (count: 2)",

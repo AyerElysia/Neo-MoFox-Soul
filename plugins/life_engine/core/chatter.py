@@ -10,6 +10,8 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import threading
+from collections import deque
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -23,9 +25,7 @@ from src.kernel.llm import LLMPayload, ROLE, Text, ToolResult
 from src.kernel.logger import get_logger, COLOR
 
 if TYPE_CHECKING:
-    from src.core.components.base.plugin import BasePlugin
     from src.core.models.stream import ChatStream
-    from src.kernel.llm import LLMRequest, ToolRegistry, ToolCall
     from ..service.core import LifeEngineService
     from ..service.event_builder import LifeEngineEvent
 
@@ -60,6 +60,64 @@ _REASON_LEAK_PATTERN = re.compile(
     r'[,，]?\s*["\']?reason["\']?\s*[:：]',
     re.IGNORECASE,
 )
+
+# 运行时 assistant 注入队列：
+# 用于接收主动续话/内心独白等外部插件产生的上下文。
+# 独立于 default_chatter 的队列，避免两个对话器互相抢消费。
+_RUNTIME_ASSISTANT_INJECTION_MAX_PER_STREAM = 24
+_RUNTIME_ASSISTANT_INJECTIONS: dict[str, deque[str]] = {}
+_RUNTIME_ASSISTANT_INJECTION_LOCK = threading.Lock()
+
+
+def push_runtime_assistant_injection(
+    stream_id: str,
+    content: str,
+    *,
+    max_per_stream: int | None = None,
+) -> None:
+    """向 life_chatter 运行时队列写入一条 assistant 注入文本。"""
+    sid = str(stream_id or "").strip()
+    text = str(content or "").strip()
+    if not sid or not text:
+        return
+
+    limit = max_per_stream
+    if limit is None or limit <= 0:
+        limit = _RUNTIME_ASSISTANT_INJECTION_MAX_PER_STREAM
+
+    with _RUNTIME_ASSISTANT_INJECTION_LOCK:
+        queue = _RUNTIME_ASSISTANT_INJECTIONS.get(sid)
+        if queue is None:
+            queue = deque()
+            _RUNTIME_ASSISTANT_INJECTIONS[sid] = queue
+        queue.append(text)
+        while len(queue) > limit:
+            queue.popleft()
+
+
+def consume_runtime_assistant_injections(
+    stream_id: str,
+    *,
+    max_items: int | None = None,
+) -> list[str]:
+    """消费并返回某个会话的 life_chatter 运行时 assistant 注入文本。"""
+    sid = str(stream_id or "").strip()
+    if not sid:
+        return []
+
+    with _RUNTIME_ASSISTANT_INJECTION_LOCK:
+        queue = _RUNTIME_ASSISTANT_INJECTIONS.get(sid)
+        if not queue:
+            return []
+
+        take_count = len(queue)
+        if max_items is not None and max_items > 0:
+            take_count = min(take_count, max_items)
+
+        result = [queue.popleft() for _ in range(take_count)]
+        if not queue:
+            _RUNTIME_ASSISTANT_INJECTIONS.pop(sid, None)
+        return result
 
 # ── FSM 相位 ──────────────────────────────────────────────────
 
@@ -455,7 +513,9 @@ class LifeChatter(BaseChatter):
 ## 内在状态说明
 - 你的内在状态（情绪、驱力等）会以 <inner_state> 标签呈现在用户消息中。
 - 这些状态反映你当前的心理感受，请自然地融入对话，而非机械地报告。
-- 近期事件会以 <recent_context> 标签呈现，帮助你了解最近发生了什么。"""
+- 近期事件会以 <recent_context> 标签呈现，帮助你了解最近发生了什么。
+- 运行时注入的内心独白会以 <runtime_assistant_context> 标签呈现，
+  它代表你此前已经产生但尚未进入当前 payload 的心理活动。"""
 
     @staticmethod
     def _build_scene_guide(chat_stream: ChatStream) -> str:
@@ -491,6 +551,7 @@ class LifeChatter(BaseChatter):
         service: LifeEngineService | None,
         unread_lines: str,
         history_text: str = "",
+        runtime_context_text: str = "",
     ) -> str:
         """构建包含动态状态的用户提示词。"""
         parts: list[str] = []
@@ -509,11 +570,19 @@ class LifeChatter(BaseChatter):
         if recent_context:
             parts.append(f"<recent_context>\n{recent_context}\n</recent_context>\n")
 
-        # 3) 聊天历史
+        # 3) 运行时注入上下文（例如主动插件的内心独白）
+        if runtime_context_text:
+            parts.append(
+                "<runtime_assistant_context>\n"
+                f"{runtime_context_text}\n"
+                "</runtime_assistant_context>\n"
+            )
+
+        # 4) 聊天历史
         if history_text:
             parts.append(f"<chat_history>\n{history_text}\n</chat_history>\n")
 
-        # 4) 新未读消息
+        # 5) 新未读消息
         if unread_lines:
             parts.append(f"<new_messages>\n{unread_lines}\n</new_messages>\n")
 
@@ -694,6 +763,64 @@ class LifeChatter(BaseChatter):
         response.add_payload(LLMPayload(ROLE.USER, payload_content))
 
     @staticmethod
+    def _has_user_payload(response: Any) -> bool:
+        payloads = getattr(response, "payloads", None)
+        if not isinstance(payloads, list):
+            return False
+        return any(getattr(payload, "role", None) == ROLE.USER for payload in payloads)
+
+    @staticmethod
+    def _format_runtime_context_text(texts: list[str]) -> str:
+        lines = [str(text or "").strip() for text in texts if str(text or "").strip()]
+        if not lines:
+            return ""
+        return "\n".join(f"- {line}" for line in lines)
+
+    def _consume_runtime_assistant_context(
+        self,
+        chat_stream: ChatStream,
+        *,
+        max_items: int = 8,
+    ) -> list[str]:
+        """消费外部插件为当前 stream 写入的运行时上下文。"""
+        try:
+            texts = consume_runtime_assistant_injections(
+                chat_stream.stream_id,
+                max_items=max_items,
+            )
+        except Exception as exc:
+            logger.debug(f"读取 life_chatter 运行时 assistant 注入失败：{exc}")
+            return []
+        return [str(text or "").strip() for text in texts if str(text or "").strip()]
+
+    def _inject_runtime_assistant_payloads(
+        self,
+        response: Any,
+        chat_stream: ChatStream,
+    ) -> int:
+        """将运行时 assistant 文本写入当前 payload。
+
+        只在已有 user payload 时注入，避免对话以 assistant 开头。
+        """
+        payloads = getattr(response, "payloads", None)
+        if not isinstance(payloads, list) or not payloads:
+            return 0
+        if not self._has_user_payload(response):
+            return 0
+
+        texts = self._consume_runtime_assistant_context(chat_stream)
+        injected_count = 0
+        for text in texts:
+            response.add_payload(LLMPayload(ROLE.ASSISTANT, Text(text)))
+            injected_count += 1
+
+        if injected_count > 0:
+            logger.info(
+                f"[payload] 已注入 life_chatter 运行时 assistant 上下文 {injected_count} 条"
+            )
+        return injected_count
+
+    @staticmethod
     def _has_tool_result_tail(response: Any) -> bool:
         payloads = getattr(response, "payloads", None)
         return bool(payloads and payloads[-1].role == ROLE.TOOL_RESULT)
@@ -770,9 +897,6 @@ class LifeChatter(BaseChatter):
         system_text = self._build_chat_system_prompt(chat_stream, service)
         request.add_payload(LLMPayload(ROLE.SYSTEM, Text(system_text)))
 
-        # 历史文本（首轮合并）
-        history_text = self._build_history_text(chat_stream)
-
         # 注入工具
         usable_map = await self.inject_usables(request)
 
@@ -798,6 +922,7 @@ class LifeChatter(BaseChatter):
             # ── WAIT_USER ────────────────────────────────
             if rt.phase == _Phase.WAIT_USER:
                 if not unread_msgs:
+                    self._inject_runtime_assistant_payloads(rt.response, chat_stream)
                     yield Wait()
                     continue
 
@@ -827,12 +952,25 @@ class LifeChatter(BaseChatter):
                     yield Wait()
                     continue
 
+                runtime_context_text = ""
+                if self._has_user_payload(rt.response):
+                    self._inject_runtime_assistant_payloads(rt.response, chat_stream)
+                else:
+                    runtime_context_text = self._format_runtime_context_text(
+                        self._consume_runtime_assistant_context(chat_stream)
+                    )
+
                 # 构建 user prompt
                 user_prompt_text = self._build_chat_user_prompt(
                     chat_stream,
                     service,
                     unread_lines=unread_lines,
-                    history_text=history_text if not rt.history_merged else "",
+                    history_text=(
+                        self._build_history_text(chat_stream)
+                        if not rt.history_merged
+                        else ""
+                    ),
+                    runtime_context_text=runtime_context_text,
                 )
 
                 self._upsert_pending_unread_payload(
@@ -988,15 +1126,6 @@ class LifeChatter(BaseChatter):
                     rt.must_reply = False
                     rt.must_reply_retry_count = 0
 
-                # pass_and_wait 最高优先级
-                if should_wait:
-                    # 补 ASSISTANT 占位防止下一轮误判
-                    if self._has_tool_result_tail(llm_response):
-                        llm_response.add_payload(LLMPayload(ROLE.ASSISTANT, Text(_SUSPEND_TEXT)))
-                    yield Wait()
-                    self._transition(rt, _Phase.WAIT_USER, "pass_and_wait")
-                    continue
-
                 if has_pending_tool_results:
                     rt.follow_up_rounds += 1
                     if rt.follow_up_rounds >= max_rounds:
@@ -1006,6 +1135,15 @@ class LifeChatter(BaseChatter):
                         self._transition(rt, _Phase.WAIT_USER, "max rounds reached")
                         continue
                     self._transition(rt, _Phase.FOLLOW_UP, "pending tool results")
+                    continue
+
+                # pass_and_wait 只在工具链已闭合时结束本轮。
+                if should_wait:
+                    # 补 ASSISTANT 占位防止下一轮误判
+                    if self._has_tool_result_tail(llm_response):
+                        llm_response.add_payload(LLMPayload(ROLE.ASSISTANT, Text(_SUSPEND_TEXT)))
+                    yield Wait()
+                    self._transition(rt, _Phase.WAIT_USER, "pass_and_wait")
                     continue
 
                 # 全部为 action 时补 SUSPEND
