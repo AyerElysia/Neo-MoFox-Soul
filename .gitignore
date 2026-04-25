@@ -102,3 +102,4 @@ plugins/*
 !plugins/life_engine/
 !plugins/perm_plugin/
 !plugins/proactive_message_plugin/
+!plugins/webui_backend/
