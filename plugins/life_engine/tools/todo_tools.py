@@ -14,7 +14,6 @@
 from __future__ import annotations
 
 import json
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -230,6 +229,36 @@ def _generate_todo_id() -> str:
 DesireLiteral = Literal["dreaming", "curious", "wanting", "eager", "passionate"]
 MeaningLiteral = Literal["casual", "enriching", "growing", "meaningful", "transforming"]
 StatusLiteral = Literal["idea", "planning", "waiting", "enjoying", "paused", "completed", "released", "cherished"]
+TodoDetailLevel = Literal["summary", "full"]
+
+
+def _normalize_todo_limit(limit: int | None) -> int:
+    """Keep list_todos output bounded even when the model asks for too much."""
+    if limit is None:
+        return 10
+    try:
+        value = int(limit)
+    except (TypeError, ValueError):
+        return 10
+    return max(1, min(value, 25))
+
+
+def _todo_summary(todo: LifeTodo) -> dict[str, Any]:
+    """Return a compact TODO row for list views."""
+    return {
+        "id": todo.id,
+        "title": todo.title,
+        "status": todo.status,
+        "desire": todo.desire,
+        "meaning": todo.meaning,
+        "deadline": todo.deadline,
+        "target_time": todo.target_time,
+        "days_left": todo.days_until_deadline(),
+        "tags": todo.tags,
+        "has_description": bool(todo.description),
+        "has_notes": bool(todo.notes),
+        "has_completion_feeling": bool(todo.completion_feeling),
+    }
 
 
 class LifeEngineCreateTodoTool(BaseTool):
@@ -395,10 +424,13 @@ class LifeEngineListTodosTool(BaseTool):
 
     tool_name: str = "nucleus_list_todos"
     tool_description: str = (
-        "查看想做的事情列表，回顾自己当前在期待什么。"
+        "查看想做的事情列表，回顾自己当前在期待什么。默认只返回精简摘要，避免工具结果过大；"
+        "需要完整正文、笔记、完成感受时，用 nucleus_get_todo(todo_id=...) 查看单条详情，"
+        "或显式设置 detail_level='full'。"
         "\n\n"
         "**使用建议：**\n"
         "- 心跳时浏览一下，看看有没有今天想推进的事\n"
+        "- 先用默认摘要列表定位 TODO，再用 nucleus_get_todo 查看需要深入处理的那一条\n"
         "- 注意 overdue_count（逾期的 TODO）——问问自己：还想做吗？\n"
         "  → 还想做 → 重新设定截止时间，想想为什么拖延了\n"
         "  → 不想了 → 把状态改为 released，释怀它\n"
@@ -415,6 +447,8 @@ class LifeEngineListTodosTool(BaseTool):
         desire_min: Annotated[DesireLiteral, "最低想做程度"] = None,
         tag: Annotated[str, "筛选包含特定标签的 TODO"] = None,
         include_completed: Annotated[bool, "是否包含已完成的（默认不包含）"] = False,
+        limit: Annotated[int, "最多返回多少条（默认 10，最大 25）"] = 10,
+        detail_level: Annotated[TodoDetailLevel, "summary 返回精简摘要；full 返回完整字段"] = "summary",
     ) -> tuple[bool, str | dict]:
         """列出想做的事情。
 
@@ -493,18 +527,32 @@ class LifeEngineListTodosTool(BaseTool):
                     elif days_left <= TODO_URGENT_DAYS_THRESHOLD:
                         urgent_count += 1
 
+            normalized_limit = _normalize_todo_limit(limit)
+            returned_todos = filtered[:normalized_limit]
+            if detail_level == "full":
+                todos_payload = [asdict(t) for t in returned_todos]
+            else:
+                todos_payload = [_todo_summary(t) for t in returned_todos]
+
             return True, {
                 "action": "list_todos",
-                "todos": [asdict(t) for t in filtered],
+                "todos": todos_payload,
                 "total": len(filtered),
+                "returned": len(returned_todos),
+                "truncated": len(filtered) > len(returned_todos),
+                "limit": normalized_limit,
+                "detail_level": detail_level,
                 "all_count": len(all_todos),
                 "overdue_count": overdue_count,
                 "urgent_count": urgent_count,
+                "detail_hint": "列表默认只给摘要；需要完整内容请调用 nucleus_get_todo(todo_id=...)。",
                 "filters_applied": {
                     "status": status,
                     "desire_min": desire_min,
                     "tag": tag,
                     "include_completed": include_completed,
+                    "limit": normalized_limit,
+                    "detail_level": detail_level,
                 },
             }
         except Exception as e:
