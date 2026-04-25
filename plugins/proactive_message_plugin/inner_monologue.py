@@ -101,6 +101,71 @@ INNER_MONOLOGUE_PROMPT = """# 关于你
 请将你的内心独白控制在 50~100 字左右，避免长篇大论。"""
 
 
+INNER_MONOLOGUE_THOUGHT_PROMPT = """# 关于你
+你是**{nickname}**，{identity}。
+{personality_core}
+{personality_side}
+
+# 场景引导
+{theme_guide}
+
+# 等待状态
+你上次收到 {user_name} 的消息已经是{elapsed_minutes:.0f}分钟了。
+他一直没有回复你。
+
+你记得你们之前的对话：
+{conversation_history}
+
+{monologue_history_section}
+
+现在只写一段内心独白，不要直接给用户发消息，也不要替最终回复做决定。
+这段独白会作为你的当前心理活动交给对话器参考，由对话器稍后决定是否开口。
+
+要求：
+- 50~100 字左右
+- 有连续性，避免复读之前的独白
+- 结合刚才的对话、等待时间和你此刻的情绪
+- 只输出内心独白正文，不要输出 JSON，不要调用工具"""
+
+
+def _build_inner_monologue_prompt_text(
+    chat_stream: "ChatStream",
+    elapsed_minutes: float,
+    user_name: str,
+    *,
+    template: str,
+) -> str:
+    """构建主动等待场景下的内心独白 prompt。"""
+    core_config = get_core_config()
+    nickname = chat_stream.bot_nickname or core_config.personality.nickname
+    identity = core_config.personality.identity
+    personality_core = core_config.personality.personality_core
+    personality_side = core_config.personality.personality_side
+
+    conversation_history = extract_conversation_history(
+        chat_stream.context.history_messages,
+        limit=10,
+    )
+    monologue_limit = getattr(getattr(chat_stream, "_plugin_config", None), "settings", None)
+    monologue_limit = getattr(monologue_limit, "monologue_history_limit", 5)
+    monologue_history = extract_monologue_history(
+        chat_stream.context.history_messages,
+        limit=monologue_limit,
+    )
+
+    return template.format(
+        nickname=nickname,
+        identity=identity,
+        personality_core=personality_core,
+        personality_side=personality_side,
+        theme_guide=_resolve_theme_guide(chat_stream),
+        user_name=user_name,
+        elapsed_minutes=elapsed_minutes,
+        conversation_history=conversation_history or "（没有历史对话）",
+        monologue_history_section=format_monologue_section(monologue_history),
+    )
+
+
 def _resolve_theme_guide(chat_stream: "ChatStream") -> str:
     """根据聊天类型解析场景引导。"""
     chat_type_raw = str(getattr(chat_stream, "chat_type", "") or "").lower()
@@ -165,38 +230,11 @@ async def generate_inner_monologue(
     """
     stream_id = chat_stream.stream_id
 
-    # 获取人设信息（从 core.toml 读取）
-    core_config = get_core_config()
-    nickname = chat_stream.bot_nickname or core_config.personality.nickname
-    identity = core_config.personality.identity
-    personality_core = core_config.personality.personality_core
-    personality_side = core_config.personality.personality_side
-
-    theme_guide = _resolve_theme_guide(chat_stream)
-
-    # 构建 prompt
-    conversation_history = extract_conversation_history(
-        chat_stream.context.history_messages,
-        limit=10,
-    )
-    monologue_limit = getattr(getattr(chat_stream, "_plugin_config", None), "settings", None)
-    monologue_limit = getattr(monologue_limit, "monologue_history_limit", 5)
-    monologue_history = extract_monologue_history(
-        chat_stream.context.history_messages,
-        limit=monologue_limit,
-    )
-    monologue_section = format_monologue_section(monologue_history)
-
-    prompt_text = INNER_MONOLOGUE_PROMPT.format(
-        nickname=nickname,
-        identity=identity,
-        personality_core=personality_core,
-        personality_side=personality_side,
-        theme_guide=theme_guide,
-        user_name=user_name,
-        elapsed_minutes=elapsed_minutes,
-        conversation_history=conversation_history or "（没有历史对话）",
-        monologue_history_section=monologue_section,
+    prompt_text = _build_inner_monologue_prompt_text(
+        chat_stream,
+        elapsed_minutes,
+        user_name,
+        template=INNER_MONOLOGUE_PROMPT,
     )
 
     logger.info(f"生成内心独白：{stream_id[:8]}... 已等待{elapsed_minutes:.0f}分钟")
@@ -298,6 +336,57 @@ async def generate_inner_monologue(
     except Exception as e:
         logger.error(f"生成内心独白失败：{e}", exc_info=True)
         return None
+
+
+async def generate_inner_monologue_thought(
+    chat_stream: "ChatStream",
+    elapsed_minutes: float,
+    user_name: str,
+    model_set: str = "actor",
+) -> str:
+    """为 chatter 决策模式生成纯内心独白，不在此处决定是否发送。"""
+    stream_id = chat_stream.stream_id
+    prompt_text = _build_inner_monologue_prompt_text(
+        chat_stream,
+        elapsed_minutes,
+        user_name,
+        template=INNER_MONOLOGUE_THOUGHT_PROMPT,
+    )
+
+    logger.info(f"生成内心独白草稿：{stream_id[:8]}... 已等待{elapsed_minutes:.0f}分钟")
+
+    try:
+        model_config = llm_api.get_model_set_by_task(model_set)
+        if not model_config:
+            logger.error(f"模型配置不存在：{model_set}")
+            return ""
+
+        llm_request = llm_api.create_llm_request(
+            model_config,
+            request_name=f"inner_monologue_thought_{stream_id}",
+        )
+
+        system_prompt, user_prompt = await _build_default_chatter_prompt(
+            chat_stream,
+            prompt_text,
+        )
+
+        if system_prompt:
+            llm_request.add_payload(LLMPayload(ROLE.SYSTEM, [Text(system_prompt)]))
+        llm_request.add_payload(LLMPayload(ROLE.USER, [Text(user_prompt)]))
+
+        response = await llm_request.send(stream=False)
+        await response
+
+        thought = str(response.message or "").strip()
+        if len(thought) > 500:
+            thought = thought[:497] + "..."
+        if thought:
+            logger.info(f"内心独白草稿：{thought[:300]}")
+        return thought
+    except Exception as e:
+        logger.error(f"生成内心独白草稿失败：{e}", exc_info=True)
+        return ""
 
 
 def extract_conversation_history(

@@ -461,6 +461,11 @@ class ProactiveMessagePlugin(BasePlugin):
             user_name = getattr(chat_stream, "stream_name", "用户")
 
             if self._decision_mode() == "chatter":
+                await self._generate_and_inject_chatter_monologue(
+                    chat_stream,
+                    elapsed_minutes=elapsed,
+                    user_name=user_name,
+                )
                 await self._wake_stream_for_proactive_opportunity(
                     chat_stream,
                     elapsed_minutes=elapsed,
@@ -498,6 +503,30 @@ class ProactiveMessagePlugin(BasePlugin):
         if normalized in {"legacy", "private_llm", "legacy_private_llm"}:
             return "legacy_private_llm"
         return "chatter"
+
+    async def _generate_and_inject_chatter_monologue(
+        self,
+        chat_stream: ChatStream,
+        *,
+        elapsed_minutes: float,
+        user_name: str,
+    ) -> None:
+        """chatter 决策模式下保留内心独白，再交给对话器决定是否开口。"""
+        try:
+            from .inner_monologue import generate_inner_monologue_thought
+
+            thought = await generate_inner_monologue_thought(
+                chat_stream=chat_stream,
+                elapsed_minutes=elapsed_minutes,
+                user_name=user_name,
+                model_set="actor",
+            )
+        except Exception as exc:
+            logger.error(f"生成 chatter 模式内心独白失败：{exc}", exc_info=True)
+            return
+
+        if thought.strip():
+            await self._inject_inner_monologue(chat_stream, thought)
 
     async def _handle_decision(
         self,
