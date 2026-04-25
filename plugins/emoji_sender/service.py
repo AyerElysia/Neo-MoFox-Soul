@@ -900,3 +900,84 @@ class EmojiSenderService(BaseService):
             emotion_tags=emotion_tags,
         )
         return ok
+
+    async def update_meme_description(self, meme_id: str, new_description: str) -> bool:
+        """更新向量库中某个表情包的描述并重新生成 embedding。
+
+        适用场景：WebUI 修改了 SQLite 里的描述后，同步更新向量库 metadata，
+        避免检索时仍使用旧描述。
+
+        Args:
+            meme_id: 表情包的 SHA256 hash（与 source_hash / meme_id 字段一致）
+            new_description: 新的描述文本
+
+        Returns:
+            True 表示成功更新；False 表示无条目可更新或出现错误
+        """
+        new_desc = str(new_description or "").strip()
+        if not meme_id or not new_desc:
+            return False
+
+        vdb = self._vector_db()
+        collection = self._collection_name()
+        await vdb.get_or_create_collection(collection)
+
+        # 取出该 meme_id 的全部向量条目
+        data = await vdb.get(
+            collection_name=collection,
+            where={"meme_id": meme_id},
+            include=["metadatas", "documents"],
+        )
+        ids: list[str] = list(data.get("ids") or [])
+        metadatas: list[dict] = list(data.get("metadatas") or [])
+
+        if not ids:
+            logger.debug(f"update_meme_description: 向量库中未找到 meme_id={meme_id[:8]}...")
+            return False
+
+        # 重新生成 embedding
+        try:
+            embedding_model_set = get_model_set_by_task("embedding")
+        except Exception:
+            logger.warning("update_meme_description: 未配置 embedding 任务模型，无法更新向量库")
+            return False
+
+        try:
+            emb_req = create_embedding_request(
+                model_set=embedding_model_set,
+                request_name="emoji_sender_update_embedding",
+                inputs=[new_desc],
+            )
+            emb_resp = await emb_req.send()
+            new_embedding = list(emb_resp.embeddings[0])
+        except Exception as e:
+            logger.warning(f"update_meme_description: 生成 embedding 失败: {e}")
+            return False
+
+        # 删除旧条目
+        try:
+            await vdb.delete(collection_name=collection, ids=ids)
+        except Exception as e:
+            logger.warning(f"update_meme_description: 删除旧条目失败: {e}")
+            return False
+
+        # 用更新后的描述和 embedding 重新写入
+        new_metadatas = [
+            {**meta, "description": new_desc}
+            for meta in metadatas
+        ]
+
+        try:
+            await vdb.add(
+                collection_name=collection,
+                ids=ids,
+                embeddings=[new_embedding] * len(ids),
+                documents=[new_desc] * len(ids),
+                metadatas=new_metadatas,
+            )
+        except Exception as e:
+            logger.warning(f"update_meme_description: 重新写入向量库失败: {e}")
+            return False
+
+        logger.info(f"update_meme_description: 已同步 meme_id={meme_id[:8]}... ({len(ids)} 条)")
+        return True
