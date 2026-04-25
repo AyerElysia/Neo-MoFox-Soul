@@ -34,7 +34,25 @@ def test_life_chatter_prompt_states_single_subject_runtime_modes() -> None:
 def test_life_chatter_system_prompt_includes_memory_not_tool(tmp_path) -> None:
     """聊天态应共享 SOUL/MEMORY，但不注入 life 专属 TOOL 文档。"""
     (tmp_path / "SOUL.md").write_text("SOUL_CONTENT", encoding="utf-8")
-    (tmp_path / "MEMORY.md").write_text("MEMORY_CONTENT", encoding="utf-8")
+    (tmp_path / "MEMORY.md").write_text(
+        "\n".join(
+            [
+                "# 值得记住的事",
+                "",
+                "这里是一大段给编辑者看的说明，不该原样注入。",
+                "",
+                "### Durable（持久）",
+                "- MEMORY_DURABLE",
+                "",
+                "### Active（活跃）",
+                "- MEMORY_ACTIVE",
+                "",
+                "### Fading（待审视）",
+                "- MEMORY_FADING",
+            ]
+        ),
+        encoding="utf-8",
+    )
     (tmp_path / "TOOL.md").write_text("TOOL_CONTENT", encoding="utf-8")
 
     config = LifeEngineConfig()
@@ -52,7 +70,10 @@ def test_life_chatter_system_prompt_includes_memory_not_tool(tmp_path) -> None:
     prompt = chatter._build_chat_system_prompt(chat_stream, service=None)
 
     assert "SOUL_CONTENT" in prompt
-    assert "MEMORY_CONTENT" in prompt
+    assert "MEMORY_DURABLE" in prompt
+    assert "MEMORY_ACTIVE" in prompt
+    assert "MEMORY_FADING" not in prompt
+    assert "给编辑者看的说明" not in prompt
     assert "TOOL_CONTENT" not in prompt
 
 

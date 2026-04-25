@@ -23,6 +23,7 @@ from src.core.components.base.action import BaseAction
 from src.core.models.message import Message, MessageType
 from src.kernel.llm import LLMPayload, ROLE, Text, ToolResult
 from src.kernel.logger import get_logger, COLOR
+from ..memory.prompting import load_memory_prompt_data, render_memory_prompt
 
 if TYPE_CHECKING:
     from src.core.models.stream import ChatStream
@@ -445,7 +446,7 @@ class LifeChatter(BaseChatter):
         soul_text = self._load_workspace_markdown(service, "SOUL.md")
         if soul_text:
             parts.append(soul_text)
-        memory_text = self._load_workspace_markdown(service, "MEMORY.md")
+        memory_text = self._load_workspace_memory_prompt(service, mode="chat")
         if memory_text:
             parts.append(memory_text)
 
@@ -486,6 +487,27 @@ class LifeChatter(BaseChatter):
         except Exception as e:
             logger.warning(f"读取 {filename} 失败: {e}")
         return ""
+
+    def _load_workspace_memory_prompt(
+        self,
+        service: LifeEngineService | None,
+        *,
+        mode: str,
+    ) -> str:
+        """读取并过滤 MEMORY.md，避免把编辑说明和 Fading 全量注入。"""
+        workspace = self._resolve_workspace_path(service)
+        if not workspace:
+            return ""
+
+        try:
+            memory_data = load_memory_prompt_data(workspace)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"读取 MEMORY.md 失败: {e}")
+            return ""
+
+        if not memory_data.raw_text:
+            return ""
+        return render_memory_prompt(memory_data, mode=mode)
 
     @staticmethod
     def _build_fixed_chat_framework(chat_stream: ChatStream) -> str:

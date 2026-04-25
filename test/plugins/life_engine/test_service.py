@@ -70,6 +70,64 @@ def test_cfg_auto_migrates_legacy_config_without_thresholds(tmp_path: Path) -> N
     assert isinstance(plugin.config, LifeEngineConfig)
 
 
+def test_heartbeat_system_prompt_filters_memory_sections(tmp_path: Path) -> None:
+    """心跳态应只注入结构化 MEMORY 摘要，不带 Fading 和编辑说明。"""
+    (tmp_path / "SOUL.md").write_text("SOUL_CONTENT", encoding="utf-8")
+    (tmp_path / "TOOL.md").write_text("TOOL_CONTENT", encoding="utf-8")
+    (tmp_path / "MEMORY.md").write_text(
+        "\n".join(
+            [
+                "# 值得记住的事",
+                "",
+                "给编辑者看的说明",
+                "",
+                "### Durable（持久）",
+                "- D1",
+                "",
+                "### Active（活跃）",
+                "- A1",
+                "",
+                "### Fading（待审视）",
+                "- F1",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    service = _make_service(tmp_path)
+
+    prompt = service._build_heartbeat_system_prompt()
+
+    assert "SOUL_CONTENT" in prompt
+    assert "TOOL_CONTENT" in prompt
+    assert "D1" in prompt
+    assert "A1" in prompt
+    assert "F1" not in prompt
+    assert "给编辑者看的说明" not in prompt
+
+
+def test_memory_maintenance_prompt_emits_once_per_interval(tmp_path: Path) -> None:
+    """MEMORY 超限时，维护提醒不应在短时间内重复刷屏。"""
+    oversize_item = "很长的叙事内容" * 80
+    (tmp_path / "MEMORY.md").write_text(
+        "\n".join(
+            [
+                "# 值得记住的事",
+                "",
+                "### Durable（持久）",
+                *(f"- {oversize_item}{i}" for i in range(45)),
+            ]
+        ),
+        encoding="utf-8",
+    )
+    service = _make_service(tmp_path)
+
+    first = service._build_memory_maintenance_prompt_if_due()
+    second = service._build_memory_maintenance_prompt_if_due()
+
+    assert "MEMORY 维护任务" in first
+    assert second == ""
+
+
 @pytest.mark.asyncio
 async def test_enqueue_dfc_message_appends_pending_event(tmp_path: Path) -> None:
     """DFC 留言应进入 pending 队列并持久化。"""

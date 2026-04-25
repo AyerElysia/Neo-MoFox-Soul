@@ -45,6 +45,12 @@ from ..constants import (
     HEARTBEAT_IDLE_CRITICAL_THRESHOLD,
     HEARTBEAT_IDLE_WARNING_THRESHOLD,
 )
+from ..memory.prompting import (
+    build_memory_maintenance_prompt,
+    load_memory_prompt_data,
+    render_memory_prompt,
+    should_emit_memory_maintenance_prompt,
+)
 from .event_builder import (
     EventBuilder,
     EventType,
@@ -135,6 +141,7 @@ class LifeEngineService(BaseService):
         # 状态持久化
         self._state_persistence: StatePersistence | None = None
         self._legacy_config_warning_emitted: bool = False
+        self._last_memory_maintenance_prompt_at: str | None = None
 
     @property
     def memory_service(self) -> LifeMemoryService | None:
@@ -1049,7 +1056,12 @@ class LifeEngineService(BaseService):
         else:
             logger.info(f"life_engine 心跳模型回复为空: #{self._state.heartbeat_count}")
 
-    def _build_heartbeat_model_prompt(self, wake_context: str) -> str:
+    def _build_heartbeat_model_prompt(
+        self,
+        wake_context: str,
+        *,
+        memory_maintenance_prompt: str = "",
+    ) -> str:
         """构造心跳模型输入。"""
         minutes_since_external = self._minutes_since_external_message()
         heartbeat_interval = self._cfg().settings.heartbeat_interval_seconds
@@ -1150,6 +1162,8 @@ class LifeEngineService(BaseService):
             lines.extend([idle_warning, ""])
 
         lines.extend([f"**本时段建议**: {suggested_activities}", ""])
+        if memory_maintenance_prompt:
+            lines.extend(["", memory_maintenance_prompt, ""])
 
         return "\n".join(lines)
 
@@ -1296,13 +1310,13 @@ class LifeEngineService(BaseService):
             logger.warning("SOUL.md 不存在，使用默认人设")
             soul_content = "你是爱莉希雅，一个并行存在的生命中枢。"
 
-        memory_file = workspace / "MEMORY.md"
         memory_content = ""
-        if memory_file.exists():
-            try:
-                memory_content = memory_file.read_text(encoding="utf-8").strip()
-            except Exception as e:
-                logger.warning(f"无法读取 MEMORY.md: {e}")
+        try:
+            memory_data = load_memory_prompt_data(workspace)
+            if memory_data.raw_text:
+                memory_content = render_memory_prompt(memory_data, mode="heartbeat")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"无法读取 MEMORY.md: {e}")
 
         tool_file = workspace / "TOOL.md"
         tool_content = ""
@@ -1364,6 +1378,26 @@ class LifeEngineService(BaseService):
         )
         await self.record_tool_result(tool_name or "<unknown>", result_text, success)
 
+    def _build_memory_maintenance_prompt_if_due(self) -> str:
+        """在 MEMORY 需要整理时，周期性提醒本轮优先做维护。"""
+        workspace = Path(self._cfg().settings.workspace_path)
+        try:
+            memory_data = load_memory_prompt_data(workspace)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"读取 MEMORY.md 维护状态失败: {exc}")
+            return ""
+
+        if not should_emit_memory_maintenance_prompt(
+            memory_data,
+            self._last_memory_maintenance_prompt_at,
+        ):
+            return ""
+
+        prompt = build_memory_maintenance_prompt(memory_data)
+        if prompt:
+            self._last_memory_maintenance_prompt_at = _now_iso()
+        return prompt
+
     async def _run_heartbeat_model(self, wake_context: str) -> str:
         """调用 life 任务模型生成内部报文。"""
         cfg = self._cfg()
@@ -1374,8 +1408,14 @@ class LifeEngineService(BaseService):
             request_name="life_engine_heartbeat",
         )
 
+        system_prompt = self._build_heartbeat_system_prompt()
+        memory_maintenance_prompt = self._build_memory_maintenance_prompt_if_due()
+        user_prompt = self._build_heartbeat_model_prompt(
+            wake_context,
+            memory_maintenance_prompt=memory_maintenance_prompt,
+        )
         request.add_payload(
-            LLMPayload(ROLE.SYSTEM, Text(self._build_heartbeat_system_prompt()))
+            LLMPayload(ROLE.SYSTEM, Text(system_prompt))
         )
 
         tools = self._get_nucleus_tools()
@@ -1384,14 +1424,14 @@ class LifeEngineService(BaseService):
             registry.register(tool)
         request.add_payload(LLMPayload(ROLE.TOOL, tools))
 
-        request.add_payload(LLMPayload(ROLE.USER, Text(self._build_heartbeat_model_prompt(wake_context))))
+        request.add_payload(LLMPayload(ROLE.USER, Text(user_prompt)))
 
         timeout_seconds = max(10.0, min(60.0, float(cfg.settings.heartbeat_interval_seconds)))
 
         logger.debug(
             f"life_engine heartbeat request: "
-            f"system_prompt_len={len(self._build_heartbeat_system_prompt())} "
-            f"user_prompt_len={len(self._build_heartbeat_model_prompt(wake_context))} "
+            f"system_prompt_len={len(system_prompt)} "
+            f"user_prompt_len={len(user_prompt)} "
             f"tools_count={len(tools)}"
         )
 

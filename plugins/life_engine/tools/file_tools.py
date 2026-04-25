@@ -32,6 +32,7 @@ from ..constants import (
     PROACTIVE_WAKE_REQUIRED_IMPORTANCE,
     PROACTIVE_WAKE_KEYWORDS,
 )
+from ..memory.prompting import build_memory_write_warning
 
 
 logger = log_api.get_logger("life_engine.tools")
@@ -558,6 +559,11 @@ class LifeEngineWriteFileTool(BaseTool):
                 "path": path,
                 "size_human": _format_size(stat.st_size),
                 "created": not existed,
+                **(
+                    {"warning": warning}
+                    if (warning := build_memory_write_warning(path, content)) is not None
+                    else {}
+                ),
             }
         except Exception as e:
             logger.error(f"写入文件失败 {path}: {e}", exc_info=True)
