@@ -24,7 +24,6 @@ import shutil
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from io import BytesIO
 from tempfile import TemporaryDirectory
 from pathlib import Path
 from threading import Lock as ThreadLock
@@ -32,7 +31,7 @@ from typing import Any
 from sqlalchemy import select
 
 from src.kernel.logger import get_logger
-from src.app.plugin_system.api.llm_api import get_model_set_by_task, create_llm_request
+from src.app.plugin_system.api.llm_api import get_model_set_by_task
 from src.kernel.llm.model_client.registry import ModelClientRegistry
 from src.core.prompt import PromptTemplate, get_prompt_manager
 from src.core.config import get_core_config
@@ -46,6 +45,7 @@ logger = get_logger("media_manager")
 # 单例实例
 _media_manager: "MediaManager | None" = None
 _MAX_MEDIA_DATA_BYTES = 8 * 1024 * 1024
+_MAX_VIDEO_DATA_BYTES = 200 * 1024 * 1024
 _FAILURE_ALERT_WINDOW_SECONDS = 300.0
 _FAILURE_ALERT_THRESHOLD = 5
 
@@ -676,14 +676,15 @@ class MediaManager:
                 media_bytes=video_bytes,
             )
 
-            if video_bytes > _MAX_MEDIA_DATA_BYTES:
+            if video_bytes > _MAX_VIDEO_DATA_BYTES:
                 await self._record_media_event(
                     event="rejected_too_large",
                     media_type="video",
                     media_bytes=video_bytes,
                 )
                 logger.warning(
-                    f"视频过大，跳过摘要: bytes={video_bytes}, hash={video_hash[:8]}..."
+                    f"视频过大，跳过摘要: bytes={video_bytes}, "
+                    f"limit={_MAX_VIDEO_DATA_BYTES}, hash={video_hash[:8]}..."
                 )
                 return None
 
