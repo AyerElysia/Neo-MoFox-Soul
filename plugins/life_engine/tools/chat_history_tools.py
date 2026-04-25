@@ -145,8 +145,9 @@ class LifeEngineFetchChatHistoryTool(BaseTool):
 
     tool_name: str = "fetch_chat_history"
     tool_description: str = (
-        "检索聊天历史消息（支持跨流、关键词/正则、时间范围、上下文窗口），"
-        "可按需通过 NapCat 进行历史回补，并附带 life tool_call/tool_result 事件。"
+        "检索聊天历史消息。默认只检索当前聊天流；需要跨流时必须显式传 cross_stream=true "
+        "或 stream_ids。支持关键词/正则、时间范围、上下文窗口。"
+        "默认优先本地历史；只有 source_mode='napcat' 或 force_backfill=true 时才通过 NapCat 回补。"
     )
     chatter_allow: list[str] = ["life_chatter"]
 
@@ -656,8 +657,11 @@ class LifeEngineFetchChatHistoryTool(BaseTool):
             return False, "history_retrieval 已在配置中禁用"
 
         resolved_limit = self._resolved_limit(limit)
-        cross_stream_default = bool(getattr(cfg, "default_cross_stream", True)) if cfg is not None else True
+        cross_stream_default = bool(getattr(cfg, "default_cross_stream", False)) if cfg is not None else False
         resolved_cross_stream = cross_stream_default if cross_stream is None else bool(cross_stream)
+        explicit_stream_ids = [str(sid or "").strip() for sid in list(stream_ids or []) if str(sid or "").strip()]
+        if len(explicit_stream_ids) > 1:
+            resolved_cross_stream = True
 
         query_text = str(query or "")
         flags = re.IGNORECASE if case_insensitive else 0
@@ -680,7 +684,7 @@ class LifeEngineFetchChatHistoryTool(BaseTool):
             return False, "time_from 不能大于 time_to"
 
         candidates = await self._resolve_stream_candidates(
-            stream_ids=list(stream_ids or []),
+            stream_ids=explicit_stream_ids,
             cross_stream=resolved_cross_stream,
             platform=str(platform or "").strip(),
         )
@@ -702,7 +706,7 @@ class LifeEngineFetchChatHistoryTool(BaseTool):
 
         need_backfill = source_mode == "napcat"
         if source_mode == "auto":
-            need_backfill = force_backfill or len(local_matches) < resolved_limit
+            need_backfill = bool(force_backfill)
 
         backfill_matches: list[dict[str, Any]] = []
         backfill_logs: list[dict[str, Any]] = []
@@ -746,6 +750,7 @@ class LifeEngineFetchChatHistoryTool(BaseTool):
             "query": query_text,
             "use_regex": bool(use_regex),
             "source_mode": source_mode,
+            "scope": "cross_stream" if resolved_cross_stream else "current_stream",
             "cross_stream": resolved_cross_stream,
             "stream_ids": [str(item.get("stream_id") or "") for item in candidates],
             "matches": deduped,
@@ -767,4 +772,3 @@ class LifeEngineFetchChatHistoryTool(BaseTool):
 CHAT_HISTORY_TOOLS = [
     LifeEngineFetchChatHistoryTool,
 ]
-

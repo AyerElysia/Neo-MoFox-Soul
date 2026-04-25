@@ -10,13 +10,12 @@ from __future__ import annotations
 import asyncio
 import traceback
 from dataclasses import asdict
-from datetime import datetime, time as dtime
+from datetime import datetime, time as dtime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from src.app.plugin_system.api.llm_api import create_llm_request, get_model_set_by_task
 from src.app.plugin_system.api.log_api import get_logger
-from src.core.config import get_core_config
 from src.core.components.base import BaseService
 from src.core.models.message import Message
 from src.kernel.concurrency import get_task_manager
@@ -52,12 +51,10 @@ from .event_builder import (
     LifeEngineEvent,
     LifeEngineState,
     _format_current_time,
-    _format_time,
     _format_time_display,
     _now_iso,
     _parse_hhmm,
     _shorten_text,
-    INTERNAL_PLATFORM,
 )
 from .state_manager import (
     StatePersistence,
@@ -70,7 +67,6 @@ from .integrations import (
     DFCIntegration,
     SNNIntegration,
     MemoryIntegration,
-    to_jsonable,
 )
 
 if TYPE_CHECKING:
@@ -277,6 +273,21 @@ class LifeEngineService(BaseService):
         """计算距离上一次同步给对外运行模式过去了多少分钟。"""
         return self._minutes_since_tell_dfc()
 
+    def _should_pause_llm_heartbeat_for_external_silence(self) -> tuple[bool, int | None, int]:
+        """判断是否因外界长期静默暂停 LLM 心跳。"""
+        cfg = self._cfg()
+        threshold = int(
+            getattr(cfg.settings, "idle_pause_after_external_silence_minutes", 0)
+            or 0
+        )
+        if threshold <= 0:
+            return False, self._minutes_since_external_message(), threshold
+
+        minutes_since_external = self._minutes_since_external_message()
+        if minutes_since_external is None:
+            return False, None, threshold
+        return minutes_since_external >= threshold, minutes_since_external, threshold
+
     def record_tell_dfc(self) -> None:
         """记录一次传话给 DFC 的时间。"""
         self._state.last_tell_dfc_at = _now_iso()
@@ -297,6 +308,14 @@ class LifeEngineService(BaseService):
         data = asdict(self._state)
         in_sleep_window, sleep_window_desc = self._in_sleep_window_now()
         data["heartbeat_interval_seconds"] = int(self._cfg().settings.heartbeat_interval_seconds)
+        data["idle_pause_after_external_silence_minutes"] = int(
+            getattr(self._cfg().settings, "idle_pause_after_external_silence_minutes", 0)
+            or 0
+        )
+        paused, silence_minutes, pause_threshold = self._should_pause_llm_heartbeat_for_external_silence()
+        data["llm_heartbeat_paused_by_external_silence"] = paused
+        data["external_silence_minutes"] = silence_minutes
+        data["external_silence_pause_threshold_minutes"] = pause_threshold
         data["model_task_name"] = self._cfg().model.task_name
         data["pending_event_count"] = len(self._pending_events)
         data["history_event_count"] = len(self._event_history)
@@ -1647,6 +1666,20 @@ class LifeEngineService(BaseService):
                     last_wake_context_at=self._state.last_wake_context_at,
                     last_wake_context_size=self._state.last_wake_context_size,
                 )
+
+                paused_by_silence, silence_minutes, pause_threshold = (
+                    self._should_pause_llm_heartbeat_for_external_silence()
+                )
+                if paused_by_silence:
+                    if self._snn_integration is not None:
+                        await self._snn_integration.heartbeat_post()
+                    await self._save_runtime_context()
+                    if should_log_heartbeat:
+                        logger.info(
+                            "life_engine heartbeat LLM 已因外界静默暂停: "
+                            f"silence={silence_minutes}min threshold={pause_threshold}min"
+                        )
+                    continue
 
                 try:
                     model_reply = await self._run_heartbeat_model(injected_content)

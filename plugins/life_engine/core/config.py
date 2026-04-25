@@ -80,6 +80,15 @@ class LifeEngineConfig(BaseConfig):
             description="单次心跳内允许模型连续进行工具调用的最大轮数（防止死循环）。",
         )
 
+        idle_pause_after_external_silence_minutes: int = Field(
+            default=30,
+            ge=0,
+            description=(
+                "外界入站消息静默达到多少分钟后暂停 life LLM 心跳。"
+                "设为 0 表示不因外界静默暂停。手动心跳不受影响。"
+            ),
+        )
+
     @config_section("model")
     class ModelSection(SectionBase):
         """中枢模型任务设置。"""
@@ -99,8 +108,8 @@ class LifeEngineConfig(BaseConfig):
         )
 
         default_cross_stream: bool = Field(
-            default=True,
-            description="未显式指定 stream_id 时，是否默认跨 stream 检索。",
+            default=False,
+            description="未显式指定 stream_id 时，是否默认跨 stream 检索。建议保持 false，让聊天态默认只查当前流。",
         )
 
         adapter_signature: str = Field(

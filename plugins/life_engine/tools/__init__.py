@@ -22,6 +22,11 @@ from .chat_history_tools import (
 )
 from .todo_tools import TODO_TOOLS
 from .grep_tools import GREP_TOOLS
+from .event_grep_tools import (
+    EVENT_GREP_TOOLS,
+    LifeChatterGrepEventsTool,
+    LifeEngineGrepEventsTool,
+)
 from .web_tools import WEB_TOOLS
 from .social_tools import SOCIAL_TOOLS
 from ..streams.tools import STREAM_TOOLS
@@ -29,16 +34,20 @@ from ..streams.tools import STREAM_TOOLS
 ALL_TOOLS = [
     *FILE_TOOLS,
     *CHAT_HISTORY_TOOLS,
+    *EVENT_GREP_TOOLS,
 ]
 
 __all__ = [
     "ALL_TOOLS",
     "TODO_TOOLS",
     "GREP_TOOLS",
+    "EVENT_GREP_TOOLS",
     "WEB_TOOLS",
     "STREAM_TOOLS",
     "SOCIAL_TOOLS",
     "LifeEngineFetchChatHistoryTool",
+    "LifeEngineGrepEventsTool",
+    "LifeChatterGrepEventsTool",
     "LifeEngineReadFileTool",
     "LifeEngineWriteFileTool",
     "LifeEngineEditFileTool",

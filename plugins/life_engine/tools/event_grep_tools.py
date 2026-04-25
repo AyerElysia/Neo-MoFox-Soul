@@ -1,0 +1,272 @@
+"""life_engine event ledger grep tools."""
+
+from __future__ import annotations
+
+import re
+from typing import Annotated, Any, Literal
+
+from src.app.plugin_system.api import log_api
+from src.core.components import BaseTool
+
+from ..service import LifeEngineService
+from ..service.event_builder import EventType
+
+logger = log_api.get_logger("life_engine.event_grep")
+
+_DEFAULT_LIMIT = 12
+_MAX_LIMIT = 80
+_TEXT_FIELDS = ("content", "sender", "source", "source_detail", "tool_name", "stream_id", "content_type")
+
+
+def _event_type_value(event: Any) -> str:
+    event_type = getattr(event, "event_type", "")
+    value = getattr(event_type, "value", event_type)
+    return str(value or "").strip().lower()
+
+
+def _event_to_payload(event: Any) -> dict[str, Any]:
+    return {
+        "event_id": str(getattr(event, "event_id", "") or ""),
+        "event_type": _event_type_value(event),
+        "timestamp": str(getattr(event, "timestamp", "") or ""),
+        "sequence": int(getattr(event, "sequence", 0) or 0),
+        "source": str(getattr(event, "source", "") or ""),
+        "source_detail": str(getattr(event, "source_detail", "") or ""),
+        "content": str(getattr(event, "content", "") or ""),
+        "content_type": str(getattr(event, "content_type", "") or ""),
+        "sender": str(getattr(event, "sender", "") or ""),
+        "chat_type": str(getattr(event, "chat_type", "") or ""),
+        "stream_id": str(getattr(event, "stream_id", "") or ""),
+        "heartbeat_index": getattr(event, "heartbeat_index", None),
+        "tool_name": str(getattr(event, "tool_name", "") or ""),
+        "tool_args": getattr(event, "tool_args", None) or {},
+        "tool_success": getattr(event, "tool_success", None),
+    }
+
+
+def _haystack(payload: dict[str, Any], fields: list[str]) -> str:
+    parts: list[str] = []
+    for field in fields:
+        value = payload.get(field)
+        if value is None:
+            continue
+        if isinstance(value, (dict, list, tuple, set)):
+            parts.append(str(value))
+        else:
+            parts.append(str(value))
+    return "\n".join(parts)
+
+
+def _compile_pattern(query: str, *, use_regex: bool, case_insensitive: bool) -> re.Pattern[str]:
+    flags = re.IGNORECASE if case_insensitive else 0
+    return re.compile(query if use_regex else re.escape(query), flags)
+
+
+def _normalize_event_types(event_types: list[str] | None) -> set[str]:
+    values: set[str] = set()
+    for item in event_types or []:
+        text = str(item or "").strip().lower()
+        if not text:
+            continue
+        try:
+            text = EventType(text).value
+        except ValueError:
+            pass
+        values.add(text)
+    return values
+
+
+async def grep_life_events(
+    *,
+    query: str,
+    use_regex: bool = False,
+    case_insensitive: bool = True,
+    stream_ids: list[str] | None = None,
+    event_types: list[str] | None = None,
+    fields: list[str] | None = None,
+    include_pending: bool = True,
+    limit: int = _DEFAULT_LIMIT,
+    context_before: int = 1,
+    context_after: int = 1,
+    order: Literal["asc", "desc"] = "desc",
+) -> dict[str, Any]:
+    """Search the in-memory life event ledger."""
+    text = str(query or "").strip()
+    if not text:
+        raise ValueError("query 不能为空")
+
+    service = LifeEngineService.get_instance()
+    if service is None:
+        raise RuntimeError("life_engine 服务不可用")
+
+    field_names = [str(field or "").strip() for field in (fields or list(_TEXT_FIELDS))]
+    field_names = [field for field in field_names if field]
+    if not field_names:
+        field_names = list(_TEXT_FIELDS)
+
+    pattern = _compile_pattern(text, use_regex=use_regex, case_insensitive=case_insensitive)
+    stream_filter = {str(sid or "").strip() for sid in (stream_ids or []) if str(sid or "").strip()}
+    type_filter = _normalize_event_types(event_types)
+    resolved_limit = max(1, min(int(limit or _DEFAULT_LIMIT), _MAX_LIMIT))
+    before = max(0, min(int(context_before or 0), 8))
+    after = max(0, min(int(context_after or 0), 8))
+
+    async with service._get_lock():
+        events = list(getattr(service, "_event_history", []))
+        if include_pending:
+            events.extend(list(getattr(service, "_pending_events", [])))
+
+    events.sort(key=lambda event: int(getattr(event, "sequence", 0) or 0))
+    payloads = [_event_to_payload(event) for event in events]
+    scoped_payloads: list[dict[str, Any]] = []
+    for payload in payloads:
+        if stream_filter and str(payload.get("stream_id") or "") not in stream_filter:
+            continue
+        if type_filter and str(payload.get("event_type") or "") not in type_filter:
+            continue
+        scoped_payloads.append(payload)
+
+    matches: list[dict[str, Any]] = []
+    for index, payload in enumerate(scoped_payloads):
+        if not pattern.search(_haystack(payload, field_names)):
+            continue
+
+        start = max(0, index - before)
+        end = min(len(scoped_payloads), index + after + 1)
+        matches.append(
+            {
+                "event": payload,
+                "context_before": scoped_payloads[start:index],
+                "context_after": scoped_payloads[index + 1:end],
+            }
+        )
+
+    if order != "asc":
+        matches.reverse()
+
+    returned = matches[:resolved_limit]
+    return {
+        "action": "grep_life_events",
+        "query": text,
+        "use_regex": bool(use_regex),
+        "case_insensitive": bool(case_insensitive),
+        "scope": "filtered_streams" if stream_filter else "all_streams",
+        "stream_ids": sorted(stream_filter),
+        "event_types": sorted(type_filter),
+        "fields": field_names,
+        "include_pending": bool(include_pending),
+        "order": order,
+        "matches": returned,
+        "stats": {
+            "total_events": len(payloads),
+            "scanned_events": len(scoped_payloads),
+            "matched_events": len(matches),
+            "returned_matches": len(returned),
+            "truncated": len(matches) > len(returned),
+        },
+    }
+
+
+class LifeEngineGrepEventsTool(BaseTool):
+    """Search life_engine's full event ledger from the internal life mode."""
+
+    tool_name: str = "nucleus_grep_events"
+    tool_description: str = (
+        "搜索你的完整事件流，包括外部消息、心跳、工具调用和工具结果。"
+        "适合回忆“我之前看见/做过/想过什么”。这是事件流检索，不是聊天数据库全文检索。"
+    )
+    chatter_allow: list[str] = ["life_engine_internal"]
+
+    async def execute(
+        self,
+        query: Annotated[str, "要搜索的关键词或正则表达式"],
+        use_regex: Annotated[bool, "是否按正则表达式匹配 query"] = False,
+        case_insensitive: Annotated[bool, "匹配时是否忽略大小写"] = True,
+        stream_ids: Annotated[list[str] | None, "限定 stream_id；为空表示全局事件流"] = None,
+        event_types: Annotated[list[str] | None, "限定事件类型：message/heartbeat/tool_call/tool_result"] = None,
+        fields: Annotated[list[str] | None, "限定搜索字段；为空搜索常用文本字段"] = None,
+        include_pending: Annotated[bool, "是否包含尚未进入历史的 pending 事件"] = True,
+        limit: Annotated[int, "最大返回命中数"] = _DEFAULT_LIMIT,
+        context_before: Annotated[int, "每条命中前带几条相邻事件"] = 1,
+        context_after: Annotated[int, "每条命中后带几条相邻事件"] = 1,
+        order: Annotated[Literal["asc", "desc"], "返回顺序：asc/desc"] = "desc",
+    ) -> tuple[bool, dict[str, Any] | str]:
+        try:
+            return True, await grep_life_events(
+                query=query,
+                use_regex=use_regex,
+                case_insensitive=case_insensitive,
+                stream_ids=stream_ids,
+                event_types=event_types,
+                fields=fields,
+                include_pending=include_pending,
+                limit=limit,
+                context_before=context_before,
+                context_after=context_after,
+                order=order,
+            )
+        except re.error as exc:
+            return False, f"正则表达式错误: {exc}"
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"搜索 life 事件流失败: {exc}")
+            return False, f"搜索事件流失败: {exc}"
+
+
+class LifeChatterGrepEventsTool(BaseTool):
+    """Search life_engine's event ledger from life_chatter."""
+
+    tool_name: str = "grep_life_events"
+    tool_description: str = (
+        "搜索同一主体的事件流，默认只查当前聊天流相关事件。"
+        "适合回忆刚刚 life 心跳想了什么、当前窗口之前发生过什么、或者你刚才是否已经回复过。"
+        "如果确实需要全局事件流，显式设置 cross_stream=true。"
+    )
+    chatter_allow: list[str] = ["life_chatter"]
+
+    async def execute(
+        self,
+        query: Annotated[str, "要搜索的关键词或正则表达式"],
+        use_regex: Annotated[bool, "是否按正则表达式匹配 query"] = False,
+        case_insensitive: Annotated[bool, "匹配时是否忽略大小写"] = True,
+        cross_stream: Annotated[bool, "是否跨所有聊天流搜索；默认 false"] = False,
+        stream_ids: Annotated[list[str] | None, "限定 stream_id；为空时默认当前聊天流"] = None,
+        event_types: Annotated[list[str] | None, "限定事件类型：message/heartbeat/tool_call/tool_result"] = None,
+        fields: Annotated[list[str] | None, "限定搜索字段；为空搜索常用文本字段"] = None,
+        include_pending: Annotated[bool, "是否包含尚未进入历史的 pending 事件"] = True,
+        limit: Annotated[int, "最大返回命中数"] = 8,
+        context_before: Annotated[int, "每条命中前带几条相邻事件"] = 1,
+        context_after: Annotated[int, "每条命中后带几条相邻事件"] = 1,
+        order: Annotated[Literal["asc", "desc"], "返回顺序：asc/desc"] = "desc",
+    ) -> tuple[bool, dict[str, Any] | str]:
+        resolved_stream_ids = [str(sid or "").strip() for sid in (stream_ids or []) if str(sid or "").strip()]
+        if not cross_stream and not resolved_stream_ids:
+            chat_stream = getattr(self, "chat_stream", None)
+            current_stream_id = str(getattr(chat_stream, "stream_id", "") or "").strip()
+            if current_stream_id:
+                resolved_stream_ids = [current_stream_id]
+
+        try:
+            return True, await grep_life_events(
+                query=query,
+                use_regex=use_regex,
+                case_insensitive=case_insensitive,
+                stream_ids=[] if cross_stream else resolved_stream_ids,
+                event_types=event_types,
+                fields=fields,
+                include_pending=include_pending,
+                limit=limit,
+                context_before=context_before,
+                context_after=context_after,
+                order=order,
+            )
+        except re.error as exc:
+            return False, f"正则表达式错误: {exc}"
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"聊天态搜索 life 事件流失败: {exc}")
+            return False, f"搜索事件流失败: {exc}"
+
+
+EVENT_GREP_TOOLS = [
+    LifeEngineGrepEventsTool,
+    LifeChatterGrepEventsTool,
+]

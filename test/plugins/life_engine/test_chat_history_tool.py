@@ -109,6 +109,7 @@ async def test_fetch_chat_history_auto_merge_dedup(monkeypatch: pytest.MonkeyPat
     ok, payload = await tool.execute(
         query="",
         source_mode="auto",
+        force_backfill=True,
         limit=5,
         include_tool_calls=True,
     )
@@ -120,6 +121,33 @@ async def test_fetch_chat_history_auto_merge_dedup(monkeypatch: pytest.MonkeyPat
     assert {item["message_id"] for item in matches} == {"m1", "m2"}
     assert payload["stats"]["backfill_attempted"] is True
     assert len(payload["tool_events"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_fetch_chat_history_auto_does_not_backfill_without_force(monkeypatch: pytest.MonkeyPatch) -> None:
+    """auto 模式默认不应偷偷触发 NapCat 回补，保持当前流检索轻量。"""
+    tool = _make_tool()
+
+    async def _fake_candidates(**kwargs: Any) -> list[dict[str, Any]]:
+        assert kwargs["cross_stream"] is False
+        return [{"stream_id": "s1", "platform": "qq", "chat_type": "private", "group_id": "", "group_name": ""}]
+
+    async def _fake_local(**_kwargs: Any) -> tuple[list[dict[str, Any]], dict[str, list[Any]]]:
+        return ([], {"s1": []})
+
+    async def _should_not_call_backfill(**_kwargs: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        raise AssertionError("auto 模式未 force_backfill 时不应调用 backfill")
+
+    monkeypatch.setattr(tool, "_resolve_stream_candidates", _fake_candidates)
+    monkeypatch.setattr(tool, "_collect_local_matches", _fake_local)
+    monkeypatch.setattr(tool, "_collect_backfill_matches", _should_not_call_backfill)
+
+    ok, payload = await tool.execute(query="", source_mode="auto", limit=5)
+
+    assert ok is True
+    assert isinstance(payload, dict)
+    assert payload["scope"] == "current_stream"
+    assert payload["stats"]["backfill_attempted"] is False
 
 
 @pytest.mark.asyncio
@@ -153,4 +181,3 @@ async def test_fetch_chat_history_invalid_regex_returns_error() -> None:
     ok, payload = await tool.execute(query="(abc", use_regex=True)
     assert ok is False
     assert "正则表达式错误" in str(payload)
-
