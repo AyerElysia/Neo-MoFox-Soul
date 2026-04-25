@@ -874,7 +874,7 @@ class ProactiveMessagePlugin(BasePlugin):
         """将内容标准化为非空字符串段列表。
 
         支持：
-        - list[str]: 直接过滤空字符串
+        - list[str]: 直接过滤空字符串，并将段内换行拆成多条消息
         - str: 按 <br /> 分割取第一部分，尝试解析 JSON 数组
 
         Returns:
@@ -883,8 +883,21 @@ class ProactiveMessagePlugin(BasePlugin):
         import json
         import re
 
+        def _split_text_segments(text: str) -> list[str]:
+            normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+            normalized = normalized.replace("\\n", "\n")
+            return [
+                segment.strip()
+                for segment in re.split(r"\n+", normalized)
+                if segment.strip()
+            ]
+
         if isinstance(content, list):
-            return [s.strip() for s in content if isinstance(s, str) and s.strip()]
+            segments: list[str] = []
+            for item in content:
+                if isinstance(item, str):
+                    segments.extend(_split_text_segments(item))
+            return segments
 
         if not isinstance(content, str):
             return []
@@ -902,12 +915,16 @@ class ProactiveMessagePlugin(BasePlugin):
         try:
             parsed = json.loads(first_block)
             if isinstance(parsed, list):
-                return [s for s in parsed if isinstance(s, str) and s.strip()]
+                segments: list[str] = []
+                for item in parsed:
+                    if isinstance(item, str):
+                        segments.extend(_split_text_segments(item))
+                return segments
         except json.JSONDecodeError:
             pass
 
         # 非数组格式，直接作为单一段落
-        return [first_block]
+        return _split_text_segments(first_block)
 
     async def _send_message(self, chat_stream: ChatStream, content: str | list[str]) -> bool:
         """发送消息

@@ -13,7 +13,7 @@ PLUGIN_ROOT = Path("/root/Elysia/Neo-MoFox/plugins")
 if str(PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(PLUGIN_ROOT))
 
-from plugins.proactive_message_plugin.plugin import ProactiveMessagePlugin
+from plugins.proactive_message_plugin.plugin import ProactiveMessagePlugin  # noqa: E402
 
 
 class _FakeSender:
@@ -56,3 +56,31 @@ def test_send_message_normalizes_list_content_before_persisting(monkeypatch: pyt
     assert [msg.processed_plain_text for msg in fake_sender.messages] == ["第一段", "第二段"]
     assert all(isinstance(msg.content, str) for msg in fake_sender.messages)
     assert all(isinstance(msg.processed_plain_text, str) for msg in fake_sender.messages)
+
+
+def test_send_message_splits_newlines_before_persisting(monkeypatch: pytest.MonkeyPatch) -> None:
+    """主动消息中的换行应被拆成多条消息，而不是原样发送。"""
+    fake_sender = _FakeSender()
+    monkeypatch.setattr(
+        "src.core.transport.message_send.get_message_sender",
+        lambda: fake_sender,
+    )
+
+    plugin = ProactiveMessagePlugin()
+    chat_stream = SimpleNamespace(
+        stream_id="sid_001",
+        platform="qq",
+        chat_type="private",
+        bot_id="bot_001",
+        bot_nickname="爱莉",
+    )
+
+    ok = asyncio.run(
+        plugin._send_message(
+            chat_stream,
+            "第一段\n\n第二段\\n第三段",
+        )
+    )
+
+    assert ok is True
+    assert [msg.content for msg in fake_sender.messages] == ["第一段", "第二段", "第三段"]

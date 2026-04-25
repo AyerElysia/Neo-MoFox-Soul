@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from plugins.life_engine.core.chatter import LifeChatter
+from plugins.life_engine.core.chatter import LifeChatter, LifeSendTextAction
 from src.kernel.llm import ROLE
 
 
@@ -46,6 +46,16 @@ def test_should_encourage_segment_send_for_long_single_content() -> None:
 def test_should_not_encourage_segment_send_for_segment_array() -> None:
     call_args = {"content": ["第一段", "第二段"]}
     assert LifeChatter._should_encourage_segment_send("action-life_send_text", call_args) is False
+
+
+def test_life_send_text_normalize_splits_newlines_in_plain_text() -> None:
+    result = LifeSendTextAction._normalize_content_segments("第一条\n\n第二条\r\n第三条")
+    assert result == ["第一条", "第二条", "第三条"]
+
+
+def test_life_send_text_normalize_splits_escaped_newlines_in_list() -> None:
+    result = LifeSendTextAction._normalize_content_segments(["第一条\\n第二条", "第三条"])
+    assert result == ["第一条", "第二条", "第三条"]
 
 
 def test_append_segment_send_retry_instruction_adds_system_payload() -> None:

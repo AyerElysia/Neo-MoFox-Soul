@@ -28,6 +28,18 @@ def test_normalize_content_segments_accepts_native_list() -> None:
     assert result == ["A", "B"]
 
 
+def test_normalize_content_segments_splits_newlines_in_plain_text() -> None:
+    """模型把分段写成换行时，应兜底拆成多条消息。"""
+    result = SendTextAction._normalize_content_segments("第一条\n\n第二条\r\n第三条")
+    assert result == ["第一条", "第二条", "第三条"]
+
+
+def test_normalize_content_segments_splits_escaped_newlines_in_list() -> None:
+    """列表段内出现字面量 \\n 时，也应拆分。"""
+    result = SendTextAction._normalize_content_segments(["第一条\\n第二条", "第三条"])
+    assert result == ["第一条", "第二条", "第三条"]
+
+
 def test_sanitize_segment_strips_reason_leak() -> None:
     """应截断 reason 元字段泄漏。"""
     result = SendTextAction._sanitize_segment("先发结论，reason: 这是内心想法")

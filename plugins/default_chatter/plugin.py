@@ -19,7 +19,7 @@ import random
 import re
 import threading
 from collections import deque
-from typing import Annotated, Any, AsyncGenerator
+from typing import Annotated, AsyncGenerator
 
 from src.core.components.types import ChatType
 from src.app.plugin_system.api.log_api import get_logger
@@ -283,6 +283,7 @@ class SendTextAction(BaseAction):
         "严禁把多个 JSON 对象或 <br/> 拼接进 content。"
         "如果还需要其他 action/tool，请单独调用，不要塞到 content 里。"
         "分段消息会按顺序发送，并自动模拟段间打字延迟。"
+        "不要在单条 content 中使用换行；需要分条就使用 content 数组。"
         "私聊场景下 reply_to 默认不要使用，除非确实需要引用某条历史消息来避免歧义。"
         "所有@对象都应该通过at参数而不是直接写在文本里，以确保正确解析和发送。"
         "注意：本工具无法发送表情包等非文本内容。"
@@ -308,7 +309,20 @@ class SendTextAction(BaseAction):
     @staticmethod
     def _to_non_empty_segments(raw: list[object]) -> list[str]:
         """将任意列表转换为非空字符串段。"""
-        return [s.strip() for s in raw if isinstance(s, str) and s.strip()]
+        segments: list[str] = []
+        for item in raw:
+            if isinstance(item, str):
+                segments.extend(SendTextAction._split_text_segments(item))
+        return segments
+
+    @staticmethod
+    def _split_text_segments(text: str) -> list[str]:
+        """将模型塞进单段文本里的换行兜底拆成多条消息。"""
+        if not text:
+            return []
+        normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+        normalized = normalized.replace("\\n", "\n")
+        return [part.strip() for part in re.split(r"\n+", normalized) if part.strip()]
 
     @staticmethod
     def _extract_leading_json_array(text: str) -> str | None:
@@ -399,7 +413,7 @@ class SendTextAction(BaseAction):
         if parsed_segments is not None:
             return parsed_segments
 
-        return [first_block]
+        return cls._split_text_segments(first_block)
 
     @staticmethod
     def _sanitize_segment(content: str) -> str:

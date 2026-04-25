@@ -157,6 +157,7 @@ class LifeSendTextAction(BaseAction):
         "content 中只能包含要发给用户的纯文本正文。"
         "严禁把 reason/thought/expected_reaction 等元信息写进 content。"
         "分段消息会按顺序发送，并自动模拟段间打字延迟。"
+        "不要在单条 content 中使用换行；需要分条就使用 content 数组。"
         "私聊场景下 reply_to 默认不要使用，除非确实需要引用某条历史消息来避免歧义。"
     )
 
@@ -166,7 +167,19 @@ class LifeSendTextAction(BaseAction):
 
     @staticmethod
     def _to_non_empty_segments(raw: list[object]) -> list[str]:
-        return [s.strip() for s in raw if isinstance(s, str) and s.strip()]
+        segments: list[str] = []
+        for item in raw:
+            if isinstance(item, str):
+                segments.extend(LifeSendTextAction._split_text_segments(item))
+        return segments
+
+    @staticmethod
+    def _split_text_segments(text: str) -> list[str]:
+        if not text:
+            return []
+        normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+        normalized = normalized.replace("\\n", "\n")
+        return [part.strip() for part in re.split(r"\n+", normalized) if part.strip()]
 
     @staticmethod
     def _extract_leading_json_array(text: str) -> str | None:
@@ -240,7 +253,7 @@ class LifeSendTextAction(BaseAction):
         parsed_segments = cls._try_parse_segments_from_text(first_block)
         if parsed_segments is not None:
             return parsed_segments
-        return [first_block]
+        return cls._split_text_segments(first_block)
 
     @staticmethod
     def _sanitize_segment(content: str) -> str:
@@ -500,6 +513,7 @@ class LifeChatter(BaseChatter):
   严禁单独调用 think，think 必须与至少一个可执行动作同轮出现。
 - life_send_text: 发送文本消息。content 只能写纯文本正文，禁止塞入元信息。
   长回复优先使用 `content: ["第一段", "第二段", ...]` 分段发送，不要把大段文字塞进一条。
+  禁止在单条 content 里写换行符；想换行就拆成数组里的下一条。
 - pass_and_wait: 不需要回复时使用，等待用户新消息。
 - schedule_followup_message: 觉得当前话题还想过一会儿再补一句时使用，只登记续话意图，不要当场连发。
 - 其他 tool/agent: 查询信息或执行功能。收到结果后，继续回复或进一步调用。
@@ -516,7 +530,8 @@ class LifeChatter(BaseChatter):
 1. 默认优先分段发送，尤其是解释型、安抚型、叙事型回复。
 2. 当回复超过两句话或明显较长时，拆成 2~4 段；每段只表达一个核心意图。
 3. 追问、补充、转折、情绪递进，尽量另起一段。
-4. 除非回复非常短（如“嗯嗯”“收到啦”），否则不要只发单段长文本。
+4. 不要在一条消息里使用换行符；需要分隔时改成多次 `life_send_text` 或 `content` 数组。
+5. 除非回复非常短（如“嗯嗯”“收到啦”），否则不要只发单段长文本。
 
 ## 安全准则
 - 保护用户隐私，不泄露个人信息。
