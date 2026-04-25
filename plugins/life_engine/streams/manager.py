@@ -5,7 +5,6 @@ import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 from uuid import uuid4
 
 from .models import ThoughtStream
@@ -166,8 +165,13 @@ class ThoughtStreamManager:
         ts = self._streams.get(stream_id)
         if not ts:
             return False, f"思考流 {stream_id} 不存在"
-        if ts.status != "active":
-            return False, f"思考流 {ts.title} 当前状态为 {ts.status}，无法推进"
+        if ts.status == "completed":
+            return False, f"思考流「{ts.title}」已完成，无法继续推进"
+        if ts.status == "dormant":
+            # 自动重新激活休眠的思考流
+            ts.status = "active"
+            ts.curiosity_score = max(ts.curiosity_score, 0.5)
+            logger.info(f"休眠思考流自动激活: {ts.title}")
 
         ts.advance_count += 1
         ts.last_thought = thought[:500]
@@ -222,7 +226,7 @@ class ThoughtStreamManager:
         if ts.status == "active":
             return False, f"思考流「{ts.title}」已经是活跃状态"
         if ts.status == "completed":
-            return False, f"已完成的思考流不能重新激活"
+            return False, "已完成的思考流不能重新激活"
 
         ts.status = "active"
         ts.curiosity_score = max(ts.curiosity_score, 0.5)
