@@ -208,7 +208,7 @@ class NapcatAdapterConfig(BaseConfig):
             order=11
         )
         video_max_size_mb: int = Field(
-            default=100,
+            default=200,
             description="允许下载的视频文件最大大小（MB）",
             label="视频最大大小",
             ge=10,

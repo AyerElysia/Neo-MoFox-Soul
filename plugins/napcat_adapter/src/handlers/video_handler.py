@@ -16,7 +16,7 @@ logger = get_logger("video_handler")
 
 
 class VideoDownloader:
-    def __init__(self, max_size_mb: int = 100, download_timeout: int = 60):
+    def __init__(self, max_size_mb: int = 200, download_timeout: int = 60):
         self.max_size_mb = max_size_mb
         self.download_timeout = download_timeout
         self.supported_formats = {".mp4", ".avi", ".mov", ".mkv", ".flv", ".wmv", ".webm", ".m4v"}
@@ -170,7 +170,7 @@ class VideoDownloader:
 _video_downloader = None
 
 
-def get_video_downloader(max_size_mb: int = 100, download_timeout: int = 60) -> VideoDownloader:
+def get_video_downloader(max_size_mb: int = 200, download_timeout: int = 60) -> VideoDownloader:
     """获取视频下载器实例"""
     global _video_downloader
     if _video_downloader is None:
