@@ -386,6 +386,8 @@ class CapturedRequest:
         """返回列表展示用的摘要。"""
         msg_count = len(self.params.get("messages", []))
         tool_count = len(self.params.get("tools", []))
+        request_name = str(self.metadata.get("request_name") or "")
+        import_source = str(self.metadata.get("import_source") or "")
         return {
             "id": self.id,
             "ts": self.ts,
@@ -393,6 +395,8 @@ class CapturedRequest:
             "api_name": self.api_name,
             "model": self.model,
             "api_provider": str(self.metadata.get("api_provider", "-")),
+            "request_name": request_name,
+            "import_source": import_source,
             "estimated_input_tokens": self.metadata.get("estimated_input_tokens"),
             "msg_count": msg_count,
             "tool_count": tool_count,
@@ -1004,7 +1008,7 @@ _WEBUI_HTML = r"""<!DOCTYPE html>
     <div class="brand-mark">LLM</div>
     <div class="brand-copy">
       <h1>LLM 请求检视器</h1>
-      <p>默认展示结构化对话视图，保留原始 JSON 便于精确调试。</p>
+      <p>默认展示结构化对话视图，支持按 request_name 过滤和 Prompt 文本核查。</p>
     </div>
   </div>
   <div class="status-group">
@@ -1013,12 +1017,13 @@ _WEBUI_HTML = r"""<!DOCTYPE html>
   </div>
   <div class="toolbar">
     <div class="toolbar-group">
-      <input type="text" id="filter-input" placeholder="过滤 model / api…">
+      <input type="text" id="filter-input" placeholder="过滤 request / model / api…">
       <button id="import-toggle-btn">导入 JSON</button>
       <button id="auto-scroll-btn" class="active" title="自动滚动到最新">跟随最新</button>
     </div>
     <div class="toolbar-group">
       <button id="pretty-btn" class="active">渲染视图</button>
+      <button id="text-btn">Prompt 文本</button>
       <button id="json-btn">JSON 视图</button>
       <button id="copy-btn">复制 JSON</button>
       <button id="clear-btn" class="danger">清空</button>
@@ -1072,6 +1077,7 @@ const filterInput = document.getElementById('filter-input');
 const statusDot = document.getElementById('status-dot');
 const autoScrollBtn = document.getElementById('auto-scroll-btn');
 const prettyBtn = document.getElementById('pretty-btn');
+const textBtn = document.getElementById('text-btn');
 const jsonBtn = document.getElementById('json-btn');
 const importToggleBtn = document.getElementById('import-toggle-btn');
 const importPanel = document.getElementById('import-panel');
@@ -1123,7 +1129,10 @@ function filterText() {
 function matchFilter(record) {
   const f = filterText();
   if (!f) return true;
-  return String(record.model || '').toLowerCase().includes(f) || String(record.api_name || '').toLowerCase().includes(f);
+  return String(record.model || '').toLowerCase().includes(f)
+    || String(record.api_name || '').toLowerCase().includes(f)
+    || String(record.request_name || '').toLowerCase().includes(f)
+    || String(record.import_source || '').toLowerCase().includes(f);
 }
 
 function renderList() {
@@ -1149,10 +1158,11 @@ function appendItem(record, flash) {
   item.dataset.id = record.id;
   const provider = record.api_provider ? escHtml(record.api_provider) : '-';
   const tokens = record.estimated_input_tokens == null ? '-' : escHtml(record.estimated_input_tokens);
+  const requestName = record.request_name ? escHtml(record.request_name) : '-';
   item.innerHTML = `<div class="row1"><span class="api-chip">${escHtml(record.api_name)}</span><span class="ts">${escHtml(record.ts_str)}</span></div>
     <div class="model">${escHtml(record.model)}</div>
     <div class="meta">${record.msg_count} 条消息 · ${record.tool_count} 个工具</div>
-    <div class="meta-row"><span class="mini-chip">Provider · ${provider}</span><span class="mini-chip">Tokens · ${tokens}</span></div>`;
+    <div class="meta-row"><span class="mini-chip">Request · ${requestName}</span><span class="mini-chip">Provider · ${provider}</span><span class="mini-chip">Tokens · ${tokens}</span></div>`;
   item.addEventListener('click', () => selectItem(record.id));
   listScroll.appendChild(item);
 }
@@ -1178,7 +1188,12 @@ function renderActiveDetail() {
   }
   const data = fullCache[activeId];
   const record = requests.find(item => item.id === activeId);
-  detailTitle.textContent = record ? `#${activeId} · ${record.api_name} · ${record.ts_str}` : `#${activeId}`;
+  const requestName = record && record.request_name ? ` · ${record.request_name}` : '';
+  detailTitle.textContent = record ? `#${activeId} · ${record.api_name}${requestName} · ${record.ts_str}` : `#${activeId}`;
+  if (viewMode === 'text') {
+    renderPromptTextDetail(data.params);
+    return;
+  }
   if (viewMode === 'json') {
     renderJsonDetail(data.params);
     return;
@@ -1326,6 +1341,57 @@ function renderJsonDetail(params) {
   detailBody.appendChild(section);
 }
 
+function renderPromptTextDetail(params) {
+  detailBody.innerHTML = '';
+  const section = document.createElement('section');
+  section.className = 'section';
+  section.innerHTML = '<div class="section-head"><h2>Prompt 文本</h2><span class="section-hint">按 messages 顺序展开，便于检查重复上下文</span></div>';
+  const code = document.createElement('div');
+  code.className = 'code-panel';
+  code.textContent = buildPromptText(params);
+  section.appendChild(code);
+  detailBody.appendChild(section);
+}
+
+function buildPromptText(params) {
+  const messages = Array.isArray(params && params.messages) ? params.messages : [];
+  if (!messages.length) return '本次请求没有 messages。';
+  return messages.map((message, index) => {
+    if (!message || typeof message !== 'object') {
+      return `#${index + 1} [unknown]\n${JSON.stringify(message, null, 2)}`;
+    }
+    const role = message.role || 'unknown';
+    const meta = [];
+    if (message.name) meta.push(`name=${message.name}`);
+    if (message.tool_call_id) meta.push(`tool_call_id=${message.tool_call_id}`);
+    if (Array.isArray(message.tool_calls) && message.tool_calls.length) meta.push(`tool_calls=${message.tool_calls.length}`);
+    const header = `#${index + 1} [${role}]${meta.length ? ' ' + meta.join(' ') : ''}`;
+    const content = promptContentToText(message.content);
+    const toolCalls = Array.isArray(message.tool_calls) && message.tool_calls.length
+      ? '\n\n<tool_calls>\n' + JSON.stringify(message.tool_calls, null, 2) + '\n</tool_calls>'
+      : '';
+    const reasoning = message.reasoning_content ? `\n\n<reasoning>\n${message.reasoning_content}\n</reasoning>` : '';
+    return `${header}\n${content}${reasoning}${toolCalls}`;
+  }).join('\n\n---\n\n');
+}
+
+function promptContentToText(content) {
+  if (content == null) return '';
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content.map(part => {
+      if (typeof part === 'string') return part;
+      if (!part || typeof part !== 'object') return JSON.stringify(part);
+      const type = part.type || 'unknown';
+      if (typeof part.text === 'string') return part.text;
+      if (type === 'image_url' || type === 'input_image') return `[${type}: ${JSON.stringify(part.image_url || part.url || '')}]`;
+      if (type === 'input_audio' || type === 'audio') return `[${type}]`;
+      return `[${type}] ${JSON.stringify(part)}`;
+    }).join('\n');
+  }
+  return JSON.stringify(content, null, 2);
+}
+
 function normalizeRoleClass(role) {
   return ['system', 'user', 'assistant', 'tool'].includes(role) ? role : 'unknown';
 }
@@ -1339,6 +1405,15 @@ autoScrollBtn.addEventListener('click', () => {
 prettyBtn.addEventListener('click', () => {
   viewMode = 'pretty';
   prettyBtn.classList.add('active');
+  textBtn.classList.remove('active');
+  jsonBtn.classList.remove('active');
+  renderActiveDetail();
+});
+
+textBtn.addEventListener('click', () => {
+  viewMode = 'text';
+  textBtn.classList.add('active');
+  prettyBtn.classList.remove('active');
   jsonBtn.classList.remove('active');
   renderActiveDetail();
 });
@@ -1347,6 +1422,7 @@ jsonBtn.addEventListener('click', () => {
   viewMode = 'json';
   jsonBtn.classList.add('active');
   prettyBtn.classList.remove('active');
+  textBtn.classList.remove('active');
   renderActiveDetail();
 });
 

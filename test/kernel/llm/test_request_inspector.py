@@ -125,6 +125,23 @@ def test_captured_request_to_full_includes_rendered_payload() -> None:
     assert detail["rendered"]["messages"][0]["blocks"][0]["text"] == "hello"
 
 
+def test_captured_request_summary_includes_request_name_for_filtering() -> None:
+    """列表摘要应带 request_name，方便实时过滤 life_chatter 等请求。"""
+    record = CapturedRequest(
+        id=1,
+        ts=0.0,
+        api_name="chat.completions.create",
+        model="demo-model",
+        params={"messages": [{"role": "user", "content": "hello"}], "tools": []},
+        metadata={"request_name": "life_chatter", "import_source": "debug-dump"},
+    )
+
+    summary = record.to_summary()
+
+    assert summary["request_name"] == "life_chatter"
+    assert summary["import_source"] == "debug-dump"
+
+
 def test_request_inspector_imports_raw_request_json() -> None:
     """导入原始请求体 JSON 后应进入既有渲染链路。"""
     inspector = RequestInspector()
