@@ -365,6 +365,72 @@ class TestBaseAction:
         assert sent_message.extra["target_user_id"] == "123456789"
         assert sent_message.extra["target_user_name"] == "Ayer"
 
+    @patch("src.core.transport.message_send.get_message_sender")
+    @patch("src.core.managers.adapter_manager.get_adapter_manager")
+    @patch("src.core.utils.user_query_helper.get_user_query_helper")
+    @patch("src.core.managers.stream_manager.get_stream_manager")
+    def test_send_to_stream_private_prefers_stream_person_over_context_sender(
+        self,
+        mock_get_stream_manager,
+        mock_get_user_query_helper,
+        mock_get_adapter_manager,
+        mock_get_sender,
+        mock_chat_stream,
+        mock_plugin,
+    ):
+        """私聊发送应优先使用 stream 绑定的 person，而不是被污染的上下文 sender。"""
+        import asyncio
+
+        mock_chat_stream.chat_type = "private"
+        mock_chat_stream.platform = "qq"
+        mock_chat_stream.stream_id = "stream_private_2"
+
+        context = mock_chat_stream.context
+        context.unread_messages = []
+        context.triggering_user_id = "3427056465"
+
+        last_msg = MagicMock()
+        last_msg.sender_id = "3427056465"
+        last_msg.sender_name = "爱莉希雅"
+        last_msg.extra = {}
+        context.history_messages = [last_msg]
+
+        mock_stream_manager = MagicMock()
+        mock_stream_manager.get_stream_info = AsyncMock(
+            return_value={
+                "chat_type": "private",
+                "person_id": "hash_person_2665",
+            }
+        )
+        mock_get_stream_manager.return_value = mock_stream_manager
+
+        helper = MagicMock()
+        helper.person_crud.get_by = AsyncMock(
+            return_value=MagicMock(
+                user_id="2665253325",
+                nickname="AyerElysia",
+            )
+        )
+        mock_get_user_query_helper.return_value = helper
+
+        mock_sender = MagicMock()
+        mock_sender.send_message = AsyncMock(return_value=True)
+        mock_get_sender.return_value = mock_sender
+
+        mock_adapter_manager = MagicMock()
+        mock_adapter_manager.get_bot_info_by_platform = AsyncMock(
+            return_value={"bot_id": "3427056465", "bot_name": "爱莉希雅"}
+        )
+        mock_get_adapter_manager.return_value = mock_adapter_manager
+
+        action = ConcreteAction(mock_chat_stream, mock_plugin)
+        result = asyncio.run(action._send_to_stream("test content"))
+
+        assert result is True
+        sent_message = mock_sender.send_message.call_args.args[0]
+        assert sent_message.extra["target_user_id"] == "2665253325"
+        assert sent_message.extra["target_user_name"] == "AyerElysia"
+
 
 class TestActionAttributes:
     """测试 Action 类属性。"""

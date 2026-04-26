@@ -1,258 +1,188 @@
 # 主动消息插件 (Proactive Message Plugin)
 
-让 Bot 具有在用户长时间未回复时主动发消息的能力，模拟真实的情感等待过程。
+让 `life_chatter` 在外界长时间沉默时，获得一次“要不要自然开口”的主动机会。
 
-## ✨ 功能特性
+这份文档描述的是当前架构：`proactive_message_plugin` 不再维护一套私有的内心独白 Prompt，也不再把独白伪装成聊天历史消息；主动机会、延迟续话、内心独白都统一回到 `life_chatter` 主链路处理。
 
-### 核心功能
+## 当前设计
 
-- **时间感知**：自动追踪用户最后消息时间，开始等待计时
-- **内心独白**：触发 LLM 生成内心活动，表达对等待的情感反应
-- **自主决策**：LLM 决定立即发消息 or 继续等待，等待时长也由 LLM 决定
-- **独白历史注入**：之前的内心独白会注入上下文，形成连续的情感心路历程
-- **循环等待机制**：支持多轮"等待→独白→决策"循环
-- **延迟续话机制**：正常回复后，可登记一条“过会儿若对方还没回，我可能还想补一句”的续话计划
-- **智能过滤**：可配置忽略群聊等特定聊天类型
+- `proactive_message_plugin` 负责：
+  - 计时
+  - 触发主动机会 / 延迟续话机会
+  - 调度后续检查
+- `life_chatter` 负责：
+  - 用统一的人设 / SOUL / MEMORY / 运行态上下文做判断
+  - 决定回复还是继续等待
+  - 在主动机会轮次先调用 `action-record_inner_monologue`
+- `life_engine` 负责：
+  - 把这类独白写入统一事件流
+  - 在后续轮次按流增量同步给 `life_chatter`
 
-### 新增特性（v1.0.0）
+## 核心变化
 
-- **发送后二次等待** (`post_send_followup_minutes`)：Bot 主动发消息后，若用户仍未回复，会在指定时间后再次触发内心独白，而不是直接结束
-- **等待时长累积** (`checkpoint_wait`)：每次 LLM 选择"继续等待"时，会 checkpoint 已等待时长并累加，确保最大等待时间限制准确
-- **可配置独白历史数量** (`monologue_history_limit`)：可控制 prompt 中注入多少条之前的内心独白，平衡上下文长度与情感连续性
-- **连续说话能力** (`schedule_followup_message`)：模型可在本轮回复后安排一次延迟续话检查，而不是当场连发
+### 1. 不再有私有 `inner_monologue.py`
 
-## 📦 安装
+旧设计里，主动插件会单独起一套 Prompt 生成“内心独白 + 决策”，这会导致：
 
-将整个 `proactive_message_plugin` 文件夹复制到 `plugins/` 目录下即可。
+- 独白和对外说话不是同一个主体上下文
+- 上下文缓存不友好
+- 独白容易和 `life_chatter` 当前状态脱节
 
-## ⚙️ 配置
+现在这条链路已经移除。主动插件只负责创造机会，不再自己思考。
 
-在 `config/plugins/proactive_message_plugin/config.toml` 中进行配置：
+### 2. 不再把独白写进 `history_messages`
+
+旧设计会把独白作为 `is_inner_monologue=True` 的消息塞进聊天历史。这样会污染真实对话链，也容易在长连接中反复重复。
+
+现在独白改为写入 `life_engine` 事件流：
+
+- 类型：`HEARTBEAT`
+- `content_type="chatter_inner_monologue"`
+- 按 `stream_id` 归属到具体会话
+
+这样它既能被后续轮次看到，又不会破坏聊天历史的形状。
+
+### 3. 主动机会轮次强制先记录独白
+
+当主动机会或延迟续话机会唤醒 `life_chatter` 时，提示会明确要求：
+
+1. 先调用 `action-record_inner_monologue`
+2. 再决定：
+   - 回复用户
+   - 或 `action-life_pass_and_wait`
+
+如果本轮跳过了 `action-record_inner_monologue`，`life_chatter` 会进行有限重试提醒。
+
+## 工作流程
+
+```text
+收到外界消息
+    ↓
+proactive 插件开始计时
+    ↓
+到达首次等待阈值 / 延迟续话阈值
+    ↓
+写入一条“主动机会”或“续话机会”触发消息
+    ↓
+唤醒 life_chatter
+    ↓
+life_chatter 先记录 action-record_inner_monologue
+    ↓
+再决定：回复 / 继续等待
+    ↓
+独白写入 life_engine 事件流，供后续轮次增量同步
+```
+
+## 配置
+
+配置文件：`config/plugins/proactive_message_plugin/config.toml`
 
 ```toml
 [settings]
-# 启用插件
 enabled = true
 
-# 首次触发内心独白的等待时间（分钟）
-# Bot 收到用户消息后，超过此时间未收到回复则触发内心独白
+# 兼容旧配置保留字段。当前统一由 chatter 处理，建议保持 chatter。
+decision_mode = "chatter"
+
+# 收到外界消息后，多久触发第一次主动机会
 first_check_minutes = 10
 
-# 默认最小等待间隔（分钟）
-# 防止 LLM 说"等 1 分钟"导致过于频繁地触发独白
+# 当本轮选择继续等待时，最小等待间隔
 min_wait_interval_minutes = 5
 
-# 最大等待时间（分钟）
-# 超过此时间后强制触发内心独白，避免无限等待
+# 最长等待上限，避免无限拖延
 max_wait_minutes = 180
 
-# 内心独白历史提取数量
-# 每次独白时注入多少条之前的独白内容，形成连续情感
-monologue_history_limit = 5
-
-# 【新增】主动发送后二次等待时间（分钟）
-# Bot 主动发消息后，若用户仍未回复，在此时间后再次触发内心独白
+# 主动发出消息后，如果对方仍没回复，多久再给一次机会
 post_send_followup_minutes = 10
 
-# 是否启用延迟续话能力
-followup_enabled = true
+# 对话器拿到主动机会但决定不回复后，下次再检查的间隔
+declined_opportunity_wait_minutes = 30
 
-# 延迟续话的最短/最长等待秒数
+# 是否允许登记“过一会儿再补一句”
+followup_enabled = true
 followup_min_delay_seconds = 20
 followup_max_delay_seconds = 90
-
-# 同一轮延迟续话链允许的最大补充次数
 followup_max_chain_count = 2
-
-# 延迟续话链结束后的冷却时间（分钟）
 followup_cooldown_minutes = 10
 
-# 忽略的聊天类型
-# "group" = 群聊，"private" = 私聊
+# 已废弃，仅兼容旧配置，不再生效
+monologue_history_limit = 5
+
 ignored_chat_types = ["group"]
 ```
 
-## 🧠 核心机制
+## 暴露给模型的动作
 
-### 工作流程
+### `action-record_inner_monologue`
 
-```
-用户 last_message 后开始计时
-        ↓
-等待 N 分钟（first_check_minutes）
-        ↓
-触发内心独白 (LLM 生成心理活动 + 注入之前的独白历史)
-        ↓
-LLM 自主决定:
-  ├─ 发消息 → 发送后启动"二次等待"(post_send_followup_minutes)
-  │           ↓
-  │       也可在正常回复阶段登记一条 schedule_followup_message
-  │           ↓
-  │       若对方仍未回复 → 唤醒生命对话器主链路判断是否补一句 → 可形成有限续话链
-  │
-  │
-  │       若用户仍不回复 → 再次触发内心独白 → 循环
-  │
-  └─ 继续等 → checkpoint 累积等待时长 → 指定等待时间 → 循环
-```
+由 `life_chatter` 调用，把当前轮新的心理推进记录回 `life_engine`。
 
-### 新增机制详解
+参数：
 
-**1. 发送后二次等待 (`post_send_followup_minutes`)**
-
-旧逻辑：Bot 主动发消息后，本轮结束，等待用户回复。
-
-新逻辑：Bot 主动发消息后，启动一个独立的二次等待计时器。若用户在 `post_send_followup_minutes` 分钟内仍未回复，会再次触发内心独白，让 LLM 决定下一步行动（再次发消息 or 继续等）。
-
-这模拟了真实情感中的"我已经主动了一次，但你还是没理我，我现在是什么感觉？"。
-
-**2. 等待时长累积 (`checkpoint_wait`)**
-
-每次 LLM 选择"继续等待"时，调用 `service.checkpoint_wait()` 将本轮已等待时长累加到 `accumulated_wait_minutes`，并重置计时起点。
-
-这确保 `max_wait_minutes` 限制是基于**累计等待时间**，而不是单次等待时间。
-
-**3. 独白历史注入**
-
-通过 `extract_monologue_history()` 从 `history_messages` 中过滤出 `is_inner_monologue=True` 的消息，取最近 N 条（`monologue_history_limit`）注入 prompt：
-
-
-### 内心独白注入机制
-
-插件会将每次内心独白**持久化**到聊天历史中，下次触发时提取并注入 prompt：
-
-这样 LLM 能看到自己之前的心路历程，形成**连续的情感感知**。
-
-**4. 延迟续话 (`schedule_followup_message`)**
-
-这条机制不是“立刻连发第二条”，而是：
-
-- 本轮先正常回复
-- 如果模型觉得自己还有一点没说完，就登记一条延迟续话计划
-- 过 20 到 90 秒后，若用户仍未回复，插件会注入一条“续话机会”触发消息并唤醒生命对话器主链路，让当前运行模式自己判断是否补一句
-
-这样得到的不是机械连发，而是更像：
-
-- “我刚刚已经说了，但过了一小会儿，我又想到一点”
-
-补充说明：
-- 延迟续话阶段不会再调用插件自己的“专用续话 prompt”。
-- 续话是否发生，完全由当前运行模式在当轮动作中决定（`send_text` / `pass_and_wait` / 再次 `schedule_followup_message`）。
-
-### 可见性确认
-
-内心独白通过 `plugin.py:_inject_inner_monologue()` 方法写入 `chat_stream.context.history_messages`，标记为 `is_inner_monologue=True`。
-
-生命对话器会通过 `chat_stream.context.history_messages` 构建提示词，因此能正确读取并注入上下文。
-
-## 🔧 工具
-
-插件暴露以下工具供 LLM 调用：
-
-### `wait_longer`
-
-当你觉得现在还不是发消息的好时机，想再等一段时间时使用。
-
-**参数**：
-- `wait_minutes` (int): 想再等的分钟数
-- `thought` (str): 等待时的内心想法
-
-**示例调用**：
-```json
-{
-  "name": "wait_longer",
-  "args": {
-    "wait_minutes": 30,
-    "thought": "感觉他现在可能还在忙，再等等吧..."
-  }
-}
-```
-
-### `send_text`（来自当前对话器）
-
-主动发送一条消息。
-
-**参数**：
-- `content` (str): 消息内容
+- `thought`: 独白正文
+- `mood`: 当前情绪，可选
+- `intent`: 当前倾向，可选
+- `topic`: 围绕话题，可选
 
 ### `schedule_followup_message`
 
-登记一条延迟续话计划。它不会立刻发送消息，而是让插件在稍后给当前运行模式一次“主动续话机会”，由当前运行模式自己决定要不要继续说。
+登记一条延迟续话计划。不会立刻发消息，只会在稍后给 `life_chatter` 一次新的机会。
 
-**参数**：
-- `delay_seconds` (float): 过多久后再检查一次
-- `thought` (str): 为什么还想继续说
-- `topic` (str): 续话围绕的话题
-- `followup_type` (str): 续话类型，如 `add_detail` / `clarify` / `soft_emotion` / `share_new_thought`
+参数：
 
-## 🏗️ 项目结构
+- `delay_seconds`
+- `thought`
+- `topic`
+- `followup_type`
 
-```
+### `wait_longer`
+
+当这一轮决定先不说话，继续等待时使用。
+
+## 上下文可见性
+
+当前可见性分为两层：
+
+1. **聊天历史**
+   - 只保留真实的对外消息
+   - 不包含主动机会触发消息
+   - 不包含延迟续话触发消息
+   - 不包含旧式“伪聊天消息”的内心独白
+
+2. **life 运行态上下文**
+   - 包含本流尚未被 `life_chatter` 看过的事件
+   - 包含主动机会、延迟续话、工具结果、`chatter_inner_monologue`
+   - 通过高水位游标做增量同步，避免整段历史反复注入
+
+## 项目结构
+
+```text
 proactive_message_plugin/
 ├── actions/
-│   └── schedule_followup_message.py  # 预约延迟续话动作
-├── plugin.py                # 插件主类 + 事件处理器
-├── config.py                # 配置定义
-├── service.py               # 状态管理 + 调度任务
-├── inner_monologue.py       # 内心独白生成 + 决策解析
-├── README.md                # 本文档
-├── manifest.json            # 插件清单
+│   └── schedule_followup_message.py
+├── config.py
+├── manifest.json
+├── plugin.py
+├── README.md
+├── service.py
 └── tools/
-    └── wait_longer.py       # 等待工具定义
+    └── wait_longer.py
 ```
 
-### 核心组件说明
+## 设计边界
 
-| 文件 | 职责 |
-|------|------|
-| `plugin.py` | 事件订阅、等待计时触发、决策执行 |
-| `service.py` | StreamState 管理、调度器集成 |
-| `inner_monologue.py` | Prompt 构建、LLM 调用、响应解析 |
-| `schedule_followup_message.py` | 登记一条延迟续话计划 |
-| `wait_longer.py` | 工具定义（实际调度由 service 处理） |
+- 这个插件不再负责“私有思考”
+- 这个插件不再直接生成内心独白文本
+- 这个插件不再把独白注入聊天历史
+- 真正的说与不说，统一由 `life_chatter` 决定
 
-## 📝 日志示例
+## 调试建议
 
-```
-[22:36:31] 主动消息插件 | INFO | 开始等待计时：5750ede8...
-[22:36:31] 主动消息服务 | INFO | 已调度检查任务：5750ede8... 将在 10 分钟后检查
-[22:46:31] 主动消息插件 | INFO | 检查超时，触发内心独白：5750ede8...
-[22:46:31] 内心独白 | INFO | 生成内心独白：5750ede8... 已等待 10 分钟
-[22:46:43] 内心独白 | INFO | 内心独白内容：他已经 10 分钟没有回复了，是不是刚才的话题让他为难了？还是他在忙别的事情？有点想知道他在做什么...
-[22:46:43] 内心独白 | INFO | 内心独白决策：wait_longer(15.0 分钟)
-[22:46:43] 主动消息插件 | INFO | 继续等待：5750ede8... 等待 15.0 分钟
-[22:50:10] 主动消息插件 | INFO | [5750ede8] 已登记延迟续话：share_new_thought, 30.0 秒后检查, topic=刚才那个问题
-[22:50:40] 主动续话 | INFO | [5750ede8] 延迟续话到时，唤醒当前运行模式自主判断是否继续说
-[22:50:40] 主动续话 | INFO | [5750ede8] 已注入续话机会触发消息：topic=刚才那个问题, type=share_new_thought
-```
+排查主动链路时，重点看三类内容：
 
-## 🔍 事件订阅
+- `proactive_message_plugin` 是否按时注入了主动机会 / 续话机会
+- `life_chatter` 是否先调用了 `action-record_inner_monologue`
+- `life_engine` 事件流里是否出现了 `content_type="chatter_inner_monologue"`
 
-插件订阅以下事件：
-
-| 事件 | 触发时机 | 处理逻辑 |
-|------|----------|----------|
-| `ON_MESSAGE_RECEIVED` | 收到用户消息 | 重置等待状态 |
-| `ON_MESSAGE_SENT` | Bot 发出消息 | 记录最近一条显式回复，供延迟续话使用 |
-| `ON_CHATTER_STEP_RESULT` | Chatter 执行一步后 | 检查是否进入 Wait 状态，进入则开始等待计时 |
-
-## 🎯 使用场景
-
-1. **情感陪伴型 Bot**：模拟真实的等待情绪，让用户感受到 Bot 的"在乎"
-2. **主动关怀**：在用户长时间未回复时主动表达关心
-3. **打破沉默**：当对话陷入停滞时，由 Bot 主动重启话题
-
-## ⚠️ 注意事项
-
-1. **需要重启 Bot**：新插件加载或配置修改后需重启 Bot 才能生效
-2. **等待时间控制**：`min_wait_interval_minutes` 防止独白触发过于频繁
-3. **最大等待限制**：`max_wait_minutes` 避免无限等待，达到后强制触发
-4. **群聊默认忽略**：默认配置下群聊不会触发主动消息，可在配置中修改
-
-## 📄 许可证
-
-GPL-v3.0-or-later
-
-## 🤝 贡献
-
-欢迎提交 Issue 和 Pull Request！
+如果第三步缺失，后续轮次就看不到这次内在推进。

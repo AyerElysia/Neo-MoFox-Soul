@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import sys
-import types
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -15,7 +14,6 @@ if str(PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(PLUGIN_ROOT))
 
 from plugins.proactive_message_plugin.plugin import ProactiveMessagePlugin  # noqa: E402
-
 
 class _FakeSender:
     """最小化消息发送器。"""
@@ -87,39 +85,82 @@ def test_send_message_splits_newlines_before_persisting(monkeypatch: pytest.Monk
     assert [msg.content for msg in fake_sender.messages] == ["第一段", "第二段", "第三段"]
 
 
-def test_chatter_mode_generates_inner_monologue_before_waking_chatter(monkeypatch: pytest.MonkeyPatch) -> None:
-    """chatter 决策模式也应保留内心独白，只是不由私有独白流程直接发消息。"""
-    calls: list[tuple[str, object]] = []
+def test_proactive_opportunity_prompt_requires_inner_monologue_record(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """主动机会应要求 life_chatter 先记录内心独白，再决定开口或等待。"""
+    injected_messages = []
 
-    async def fake_generate_inner_monologue_thought(**kwargs):
-        calls.append(("generate", kwargs))
-        return "等了这么久，心里有点想轻轻确认一下他的状态。"
+    class _FakeContext:
+        def add_unread_message(self, message) -> None:
+            injected_messages.append(message)
 
-    async def fake_inject(self, chat_stream, thought):
-        calls.append(("inject", thought))
+    class _FakeLoopManager:
+        def __init__(self) -> None:
+            self._wait_states = {}
 
-    fake_module = types.ModuleType("plugins.proactive_message_plugin.inner_monologue")
-    fake_module.generate_inner_monologue_thought = fake_generate_inner_monologue_thought
-    monkeypatch.setitem(sys.modules, "plugins.proactive_message_plugin.inner_monologue", fake_module)
-    monkeypatch.setattr(ProactiveMessagePlugin, "_inject_inner_monologue", fake_inject)
+    async def fake_record(_chat_stream, _content: str) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "src.core.transport.distribution.stream_loop_manager.get_stream_loop_manager",
+        lambda: _FakeLoopManager(),
+    )
+    monkeypatch.setattr(
+        ProactiveMessagePlugin,
+        "_record_proactive_opportunity_event",
+        staticmethod(fake_record),
+    )
 
     plugin = ProactiveMessagePlugin()
+    plugin.service.record_bot_message("sid_001", "刚刚那句已经说完了")
     chat_stream = SimpleNamespace(
         stream_id="sid_001",
         platform="qq",
         chat_type="private",
         bot_id="bot_001",
         bot_nickname="爱莉",
-        context=SimpleNamespace(history_messages=[]),
+        context=_FakeContext(),
     )
 
     asyncio.run(
-        plugin._generate_and_inject_chatter_monologue(
+        plugin._wake_stream_for_proactive_opportunity(
             chat_stream,
             elapsed_minutes=12.0,
             user_name="Ayer",
         )
     )
 
-    assert calls[0][0] == "generate"
-    assert calls[1] == ("inject", "等了这么久，心里有点想轻轻确认一下他的状态。")
+    assert len(injected_messages) == 1
+    prompt = injected_messages[0].processed_plain_text
+    assert "action-record_inner_monologue" in prompt
+    assert "pass_and_wait" in prompt
+    assert "不要假装对方刚刚发了新消息" in prompt
+
+
+def test_schedule_continue_waiting_skips_when_life_external_silence_paused() -> None:
+    plugin = ProactiveMessagePlugin()
+    plugin.service.clear_all()
+
+    state = plugin.service.get_or_create_state("sid_pause")
+    state.is_waiting = True
+    state.active_check_kind = "silence_wait"
+    state.scheduler_task_name = "proactive_check_sid_pause"
+
+    calls: list[tuple[str, float]] = []
+
+    async def fake_start_waiting(*, stream_id: str, wait_minutes: float, callback):
+        calls.append((stream_id, wait_minutes))
+        return "task"
+
+    plugin.service.start_waiting = fake_start_waiting  # type: ignore[method-assign]
+    plugin._get_life_external_silence_pause_status = lambda: (True, 35, 30)  # type: ignore[method-assign]
+
+    asyncio.run(plugin._schedule_continue_waiting("sid_pause", 30.0))
+
+    current = plugin.service.get_state("sid_pause")
+    assert calls == []
+    assert current is not None
+    assert current.is_waiting is False
+    assert current.active_check_kind is None
+    assert current.scheduler_task_name is None

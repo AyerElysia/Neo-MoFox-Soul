@@ -27,14 +27,15 @@ class ChatModelClient(Protocol):
         request_name: str,
         model_set: Any,
         stream: bool,
-    ) -> tuple[str | None, list[dict[str, Any]] | None, AsyncIterator[StreamEvent] | None, str | None]:
+    ) -> tuple[str | None, list[dict[str, Any]] | None, AsyncIterator[StreamEvent] | None, str | None, int | None]:
         """发起一次聊天请求。
 
-        返回四元组：
+        返回五元组：
         - message: 非流时的完整文本；流式则为 None
         - tool_calls: 非流时解析出的工具调用列表；流式则为 None（将通过 StreamEvent 解析）
         - stream_iter: 流式迭代器；非流则为 None
         - reasoning_content: 非流时的推理内容；流式则为 None（将通过 StreamEvent 解析）
+        - request_record_id: 请求检视器中的记录 ID；未启用时为 None
         """
         ...
 

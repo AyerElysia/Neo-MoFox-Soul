@@ -5,8 +5,6 @@
 """
 
 from __future__ import annotations
-
-import json_repair
 from typing import Annotated, Any
 
 from src.app.plugin_system.api.log_api import get_logger
@@ -48,7 +46,7 @@ class LifeThinkAction(BaseAction):
         mood: Annotated[str, "此刻的心情/情绪状态（必填）。"],
         decision: Annotated[str, "你决定的下一步行动（必填）。"],
         expected_response: Annotated[str, "你预期用户看到回复后的反应（必填）。"],
-        thought: Annotated[str, "你的心理活动（必填）。"],
+        thought: Annotated[str, "你的心理活动（必填）。"] = "",
         **extra_kwargs: object,
     ) -> tuple[bool, str]:
         legacy_content = extra_kwargs.pop("content", None)
@@ -71,6 +69,61 @@ class LifeThinkAction(BaseAction):
 
         _ = (mood, decision, expected_response, normalized_thought)
         return True, "思考动作已记录。请在同一轮内继续调用 life_send_text 发送最终回复。"
+
+
+class LifeRecordInnerMonologueAction(BaseAction):
+    """把当前对话器生成的内心独白写回 life 运行态。"""
+
+    action_name = "record_inner_monologue"
+    action_description = (
+        "记录一段当前对话器视角下的内心独白。"
+        "适合在主动机会、延迟续话、犹豫要不要开口时先留下当前心理推进，"
+        "让同一主体后续轮次仍能看到连续的内在状态。"
+        "它不会直接给用户发消息。"
+    )
+
+    chatter_allow: list[str] = ["life_chatter"]
+    primary_action: bool = False
+
+    async def execute(
+        self,
+        thought: Annotated[str, "这一次新的内心独白正文，写你此刻真实在想什么。"],
+        mood: Annotated[str, "当前情绪/氛围，例如想念、克制、轻松、犹豫。"] = "",
+        intent: Annotated[str, "你此刻的下一步倾向，例如继续等待、想轻轻开口、先按住不说。"] = "",
+        topic: Annotated[str, "这段独白围绕的主题，可留空。"] = "",
+    ) -> tuple[bool, str]:
+        thought_text = str(thought or "").strip()
+        if not thought_text:
+            return False, "thought 不能为空"
+
+        chat_stream = getattr(self, "chat_stream", None)
+        if chat_stream is None:
+            return False, "缺少当前聊天流，无法记录内心独白"
+
+        life_plugin = get_plugin_manager().get_plugin("life_engine")
+        if life_plugin is None:
+            return False, "life_engine 未加载，无法记录内心独白"
+
+        service = getattr(life_plugin, "service", None)
+        if service is None or not hasattr(service, "record_chatter_inner_monologue"):
+            return False, "life_engine 服务不可用，无法记录内心独白"
+
+        try:
+            await service.record_chatter_inner_monologue(
+                thought_text,
+                stream_id=str(getattr(chat_stream, "stream_id", "") or ""),
+                platform=str(getattr(chat_stream, "platform", "") or ""),
+                chat_type=str(getattr(chat_stream, "chat_type", "") or ""),
+                sender_name=str(getattr(chat_stream, "bot_nickname", "") or "当前对话器"),
+                mood=str(mood or "").strip(),
+                intent=str(intent or "").strip(),
+                topic=str(topic or "").strip(),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"记录内心独白失败: {exc}")
+            return False, f"记录内心独白失败: {exc}"
+
+        return True, "内心独白已记录。请继续决定是回复用户，还是 pass_and_wait。"
 
 
 class LifeScheduleFollowupMessageAction(BaseAction):

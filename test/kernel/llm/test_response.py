@@ -71,6 +71,12 @@ async def mock_mixed_stream() -> AsyncIterator[StreamEvent]:
     yield StreamEvent(text_delta=" with that")
 
 
+async def mock_reasoning_stream() -> AsyncIterator[StreamEvent]:
+    """Mock streaming with reasoning deltas."""
+    yield StreamEvent(reasoning_delta="先算一下。")
+    yield StreamEvent(text_delta="2")
+
+
 # ============================================================================
 # LLMResponse Tests
 # ============================================================================
@@ -200,6 +206,33 @@ class TestLLMResponseAwait:
         result = await response
         assert result == "Static response"
         assert response._consumed is True
+
+    @pytest.mark.asyncio
+    async def test_await_attaches_reasoning_to_inspector(
+        self, mock_model_set: list[dict[str, Any]], sample_payloads: list[LLMPayload]
+    ) -> None:
+        """收集完成后应将当前响应挂回 request inspector。"""
+        response = LLMResponse(
+            _stream=mock_reasoning_stream(),
+            _upper=LLMRequest(mock_model_set, "test"),
+            _auto_append_response=False,
+            payloads=sample_payloads,
+            model_set=mock_model_set,
+            message=None,
+            call_list=[],
+            request_record_id=42,
+        )
+
+        with patch("src.kernel.llm.request_inspector.attach_response", return_value=True) as mocked:
+            result = await response
+
+        assert result == "2"
+        assert response.reasoning_content == "先算一下。"
+        mocked.assert_called_once()
+        req_id, payload = mocked.call_args.args
+        assert req_id == 42
+        assert payload["content"] == "2"
+        assert payload["reasoning_content"] == "先算一下。"
 
     @pytest.mark.asyncio
     async def test_await_already_consumed(

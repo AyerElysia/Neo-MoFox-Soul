@@ -4,15 +4,13 @@
 
 核心逻辑：
 1. 用户 last_message 后开始计时
-2. 等待 N 分钟（可配置）后触发内心独白
-3. LLM 自主决定：发消息 or 继续等待
+2. 等待 N 分钟（可配置）后触发一次主动机会
+3. 交给 life_chatter 在统一提示词下先记录内心独白，再决定发消息或继续等待
 """
 
 from __future__ import annotations
 
 import inspect
-import importlib
-import sys
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -33,31 +31,6 @@ if TYPE_CHECKING:
     from src.core.components.base import BaseConfig
 
 logger = get_logger("proactive_message_plugin", display="主动续话")
-
-_LIFE_CHATTER_MODULE_CANDIDATES = (
-    "life_engine.core.chatter",
-    "plugins.life_engine.core.chatter",
-)
-
-
-def _push_life_chatter_runtime_injection(stream_id: str, content: str) -> None:
-    """把运行时上下文推给已加载的 life_chatter 模块。"""
-    for module_name in _LIFE_CHATTER_MODULE_CANDIDATES:
-        module = sys.modules.get(module_name)
-        push_injection = getattr(module, "push_runtime_assistant_injection", None)
-        if callable(push_injection):
-            push_injection(stream_id, content)
-            return
-
-    for module_name in _LIFE_CHATTER_MODULE_CANDIDATES:
-        try:
-            module = importlib.import_module(module_name)
-        except Exception:
-            continue
-        push_injection = getattr(module, "push_runtime_assistant_injection", None)
-        if callable(push_injection):
-            push_injection(stream_id, content)
-            return
 
 
 class ProactiveMessageEventHandler(BaseEventHandler):
@@ -147,8 +120,8 @@ class ProactiveMessagePlugin(BasePlugin):
 
     功能：
     1. 追踪用户最后消息时间
-    2. 在等待达到阈值后触发内心独白
-    3. 根据 LLM 决策发送消息或继续等待
+    2. 在等待达到阈值后触发主动机会
+    3. 交给当前对话器统一判断是否开口
     """
 
     plugin_name = "proactive_message_plugin"
@@ -380,6 +353,9 @@ class ProactiveMessagePlugin(BasePlugin):
         if not stream_id:
             return
 
+        if self._suspend_if_life_external_silence_paused(stream_id):
+            return
+
         # 检查是否已在等待中
         state = self.service.get_state(stream_id)
         if state is not None and state.is_waiting:
@@ -414,7 +390,7 @@ class ProactiveMessagePlugin(BasePlugin):
         )
 
     async def _on_check_timeout(self, stream_id: str) -> None:
-        """当检查超时时调用 - 触发内心独白
+        """当检查超时时调用 - 触发主动机会
 
         Args:
             stream_id: 聊天流 ID
@@ -424,7 +400,10 @@ class ProactiveMessagePlugin(BasePlugin):
             logger.debug(f"[{stream_id[:8]}] 跳过过期的沉默检查任务")
             return
 
-        logger.info(f"检查超时，触发内心独白：{stream_id[:8]}...")
+        if self._suspend_if_life_external_silence_paused(stream_id):
+            return
+
+        logger.info(f"检查超时，触发主动机会：{stream_id[:8]}...")
 
         # 获取状态
         # 使用累计等待时间，包含多次 wait_longer
@@ -452,7 +431,7 @@ class ProactiveMessagePlugin(BasePlugin):
                 )
                 logger.warning(
                     f"[{stream_id[:8]}] 平台 {chat_stream.platform} 当前断联，"
-                    f"跳过内心独白并延后 {fallback_wait:.1f} 分钟重试"
+                    f"跳过主动机会并延后 {fallback_wait:.1f} 分钟重试"
                 )
                 await self._schedule_continue_waiting(stream_id, fallback_wait)
                 return
@@ -460,119 +439,17 @@ class ProactiveMessagePlugin(BasePlugin):
             # 获取用户名称
             user_name = getattr(chat_stream, "stream_name", "用户")
 
-            if self._decision_mode() == "chatter":
-                await self._generate_and_inject_chatter_monologue(
-                    chat_stream,
-                    elapsed_minutes=elapsed,
-                    user_name=user_name,
-                )
-                await self._wake_stream_for_proactive_opportunity(
-                    chat_stream,
-                    elapsed_minutes=elapsed,
-                    user_name=user_name,
-                )
-                return
-
-            from .inner_monologue import generate_inner_monologue
-
-            # 生成内心独白
-            result = await generate_inner_monologue(
-                chat_stream=chat_stream,
+            await self._wake_stream_for_proactive_opportunity(
+                chat_stream,
                 elapsed_minutes=elapsed,
                 user_name=user_name,
-                model_set="actor",
             )
-
-            if result is None:
-                logger.warning(f"内心独白无结果：{stream_id[:8]}...")
-                # 无结果则继续等待
-                await self._schedule_continue_waiting(stream_id, 30)
-                return
-
-            # 处理决策
-            await self._handle_decision(stream_id, chat_stream, result)
-
-        except Exception as e:
-            logger.error(f"内心独白处理失败：{e}", exc_info=True)
-            # 失败则继续等待
-            await self._schedule_continue_waiting(stream_id, 30)
-
-    def _decision_mode(self) -> str:
-        mode = str(getattr(self.config.settings, "decision_mode", "chatter") or "chatter")
-        normalized = mode.strip().lower().replace("-", "_")
-        if normalized in {"legacy", "private_llm", "legacy_private_llm"}:
-            return "legacy_private_llm"
-        return "chatter"
-
-    async def _generate_and_inject_chatter_monologue(
-        self,
-        chat_stream: ChatStream,
-        *,
-        elapsed_minutes: float,
-        user_name: str,
-    ) -> None:
-        """chatter 决策模式下保留内心独白，再交给对话器决定是否开口。"""
-        try:
-            from .inner_monologue import generate_inner_monologue_thought
-
-            thought = await generate_inner_monologue_thought(
-                chat_stream=chat_stream,
-                elapsed_minutes=elapsed_minutes,
-                user_name=user_name,
-                model_set="actor",
-            )
-        except Exception as exc:
-            logger.error(f"生成 chatter 模式内心独白失败：{exc}", exc_info=True)
             return
 
-        if thought.strip():
-            await self._inject_inner_monologue(chat_stream, thought)
-
-    async def _handle_decision(
-        self,
-        stream_id: str,
-        chat_stream: ChatStream,
-        result,
-    ) -> None:
-        """处理内心独白的决策
-
-        Args:
-            stream_id: 聊天流 ID
-            chat_stream: 聊天流对象
-            result: 内心独白结果
-        """
-        await self._inject_inner_monologue(chat_stream, result.thought)
-
-        if result.decision == "send_message":
-            # 发送消息
-            if result.content:
-                logger.info(f"主动发消息：{stream_id[:8]}... 内容：{result.content[:50]}...")
-                sent_ok = await self._send_message(chat_stream, result.content)
-                if sent_ok:
-                    # 发送后不直接结束，调度“无人回复”的二次检查
-                    self.service.prepare_post_send_state(
-                        stream_id,
-                        reset_followup_chain=True,
-                    )
-                    await self._schedule_post_send_followup(stream_id)
-                else:
-                    logger.warning(f"主动消息发送失败，回退为继续等待：{stream_id[:8]}...")
-                    self.service.checkpoint_wait(stream_id)
-                    fallback_wait = max(
-                        float(getattr(self.config.settings, "min_wait_interval_minutes", 5.0) or 5.0),
-                        10.0,
-                    )
-                    await self._schedule_continue_waiting(stream_id, fallback_wait)
-            else:
-                logger.warning(f"决策发送消息但内容为空：{stream_id[:8]}...")
-                await self._schedule_continue_waiting(stream_id, 15)
-
-        elif result.decision == "wait_longer":
-            # 继续等待：先 checkpoint 已等待时长，再追加新的等待
-            self.service.checkpoint_wait(stream_id)
-            wait_minutes = result.wait_minutes or 30
-            logger.info(f"继续等待：{stream_id[:8]}... 等待{wait_minutes}分钟")
-            await self._schedule_continue_waiting(stream_id, wait_minutes)
+        except Exception as e:
+            logger.error(f"主动机会处理失败：{e}", exc_info=True)
+            # 失败则继续等待
+            await self._schedule_continue_waiting(stream_id, 30)
 
     async def schedule_followup_for_stream(
         self,
@@ -664,6 +541,9 @@ class ProactiveMessagePlugin(BasePlugin):
             if self._should_ignore(chat_stream):
                 self.service.clear_followup_trigger(stream_id)
                 return
+            if self._suspend_if_life_external_silence_paused(stream_id):
+                self.service.clear_followup_trigger(stream_id)
+                return
             if not await self._is_platform_connected(chat_stream.platform):
                 logger.warning(
                     f"[{stream_id[:8]}] 平台 {chat_stream.platform} 当前断联，跳过本次延迟续话唤醒"
@@ -720,7 +600,8 @@ class ProactiveMessagePlugin(BasePlugin):
         prompt = (
             "[主动续话机会] 这不是用户的新消息，而是沉默等待到点后产生的一次主动机会。"
             "请作为当前对话器判断要不要自然开口。"
-            "如果你觉得现在主动说一句是自然、有价值的，就像平时一样使用当前动作回复；"
+            "你必须先调用 action-record_inner_monologue，记录你此刻新的心理推进；"
+            "然后再二选一：如果你觉得现在主动说一句是自然、有价值的，就像平时一样使用当前动作回复；"
             "如果只是为了说而说，就使用 pass_and_wait 继续等待。"
             f"\n- 当前执行者：{chat_stream.bot_nickname or '你'}"
             f"\n- 对方：{target_user_name}"
@@ -803,7 +684,8 @@ class ProactiveMessagePlugin(BasePlugin):
 
         prompt = (
             "[延迟续话机会] 这不是用户的新消息，而是一次由系统交给你的主动续话机会。"
-            "如果你觉得刚才的话头还值得延续，就像平时一样使用当前对话器的动作自己回复；"
+            "你必须先调用 action-record_inner_monologue，记录你此刻新的心理推进；"
+            "然后再二选一：如果你觉得刚才的话头还值得延续，就像平时一样使用当前对话器的动作自己回复；"
             "如果觉得现在不该继续说，可以 pass_and_wait。"
             f"\n- 当前执行者：{chat_stream.bot_nickname or '你'}"
             f"\n- 距离你上一条显式消息已过去约 {elapsed_seconds:.0f} 秒"
@@ -854,49 +736,6 @@ class ProactiveMessagePlugin(BasePlugin):
             if sender_id:
                 return sender_id, str(getattr(msg, "sender_name", "") or "")
         return "", ""
-
-    async def _inject_inner_monologue(self, chat_stream: ChatStream, thought: str) -> None:
-        if not thought.strip():
-            return
-
-        from src.core.models.message import Message, MessageType
-        from src.core.managers.stream_manager import get_stream_manager
-        from uuid import uuid4
-
-        normalized_thought = thought.strip()
-        history_text = f"[内心独白] {normalized_thought}"
-
-        message = Message(
-            message_id=f"inner_monologue_{uuid4().hex}",
-            content=history_text,
-            processed_plain_text=history_text,
-            message_type=MessageType.TEXT,
-            sender_id=chat_stream.bot_id or "bot",
-            sender_name=f"{chat_stream.bot_nickname or 'Bot'}（内心独白）",
-            sender_role="bot",
-            platform=chat_stream.platform,
-            chat_type=chat_stream.chat_type,
-            stream_id=chat_stream.stream_id,
-            is_inner_monologue=True,
-        )
-        await get_stream_manager().add_sent_message_to_history(message)
-        try:
-            from default_chatter import plugin as default_chatter_plugin_module
-
-            push_runtime_assistant_injection = getattr(
-                default_chatter_plugin_module,
-                "push_runtime_assistant_injection",
-                None,
-            )
-            if callable(push_runtime_assistant_injection):
-                push_runtime_assistant_injection(chat_stream.stream_id, history_text)
-        except Exception as error:
-            logger.debug(f"写入实时 assistant 注入失败：{error}")
-        try:
-            _push_life_chatter_runtime_injection(chat_stream.stream_id, history_text)
-        except Exception as error:
-            logger.debug(f"写入 life_chatter 实时 assistant 注入失败：{error}")
-        logger.debug(f"已注入内心独白到上下文：{chat_stream.stream_id[:8]}...")
 
     @staticmethod
     def _normalize_content_segments(content: str | list[str]) -> list[str]:
@@ -1021,6 +860,9 @@ class ProactiveMessagePlugin(BasePlugin):
         if state is None:
             return
 
+        if self._suspend_if_life_external_silence_paused(stream_id):
+            return
+
         # 应用最大等待时间限制（累计）
         max_wait = self.config.settings.max_wait_minutes
         total_wait = self.service.get_total_wait_minutes(stream_id)
@@ -1050,6 +892,9 @@ class ProactiveMessagePlugin(BasePlugin):
         if not stream_id:
             return
 
+        if self._suspend_if_life_external_silence_paused(stream_id):
+            return
+
         async def _timeout_callback() -> None:
             await self._on_check_timeout(stream_id)
 
@@ -1064,6 +909,40 @@ class ProactiveMessagePlugin(BasePlugin):
             wait_minutes=wait_minutes,
             callback=_timeout_callback,
         )
+
+    def _get_life_external_silence_pause_status(self) -> tuple[bool, int | None, int]:
+        """读取 life 的外界静默暂停状态；life 不可用时静默降级。"""
+        try:
+            from plugins.life_engine.service.core import LifeEngineService
+
+            service = LifeEngineService.get_instance()
+            if service is None:
+                return False, None, 0
+
+            getter = getattr(service, "get_external_silence_pause_status", None)
+            if callable(getter):
+                return getter()
+
+            fallback = getattr(service, "_should_pause_llm_heartbeat_for_external_silence", None)
+            if callable(fallback):
+                return fallback()
+        except Exception as exc:
+            logger.debug(f"读取 life 外界静默暂停状态失败：{exc}")
+        return False, None, 0
+
+    def _suspend_if_life_external_silence_paused(self, stream_id: str) -> bool:
+        """若 life 已进入外界静默暂停，则停止 proactive 的后续检查。"""
+        paused, silence_minutes, threshold = self._get_life_external_silence_pause_status()
+        if not paused:
+            return False
+
+        self.service.suspend_waiting(stream_id)
+        silence_label = f"{silence_minutes}min" if silence_minutes is not None else "unknown"
+        logger.info(
+            f"[{stream_id[:8]}] life 外界静默暂停已生效，停止主动机会检查: "
+            f"silence={silence_label} threshold={threshold}min"
+        )
+        return True
 
 
 # 全局插件实例引用

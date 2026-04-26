@@ -1233,26 +1233,26 @@ class FetchLifeMemoryTool(BaseTool):
         "获取生命中枢记忆文件的完整内容。"
         "\n\n"
         "**何时使用：**\n"
-        "- ✓ search_life_memory 返回的摘要不够详细，需要查看完整内容\n"
+        "- ✓ life_memory_search 返回的摘要不够详细，需要查看完整内容\n"
         "- ✓ 需要深入了解某个记忆文件的全部信息\n"
         "- ✓ 批量读取多个相关记忆文件\n"
         "\n"
         "**何时不用：**\n"
-        "- ✗ 还不知道要读哪个文件 → 先用 search_life_memory 搜索\n"
-        "- ✗ 只需要摘要信息 → search_life_memory 的结果已经足够\n"
-        "- ✗ 想搜索关键词 → 用 search_life_memory\n"
+        "- ✗ 还不知道要读哪个文件 → 先用 life_memory_explorer 检索\n"
+        "- ✗ 只需要摘要信息 → life_memory_search 的结果已经足够\n"
+        "- ✗ 想搜索关键词 → 用 life_memory_explorer\n"
         "\n"
         "**注意事项：**\n"
         "- 此工具会消耗较多上下文 token，请谨慎使用\n"
         "- 对于大文件（>5000字符），会自动截断并提示\n"
         "- 建议一次最多读取 3-5 个文件，避免上下文爆炸\n"
-        "- 文件路径必须是 search_life_memory 返回的路径"
+        "- 文件路径必须是 life_memory_search 返回的路径"
     )
-    chatter_allow: list[str] = ["life_engine_internal", "default_chatter"]
+    chatter_allow: list[str] = ["life_engine_internal"]
 
     async def execute(
         self,
-        file_paths: Annotated[list[str], "要读取的文件路径列表（来自 search_life_memory 的结果）"],
+        file_paths: Annotated[list[str], "要读取的文件路径列表（来自 life_memory_search 的结果）"],
         max_length_per_file: Annotated[int, "每个文件的最大字符数，0=不限制，超过则截断"] = 5000,
         include_metadata: Annotated[bool, "是否包含文件元数据（大小、修改时间等）"] = True,
     ) -> tuple[bool, dict]:

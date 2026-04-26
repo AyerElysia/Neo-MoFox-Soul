@@ -89,6 +89,12 @@ class MessageHandler:
             黑白名单过滤已移动到 NapcatAdapter.from_platform_message 顶层执行，
             确保所有类型的事件（消息、通知等）都能被统一过滤。
         """
+        sender_info = raw.get("sender", {}) or {}
+        sender_user_id = str(sender_info.get("user_id", "") or "").strip()
+        self_id = str(raw.get("self_id", "") or "").strip()
+        if sender_user_id and self_id and sender_user_id == self_id:
+            logger.debug(f"忽略机器人自己的消息回声: message_id={raw.get('message_id', '')}")
+            return None
 
         message_type = raw.get("message_type")
         message_id = str(raw.get("message_id", ""))
@@ -97,7 +103,6 @@ class MessageHandler:
         msg_builder = MessageBuilder()
 
         # 构造用户信息
-        sender_info = raw.get("sender", {})
         role = sender_info.get("role", "")
         if role == "owner":
             sender_info["role"] = UserRole.OWNER

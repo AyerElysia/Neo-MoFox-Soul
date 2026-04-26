@@ -125,3 +125,23 @@ def test_proactive_opportunity_trigger_clears_waiting_state() -> None:
 
     assert current.proactive_opportunity_active is False
     assert current.proactive_opportunity_sent_message is False
+
+
+def test_suspend_waiting_clears_waiting_state_without_dropping_recent_state() -> None:
+    service = ProactiveMessageService()
+    service.clear_all()
+
+    state = service.get_or_create_state("sid_e")
+    state.is_waiting = True
+    state.active_check_kind = "silence_wait"
+    state.scheduler_task_name = "proactive_check_sid_e"
+    state.last_bot_message_excerpt = "上一条消息"
+
+    service.suspend_waiting("sid_e")
+    current = service.get_state("sid_e")
+
+    assert current is not None
+    assert current.is_waiting is False
+    assert current.active_check_kind is None
+    assert current.scheduler_task_name is None
+    assert current.last_bot_message_excerpt == "上一条消息"

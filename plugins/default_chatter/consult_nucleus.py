@@ -31,7 +31,7 @@ class ConsultNucleusTool(BaseTool):
         "向生命中枢同步查询当前状态层信息。"
         "适合查询：最近在想什么、当前内在状态、活跃 TODO、最近日记等。"
         "这个工具不做深层记忆检索，也不要拿它反复追问同一个历史主题；"
-        "如果需要翻过去的记忆文件或旧计划，请改用 search_life_memory。"
+        "如果需要翻过去的记忆文件或旧计划，请改用 agent-life_memory_explorer。"
     )
     chatter_allow: list[str] = ["default_chatter"]
 

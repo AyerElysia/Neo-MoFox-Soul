@@ -86,6 +86,18 @@ class ThoughtStreamManager:
         except Exception as e:
             logger.error(f"保存思考流索引失败: {e}")
 
+    def _make_room_for_active(self, exclude_id: str | None = None) -> None:
+        """确保再激活一条思考流后仍不超过活跃上限。"""
+        active = [
+            s for s in self._streams.values()
+            if s.is_active() and s.id != exclude_id
+        ]
+        while len(active) >= self._max_active:
+            active.sort(key=lambda s: s.curiosity_score)
+            weakest = active.pop(0)
+            weakest.status = "dormant"
+            logger.info(f"思考流达上限，{weakest.title} 转入休眠")
+
     def create(
         self,
         title: str,
@@ -112,13 +124,7 @@ class ThoughtStreamManager:
         )
 
         # 检查活跃上限
-        active = [s for s in self._streams.values() if s.is_active()]
-        if len(active) >= self._max_active:
-            # 将好奇心最低的转为休眠
-            active.sort(key=lambda s: s.curiosity_score)
-            weakest = active[0]
-            weakest.status = "dormant"
-            logger.info(f"思考流达上限，{weakest.title} 转入休眠")
+        self._make_room_for_active()
 
         self._streams[ts.id] = ts
         self._save()
@@ -169,9 +175,12 @@ class ThoughtStreamManager:
             return False, f"思考流「{ts.title}」已完成，无法继续推进"
         if ts.status == "dormant":
             # 自动重新激活休眠的思考流
+            self._make_room_for_active(exclude_id=ts.id)
             ts.status = "active"
             ts.curiosity_score = max(ts.curiosity_score, 0.5)
             logger.info(f"休眠思考流自动激活: {ts.title}")
+        elif ts.status != "active":
+            return False, f"思考流「{ts.title}」当前状态为 {ts.status}，无法推进"
 
         ts.advance_count += 1
         ts.last_thought = thought[:500]
@@ -228,6 +237,7 @@ class ThoughtStreamManager:
         if ts.status == "completed":
             return False, "已完成的思考流不能重新激活"
 
+        self._make_room_for_active(exclude_id=ts.id)
         ts.status = "active"
         ts.curiosity_score = max(ts.curiosity_score, 0.5)
         ts.last_advanced_at = datetime.now(timezone.utc).isoformat()

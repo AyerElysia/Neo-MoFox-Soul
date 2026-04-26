@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, time as dtime, timezone
 from enum import Enum
 from typing import Any
@@ -81,6 +81,8 @@ class LifeEngineState:
     tell_dfc_count: int = 0  # 本次运行期间传话总次数
     # 空闲心跳追踪：连续没有工具调用的心跳数
     idle_heartbeat_count: int = 0
+    # 每个聊天流已经给 life_chatter 注入过的事件序列高水位
+    chatter_context_cursors: dict[str, int] = field(default_factory=dict)
 
 
 # 中枢内部消息的固定标识
@@ -299,6 +301,57 @@ class EventBuilder:
             content=content,
             content_type="heartbeat_reply",
             heartbeat_index=heartbeat_count,
+        )
+
+    def build_chatter_inner_monologue_event(
+        self,
+        thought: str,
+        *,
+        stream_id: str = "",
+        platform: str = "",
+        chat_type: str = "",
+        sender_name: str = "",
+        mood: str = "",
+        intent: str = "",
+        topic: str = "",
+    ) -> LifeEngineEvent:
+        """构建由 life_chatter 记录的内心独白事件。"""
+        seq = self._next_sequence()
+        target_stream_id = str(stream_id or "").strip()
+        platform_name = str(platform or "life_chatter").strip() or "life_chatter"
+        chat_type_name = str(chat_type or "unknown").strip().lower() or "unknown"
+        sender_display = str(sender_name or "当前对话器").strip() or "当前对话器"
+
+        content_parts: list[str] = []
+        if topic:
+            content_parts.append(f"主题={topic}")
+        if mood:
+            content_parts.append(f"情绪={mood}")
+        if intent:
+            content_parts.append(f"意图={intent}")
+        content_parts.append(f"独白={str(thought or '').strip()}")
+        content = _shorten_text(" | ".join(part for part in content_parts if part), max_length=500)
+
+        detail_parts = [
+            platform_name,
+            "对外对话",
+            "内心独白记录",
+        ]
+        if target_stream_id:
+            detail_parts.append(f"stream_id={target_stream_id}")
+
+        return LifeEngineEvent(
+            event_id=f"chatter_inner_monologue_{seq}",
+            event_type=EventType.HEARTBEAT,
+            timestamp=_now_iso(),
+            sequence=seq,
+            source="life_chatter",
+            source_detail=" | ".join(detail_parts),
+            content=content,
+            content_type="chatter_inner_monologue",
+            sender=sender_display,
+            chat_type=chat_type_name,
+            stream_id=target_stream_id or None,
         )
 
     def build_tool_call_event(self, tool_name: str, tool_args: dict[str, Any]) -> LifeEngineEvent:

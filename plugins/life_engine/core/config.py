@@ -449,12 +449,21 @@ class LifeEngineConfig(BaseConfig):
             description="对话模式单轮最大工具调用轮数。",
         )
 
+        initial_history_messages: int = Field(
+            default=30,
+            ge=0,
+            description=(
+                "life_chatter 首轮合并到 <chat_history> 的历史消息条数。"
+                "设为 0 表示不注入历史消息。"
+            ),
+        )
+
         recent_history_tail_messages: int = Field(
             default=0,
             ge=0,
             description=(
-                "已废弃：life_chatter 不再在后续轮次重复注入历史尾巴，"
-                "避免长连接 payload 中出现重复 chat_history。保留字段仅兼容旧配置。"
+                "兼容旧配置：若 initial_history_messages 未显式配置且此值 > 0，"
+                "则回退使用该值作为首轮历史消息条数。"
             ),
         )
 

@@ -305,7 +305,9 @@ class MessageConverter:
                 except Exception:
                     target_user_id = None
 
-        if not target_user_id:
+        # 最后兜底：使用 sender_id，但跳过 life_engine 内部虚拟发送者
+        # （如 "life_engine_nucleus"、"life_schedule" 等），避免下游 int() 转换失败
+        if not target_user_id and not message.extra.get("is_life_engine_wake"):
             target_user_id = message.sender_id
         if not target_user_name:
             target_user_name = message.sender_name

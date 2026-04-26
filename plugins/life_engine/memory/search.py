@@ -209,6 +209,18 @@ async def vector_search(
 # ============================================================
 
 
+def _sanitize_fts_query(query: str) -> str:
+    """将查询文本转义为合法的 SQLite FTS5 MATCH 参数。
+
+    FTS5 会把裸数字解释为列号（导致 "no such column: N"），
+    把含特殊运算符的字符串解释为查询语法。
+    通过双引号包裹整个 query 可强制按字面量搜索。
+    内部已有的双引号需先转义（"" 是 FTS5 的引号转义方式）。
+    """
+    escaped = query.replace('"', '""')
+    return f'"{escaped}"'
+
+
 async def fts_search(db: sqlite3.Connection, query: str, top_k: int = 10) -> List[Tuple[str, float]]:
     """全文搜索。
 
@@ -222,6 +234,7 @@ async def fts_search(db: sqlite3.Connection, query: str, top_k: int = 10) -> Lis
     """
     cursor = db.cursor()
 
+    safe_query = _sanitize_fts_query(query)
     # 使用 FTS5 的 BM25 排序
     cursor.execute(
         """
@@ -231,7 +244,7 @@ async def fts_search(db: sqlite3.Connection, query: str, top_k: int = 10) -> Lis
         ORDER BY score
         LIMIT ?
         """,
-        (query, top_k),
+        (safe_query, top_k),
     )
 
     results: List[Tuple[str, float]] = []

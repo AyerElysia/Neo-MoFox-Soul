@@ -34,6 +34,7 @@ class NoticeType:  # 通知事件
     group_ban = "group_ban"  # 群禁言
     group_msg_emoji_like = "group_msg_emoji_like"  # 群聊表情回复
     group_upload = "group_upload"  # 群文件上传
+    bot_offline = "bot_offline"  # Bot 掉线/被下线通知
 
     class Notify:
         poke = "poke"  # 戳一戳

@@ -46,9 +46,11 @@ class LLMResponse:
     reasoning_content: str | None = None
     call_list: list[ToolCall] | None = None
     tool_call_compat: bool = False
+    request_record_id: int | None = None
 
     _consumed: bool = False
     _appended_to_context: bool = False
+    _inspector_response_attached: bool = False
 
     def __post_init__(self) -> None:
         """确保 message 和 call_list 不为 None，方便后续处理；如果 context_manager 为空且上层存在，则继承上层的 context_manager。"""
@@ -74,6 +76,40 @@ class LLMResponse:
             ToolCall(id=call.get("id"), name=call.get("name", ""), args=call.get("args", {}))
             for call in parsed_calls
         ]
+
+    def attach_to_inspector(self) -> None:
+        """将当前轮响应挂回请求检视器，补齐 thinking / tool_calls 展示。"""
+        if self._inspector_response_attached:
+            return
+        if not isinstance(self.request_record_id, int) or self.request_record_id <= 0:
+            return
+
+        response: dict[str, Any] = {"role": ROLE.ASSISTANT.value}
+        if self.message is not None:
+            response["content"] = self.message
+        if self.reasoning_content:
+            response["reasoning_content"] = self.reasoning_content
+        if self.call_list:
+            response["tool_calls"] = [
+                {
+                    "id": call.id,
+                    "type": "function",
+                    "function": {
+                        "name": call.name,
+                        "arguments": json.dumps(call.args, ensure_ascii=False, default=str),
+                    },
+                }
+                for call in self.call_list
+            ]
+
+        if len(response) <= 1:
+            return
+        try:
+            from src.kernel.llm.request_inspector import attach_response
+            if attach_response(self.request_record_id, response):
+                self._inspector_response_attached = True
+        except Exception:
+            return
 
     def __await__(self):
         """await 模式：收集完整响应，适用于需要一次性获取完整结果的场景。"""
@@ -115,6 +151,7 @@ class LLMResponse:
         self.reasoning_content = "".join(full_reasoning) or self.reasoning_content
         self.call_list = tool_acc.finalize()
         self._maybe_apply_tool_call_compat()
+        self.attach_to_inspector()
         self._maybe_append_response_to_context()
 
         if stream_error is not None:
@@ -129,6 +166,7 @@ class LLMResponse:
         if self._stream is None:
             # 非流式直接返回完整响应的情况，尝试解析工具调用信息后再返回文本内容
             self._maybe_apply_tool_call_compat()
+            self.attach_to_inspector()
             self._maybe_append_response_to_context()
             return self.message or ""
 
@@ -154,6 +192,7 @@ class LLMResponse:
         self.reasoning_content = "".join(full_reasoning) or self.reasoning_content
         self.call_list = tool_acc.finalize()
         self._maybe_apply_tool_call_compat()
+        self.attach_to_inspector()
         self._maybe_append_response_to_context()
 
         if stream_error is not None:
@@ -296,21 +335,27 @@ class LLMResponse:
             content = self.message or ""
             if content:
                 await on_chunk(content)
+            self.attach_to_inspector()
             self._maybe_append_response_to_context()
             return content
 
         full_content: list[str] = []
+        full_reasoning: list[str] = []
         tool_acc = _ToolCallAccumulator()
         async for event in self._stream:
             if event.text_delta:
                 full_content.append(event.text_delta)
                 await on_chunk(event.text_delta)
+            if event.reasoning_delta:
+                full_reasoning.append(event.reasoning_delta)
             if event.tool_name or event.tool_args_delta or event.tool_call_id:
                 tool_acc.apply(event)
 
         self.message = "".join(full_content)
+        self.reasoning_content = "".join(full_reasoning) or self.reasoning_content
         self.call_list = tool_acc.finalize()
         self._maybe_apply_tool_call_compat()
+        self.attach_to_inspector()
         self._maybe_append_response_to_context()
         return self.message
 
@@ -337,10 +382,12 @@ class LLMResponse:
             content = self.message or ""
             if content:
                 yield content
+            self.attach_to_inspector()
             self._maybe_append_response_to_context()
             return
 
         full_content: list[str] = []
+        full_reasoning: list[str] = []
         buffer: list[str] = []
         buffer_len = 0
         tool_acc = _ToolCallAccumulator()
@@ -359,6 +406,8 @@ class LLMResponse:
                         buffer.clear()
                         buffer_len = 0
 
+                if event.reasoning_delta:
+                    full_reasoning.append(event.reasoning_delta)
                 if event.tool_name or event.tool_args_delta or event.tool_call_id:
                     tool_acc.apply(event)
         except Exception as e:
@@ -372,8 +421,10 @@ class LLMResponse:
             yield "".join(buffer)
 
         self.message = "".join(full_content)
+        self.reasoning_content = "".join(full_reasoning) or self.reasoning_content
         self.call_list = tool_acc.finalize()
         self._maybe_apply_tool_call_compat()
+        self.attach_to_inspector()
         self._maybe_append_response_to_context()
 
         if stream_error is not None:

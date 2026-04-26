@@ -31,15 +31,15 @@ class ProactiveMessageConfig(BaseConfig):
         decision_mode: str = Field(
             default="chatter",
             description=(
-                "主动机会的决策模式。chatter 表示只产生机会并唤醒当前对话器决定是否开口；"
-                "legacy_private_llm 表示使用旧版私有内心独白 LLM 流程。"
+                "主动机会的决策模式。当前统一由 chatter 处理，"
+                "此字段仅为兼容旧配置而保留；推荐保持为 chatter。"
             ),
         )
 
-        # 首次触发内心独白的等待时间（分钟）
+        # 首次触发主动机会的等待时间（分钟）
         first_check_minutes: float = Field(
             default=10.0,
-            description="首次触发内心独白的等待时间（分钟）",
+            description="首次触发主动机会的等待时间（分钟）",
         )
 
         # 默认最小等待间隔（分钟），防止 LLM 说"等 1 分钟"太频繁
@@ -56,7 +56,7 @@ class ProactiveMessageConfig(BaseConfig):
 
         post_send_followup_minutes: float = Field(
             default=10.0,
-            description="主动发送后若无人回复，再次触发内心独白前的等待时间（分钟）",
+            description="主动发送后若无人回复，再次触发主动机会前的等待时间（分钟）",
         )
 
         declined_opportunity_wait_minutes: float = Field(
@@ -91,7 +91,7 @@ class ProactiveMessageConfig(BaseConfig):
 
         monologue_history_limit: int = Field(
             default=5,
-            description="内心独白提示中携带的历史独白条数",
+            description="已废弃；旧私有独白链路移除后，此字段不再生效，仅保留兼容旧配置。",
         )
 
         # 忽略的聊天类型

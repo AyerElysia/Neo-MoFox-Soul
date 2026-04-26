@@ -251,3 +251,105 @@ def test_send_platform_message_propagates_send_handler_error() -> None:
 
     with pytest.raises(ValueError, match="bad target"):
         asyncio.run(adapter._send_platform_message({"message_info": {}, "message_segment": {}}))
+
+
+def test_handle_raw_message_ignores_bot_self_echo() -> None:
+    """Napcat 回推 bot 自己的消息时，不应再次进入接收链路。"""
+    config = NapcatAdapterConfig.from_dict(
+        {
+            "plugin": {"enabled": True, "config_version": "2.0.0"},
+            "bot": {"qq_id": "123456789", "qq_nickname": "MoFoxBot"},
+            "napcat_server": {
+                "mode": "reverse",
+                "host": "localhost",
+                "port": 8095,
+                "access_token": "",
+            },
+            "features": {
+                "group_list_type": "blacklist",
+                "group_list": [],
+                "private_list_type": "blacklist",
+                "private_list": [],
+                "ban_user_id": [],
+                "enable_poke": True,
+                "ignore_non_self_poke": False,
+                "poke_debounce_seconds": 2.0,
+                "enable_emoji_like": True,
+                "enable_reply_at": True,
+                "reply_at_rate": 0.5,
+                "enable_video_processing": True,
+                "video_max_size_mb": 100,
+                "video_download_timeout": 60,
+            },
+        }
+    )
+    plugin = NapcatAdapterPlugin(config=config)
+    adapter = NapcatAdapter(core_sink=cast(Any, _FakeCoreSink()), plugin=plugin)
+
+    envelope = asyncio.run(
+        adapter.message_handler.handle_raw_message(
+            {
+                "self_id": "123456789",
+                "message_id": 1001,
+                "message_type": "private",
+                "sender": {
+                    "user_id": "123456789",
+                    "nickname": "MoFoxBot",
+                },
+                "message": [{"type": "text", "data": {"text": "hello"}}],
+            }
+        )
+    )
+
+    assert envelope is None
+
+
+def test_handle_raw_message_keeps_normal_private_message() -> None:
+    """普通私聊消息不应被误判为 self echo。"""
+    config = NapcatAdapterConfig.from_dict(
+        {
+            "plugin": {"enabled": True, "config_version": "2.0.0"},
+            "bot": {"qq_id": "123456789", "qq_nickname": "MoFoxBot"},
+            "napcat_server": {
+                "mode": "reverse",
+                "host": "localhost",
+                "port": 8095,
+                "access_token": "",
+            },
+            "features": {
+                "group_list_type": "blacklist",
+                "group_list": [],
+                "private_list_type": "blacklist",
+                "private_list": [],
+                "ban_user_id": [],
+                "enable_poke": True,
+                "ignore_non_self_poke": False,
+                "poke_debounce_seconds": 2.0,
+                "enable_emoji_like": True,
+                "enable_reply_at": True,
+                "reply_at_rate": 0.5,
+                "enable_video_processing": True,
+                "video_max_size_mb": 100,
+                "video_download_timeout": 60,
+            },
+        }
+    )
+    plugin = NapcatAdapterPlugin(config=config)
+    adapter = NapcatAdapter(core_sink=cast(Any, _FakeCoreSink()), plugin=plugin)
+
+    envelope = asyncio.run(
+        adapter.message_handler.handle_raw_message(
+            {
+                "self_id": "123456789",
+                "message_id": 1002,
+                "message_type": "private",
+                "sender": {
+                    "user_id": "987654321",
+                    "nickname": "Alice",
+                },
+                "message": [{"type": "text", "data": {"text": "hello"}}],
+            }
+        )
+    )
+
+    assert envelope is not None

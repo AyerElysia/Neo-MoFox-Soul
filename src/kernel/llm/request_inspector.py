@@ -356,11 +356,24 @@ def _build_messages_view(params: dict[str, Any]) -> list[dict[str, Any]]:
     return rendered_messages
 
 
+def _build_response_view(response: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """将单轮响应转换为可复用的消息卡片结构。"""
+    if not isinstance(response, dict):
+        return []
+
+    normalized = dict(response)
+    role = normalized.get("role")
+    if not isinstance(role, str) or not role:
+        normalized["role"] = "assistant"
+    return _build_messages_view({"messages": [normalized]})
+
+
 def build_render_view(
     api_name: str,
     model: str,
     params: dict[str, Any],
     metadata: dict[str, Any] | None = None,
+    response: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """构造详情页使用的结构化渲染模型。"""
     effective_metadata = metadata or {}
@@ -368,6 +381,7 @@ def build_render_view(
         "overview": _build_overview(api_name, model, params, effective_metadata),
         "tools": _build_tools_view(params),
         "messages": _build_messages_view(params),
+        "response_messages": _build_response_view(response),
     }
 
 
@@ -381,6 +395,7 @@ class CapturedRequest:
     model: str
     params: dict[str, Any]
     metadata: dict[str, Any]
+    response: dict[str, Any] | None = None
 
     def to_summary(self) -> dict[str, Any]:
         """返回列表展示用的摘要。"""
@@ -388,6 +403,9 @@ class CapturedRequest:
         tool_count = len(self.params.get("tools", []))
         request_name = str(self.metadata.get("request_name") or "")
         import_source = str(self.metadata.get("import_source") or "")
+        response = self.response if isinstance(self.response, dict) else {}
+        reasoning_content = response.get("reasoning_content")
+        has_reasoning = isinstance(reasoning_content, str) and bool(reasoning_content.strip())
         return {
             "id": self.id,
             "ts": self.ts,
@@ -400,6 +418,8 @@ class CapturedRequest:
             "estimated_input_tokens": self.metadata.get("estimated_input_tokens"),
             "msg_count": msg_count,
             "tool_count": tool_count,
+            "has_response": bool(response),
+            "has_reasoning": has_reasoning,
         }
 
     def to_full(self) -> dict[str, Any]:
@@ -407,7 +427,14 @@ class CapturedRequest:
         summary = self.to_summary()
         summary["params"] = self.params
         summary["metadata"] = self.metadata
-        summary["rendered"] = build_render_view(self.api_name, self.model, self.params, self.metadata)
+        summary["response"] = self.response
+        summary["rendered"] = build_render_view(
+            self.api_name,
+            self.model,
+            self.params,
+            self.metadata,
+            self.response,
+        )
         return summary
 
 
@@ -418,7 +445,7 @@ class RequestInspector:
         self._max_records = max_records
         self._records: deque[CapturedRequest] = deque(maxlen=max_records)
         self._counter: int = 0
-        self._subscribers: list[asyncio.Queue[CapturedRequest | None]] = []
+        self._subscribers: list[asyncio.Queue[tuple[str, CapturedRequest] | None]] = []
         self._mounted: bool = False
 
     def capture(
@@ -426,7 +453,7 @@ class RequestInspector:
         api_name: str,
         params: dict[str, Any],
         metadata: dict[str, Any] | None = None,
-    ) -> None:
+    ) -> int:
         """捕获一条请求体，存入内存并推送给所有 SSE 订阅者。"""
         self._counter += 1
         try:
@@ -448,9 +475,37 @@ class RequestInspector:
 
         for queue in list(self._subscribers):
             try:
-                queue.put_nowait(record)
+                queue.put_nowait(("new", record))
             except asyncio.QueueFull:
                 pass
+        return record.id
+
+    def attach_response(self, req_id: int, response: dict[str, Any]) -> bool:
+        """为已捕获的请求追加当前轮响应，供前端展示 thinking / tool calls。"""
+        if not isinstance(req_id, int) or req_id <= 0:
+            return False
+        if not isinstance(response, dict):
+            return False
+        try:
+            copied = json.loads(json.dumps(response, default=str))
+        except Exception:
+            copied = {"_raw": str(response)}
+
+        target: CapturedRequest | None = None
+        for record in reversed(self._records):
+            if record.id == req_id:
+                target = record
+                break
+        if target is None:
+            return False
+
+        target.response = copied
+        for queue in list(self._subscribers):
+            try:
+                queue.put_nowait(("update", target))
+            except asyncio.QueueFull:
+                pass
+        return True
 
     def import_json(self, payload: Any) -> list[CapturedRequest]:
         """导入外部 JSON，并转换为可渲染的捕获记录。"""
@@ -512,7 +567,7 @@ class RequestInspector:
 
         @router.get("/api/stream", include_in_schema=False)
         async def sse_stream() -> StreamingResponse:
-            queue: asyncio.Queue[CapturedRequest | None] = asyncio.Queue(maxsize=50)
+            queue: asyncio.Queue[tuple[str, CapturedRequest] | None] = asyncio.Queue(maxsize=50)
             self._subscribers.append(queue)
 
             async def generate() -> AsyncIterator[str]:
@@ -527,7 +582,8 @@ class RequestInspector:
                             continue
                         if record is None:
                             break
-                        yield f"event: new\ndata: {json.dumps(record.to_summary())}\n\n"
+                        kind, payload = record
+                        yield f"event: {kind}\ndata: {json.dumps(payload.to_summary())}\n\n"
                 finally:
                     try:
                         self._subscribers.remove(queue)
@@ -561,9 +617,14 @@ def capture(
     api_name: str,
     params: dict[str, Any],
     metadata: dict[str, Any] | None = None,
-) -> None:
+) -> int:
     """捕获一条 OpenAI 请求体。"""
-    get_inspector().capture(api_name, params, metadata)
+    return get_inspector().capture(api_name, params, metadata)
+
+
+def attach_response(req_id: int, response: dict[str, Any]) -> bool:
+    """为指定记录追加响应。"""
+    return get_inspector().attach_response(req_id, response)
 
 
 def _normalize_import_payload(
@@ -1108,6 +1169,20 @@ function connectSSE() {
     totalBadge.textContent = requests.length;
     if (autoScroll) listScroll.scrollTop = listScroll.scrollHeight;
   });
+  es.addEventListener('update', event => {
+    const record = JSON.parse(event.data);
+    const idx = requests.findIndex(item => item.id === record.id);
+    if (idx >= 0) {
+      requests[idx] = record;
+    } else {
+      requests.push(record);
+    }
+    delete fullCache[record.id];
+    renderList();
+    if (activeId === record.id) {
+      selectItem(record.id);
+    }
+  });
   es.onerror = () => {
     statusDot.classList.remove('live');
     es.close();
@@ -1159,10 +1234,12 @@ function appendItem(record, flash) {
   const provider = record.api_provider ? escHtml(record.api_provider) : '-';
   const tokens = record.estimated_input_tokens == null ? '-' : escHtml(record.estimated_input_tokens);
   const requestName = record.request_name ? escHtml(record.request_name) : '-';
+  const responseChip = record.has_response ? '<span class="mini-chip">Response · captured</span>' : '<span class="mini-chip">Response · pending</span>';
+  const reasoningChip = record.has_reasoning ? '<span class="mini-chip">Thinking · yes</span>' : '';
   item.innerHTML = `<div class="row1"><span class="api-chip">${escHtml(record.api_name)}</span><span class="ts">${escHtml(record.ts_str)}</span></div>
     <div class="model">${escHtml(record.model)}</div>
     <div class="meta">${record.msg_count} 条消息 · ${record.tool_count} 个工具</div>
-    <div class="meta-row"><span class="mini-chip">Request · ${requestName}</span><span class="mini-chip">Provider · ${provider}</span><span class="mini-chip">Tokens · ${tokens}</span></div>`;
+    <div class="meta-row"><span class="mini-chip">Request · ${requestName}</span><span class="mini-chip">Provider · ${provider}</span><span class="mini-chip">Tokens · ${tokens}</span>${responseChip}${reasoningChip}</div>`;
   item.addEventListener('click', () => selectItem(record.id));
   listScroll.appendChild(item);
 }
@@ -1191,11 +1268,11 @@ function renderActiveDetail() {
   const requestName = record && record.request_name ? ` · ${record.request_name}` : '';
   detailTitle.textContent = record ? `#${activeId} · ${record.api_name}${requestName} · ${record.ts_str}` : `#${activeId}`;
   if (viewMode === 'text') {
-    renderPromptTextDetail(data.params);
+    renderPromptTextDetail(data.params, data.response);
     return;
   }
   if (viewMode === 'json') {
-    renderJsonDetail(data.params);
+    renderJsonDetail(data);
     return;
   }
   renderPrettyDetail(data.rendered || {});
@@ -1206,7 +1283,18 @@ function renderPrettyDetail(rendered) {
   const fragment = document.createDocumentFragment();
   fragment.appendChild(renderOverviewSection(rendered.overview || []));
   fragment.appendChild(renderToolsSection(rendered.tools || []));
-  fragment.appendChild(renderMessagesSection(rendered.messages || []));
+  fragment.appendChild(renderMessagesSection(
+    rendered.messages || [],
+    'Messages 对话流',
+    '按 role 拆分板块，渲染 Markdown、工具调用与结果',
+    '本次请求没有 messages，或并非 chat 类型请求。',
+  ));
+  fragment.appendChild(renderMessagesSection(
+    rendered.response_messages || [],
+    '当前响应',
+    '展示本轮模型真实返回的文本、thinking 与工具调用',
+    '当前还没有捕获到响应内容。',
+  ));
   detailBody.appendChild(fragment);
 }
 
@@ -1260,12 +1348,12 @@ function renderToolsSection(tools) {
   return section;
 }
 
-function renderMessagesSection(messages) {
+function renderMessagesSection(messages, title, hint, emptyText) {
   const section = document.createElement('section');
   section.className = 'section';
-  section.innerHTML = '<div class="section-head"><h2>Messages 对话流</h2><span class="section-hint">按 role 拆分板块，渲染 Markdown、工具调用与结果</span></div>';
+  section.innerHTML = `<div class="section-head"><h2>${escHtml(title || 'Messages')}</h2><span class="section-hint">${escHtml(hint || '')}</span></div>`;
   if (!messages.length) {
-    section.innerHTML += '<div class="empty-tip">本次请求没有 messages，或并非 chat 类型请求。</div>';
+    section.innerHTML += `<div class="empty-tip">${escHtml(emptyText || '暂无内容。')}</div>`;
     return section;
   }
   const stack = document.createElement('div');
@@ -1329,50 +1417,64 @@ function renderBlock(block) {
   return container;
 }
 
-function renderJsonDetail(params) {
+function renderJsonDetail(data) {
   detailBody.innerHTML = '';
   const section = document.createElement('section');
   section.className = 'section';
   section.innerHTML = '<div class="section-head"><h2>原始 JSON</h2><span class="section-hint">保留完整调试视图</span></div>';
   const code = document.createElement('div');
   code.className = 'code-panel';
-  code.innerHTML = syntaxHighlight(JSON.stringify(params, null, 2));
+  code.innerHTML = syntaxHighlight(JSON.stringify(data, null, 2));
   section.appendChild(code);
   detailBody.appendChild(section);
 }
 
-function renderPromptTextDetail(params) {
+function renderPromptTextDetail(params, response) {
   detailBody.innerHTML = '';
   const section = document.createElement('section');
   section.className = 'section';
-  section.innerHTML = '<div class="section-head"><h2>Prompt 文本</h2><span class="section-hint">按 messages 顺序展开，便于检查重复上下文</span></div>';
+  section.innerHTML = '<div class="section-head"><h2>Prompt / Response 文本</h2><span class="section-hint">按 messages 顺序展开，并附上当前响应</span></div>';
   const code = document.createElement('div');
   code.className = 'code-panel';
-  code.textContent = buildPromptText(params);
+  code.textContent = buildPromptText(params, response);
   section.appendChild(code);
   detailBody.appendChild(section);
 }
 
-function buildPromptText(params) {
+function buildPromptText(params, response) {
   const messages = Array.isArray(params && params.messages) ? params.messages : [];
-  if (!messages.length) return '本次请求没有 messages。';
-  return messages.map((message, index) => {
-    if (!message || typeof message !== 'object') {
-      return `#${index + 1} [unknown]\n${JSON.stringify(message, null, 2)}`;
-    }
-    const role = message.role || 'unknown';
-    const meta = [];
-    if (message.name) meta.push(`name=${message.name}`);
-    if (message.tool_call_id) meta.push(`tool_call_id=${message.tool_call_id}`);
-    if (Array.isArray(message.tool_calls) && message.tool_calls.length) meta.push(`tool_calls=${message.tool_calls.length}`);
-    const header = `#${index + 1} [${role}]${meta.length ? ' ' + meta.join(' ') : ''}`;
-    const content = promptContentToText(message.content);
-    const toolCalls = Array.isArray(message.tool_calls) && message.tool_calls.length
-      ? '\n\n<tool_calls>\n' + JSON.stringify(message.tool_calls, null, 2) + '\n</tool_calls>'
+  const sections = [];
+  if (messages.length) {
+    sections.push(messages.map((message, index) => {
+      if (!message || typeof message !== 'object') {
+        return `#${index + 1} [unknown]\n${JSON.stringify(message, null, 2)}`;
+      }
+      const role = message.role || 'unknown';
+      const meta = [];
+      if (message.name) meta.push(`name=${message.name}`);
+      if (message.tool_call_id) meta.push(`tool_call_id=${message.tool_call_id}`);
+      if (Array.isArray(message.tool_calls) && message.tool_calls.length) meta.push(`tool_calls=${message.tool_calls.length}`);
+      const header = `#${index + 1} [${role}]${meta.length ? ' ' + meta.join(' ') : ''}`;
+      const content = promptContentToText(message.content);
+      const toolCalls = Array.isArray(message.tool_calls) && message.tool_calls.length
+        ? '\n\n<tool_calls>\n' + JSON.stringify(message.tool_calls, null, 2) + '\n</tool_calls>'
+        : '';
+      const reasoning = message.reasoning_content ? `\n\n<reasoning>\n${message.reasoning_content}\n</reasoning>` : '';
+      return `${header}\n${content}${reasoning}${toolCalls}`;
+    }).join('\n\n---\n\n'));
+  } else {
+    sections.push('本次请求没有 messages。');
+  }
+  if (response && typeof response === 'object') {
+    const responseRole = response.role || 'assistant';
+    const responseText = promptContentToText(response.content);
+    const responseReasoning = response.reasoning_content ? `\n\n<reasoning>\n${response.reasoning_content}\n</reasoning>` : '';
+    const responseToolCalls = Array.isArray(response.tool_calls) && response.tool_calls.length
+      ? '\n\n<tool_calls>\n' + JSON.stringify(response.tool_calls, null, 2) + '\n</tool_calls>'
       : '';
-    const reasoning = message.reasoning_content ? `\n\n<reasoning>\n${message.reasoning_content}\n</reasoning>` : '';
-    return `${header}\n${content}${reasoning}${toolCalls}`;
-  }).join('\n\n---\n\n');
+    sections.push(`=== RESPONSE ===\n[${responseRole}]\n${responseText}${responseReasoning}${responseToolCalls}`);
+  }
+  return sections.join('\n\n====================\n\n');
 }
 
 function promptContentToText(content) {
@@ -1439,7 +1541,7 @@ document.getElementById('clear-btn').addEventListener('click', async () => {
 
 document.getElementById('copy-btn').addEventListener('click', async () => {
   if (activeId == null || !fullCache[activeId]) return;
-  await navigator.clipboard.writeText(JSON.stringify(fullCache[activeId].params, null, 2));
+  await navigator.clipboard.writeText(JSON.stringify(fullCache[activeId], null, 2));
 });
 
 function setImportStatus(message, kind = '') {

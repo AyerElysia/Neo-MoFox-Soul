@@ -35,20 +35,31 @@ logger = get_logger("life_chatter", display="生命对话器", color=COLOR.MAGEN
 # ── 控制流常量 ────────────────────────────────────────────────
 _PASS_AND_WAIT = "action-life_pass_and_wait"
 _SEND_TEXT = "action-life_send_text"
+_SEND_EMOJI_MEME = "action-send_emoji_meme"
+_RECORD_INNER_MONOLOGUE = "action-record_inner_monologue"
 _SUSPEND_TEXT = "__SUSPEND__"
-_MAX_THINK_ONLY_RETRIES = 1
+_MAX_THINK_ONLY_RETRIES = 2
 _MAX_MUST_REPLY_RETRIES = 2
+_MAX_INNER_MONOLOGUE_RETRIES = 2
 _THINK_ONLY_RETRY_REMINDER = (
-    "（系统提醒：你本轮只调用了 action-think。"
-    "think 只能用于内在思考，不能作为唯一动作。"
-    "请立刻再来一轮，至少补充一个可执行动作（例如 action-life_send_text、"
-    "action-life_pass_and_wait，或其他可用的 tool/action）。）"
+    "（系统阻断：本轮仅调用了 action-think，属于无效轮次。"
+    "你现在必须立刻二选一重发 action 列表："
+    "A) 需要回复用户 -> 先 action-think，再 action-life_send_text；"
+    "B) 不需要回复用户 -> 直接 action-life_pass_and_wait（此路径不要调用 think）。"
+    "禁止再次只调用 action-think。请直接给出可执行 action，不要输出解释文本。）"
+)
+_THINK_ONLY_RETRY_REMINDER_STRICT = (
+    "（最后提醒：你再次触发了 think-only。"
+    "本轮必须马上给出有效组合，否则将按无回复收敛。"
+    "合法组合只允许两种："
+    "[action-think + action-life_send_text] 或 [action-life_pass_and_wait(无 think)]。）"
 )
 _MUST_REPLY_RETRY_REMINDER = (
     "（系统提醒：当前批消息已判定为“需要回复”。"
     "这一轮不能使用 action-life_pass_and_wait 结束。"
-    "请调用 action-life_send_text 输出给用户可见的回复内容。"
-    "如需先整理思路，可先 action-think，再 action-life_send_text。）"
+    "请至少调用一个面向用户的回复动作。"
+    "如需发文字，请调用 action-life_send_text；"
+    "如需只发表情包，也必须确保那就是你此刻要给用户的实际回应。）"
 )
 _SEGMENT_ENCOURAGE_MIN_CHARS = 56
 _SEGMENT_SEND_RETRY_REMINDER = (
@@ -57,10 +68,18 @@ _SEGMENT_SEND_RETRY_REMINDER = (
     "把同一条长回复拆成 2~4 段，每段只放一个核心意图。"
     "这样更自然，也更符合当前对话规范。）"
 )
+_INNER_MONOLOGUE_RETRY_REMINDER = (
+    "（系统提醒：这是一次主动机会/续话机会轮次。"
+    "在决定开口或继续等待前，你必须先调用 action-record_inner_monologue，"
+    "把你此刻新的心理推进记录下来；然后再二选一："
+    "A) 回复用户；B) action-life_pass_and_wait。"
+    "不要跳过内心独白记录。）"
+)
 _REASON_LEAK_PATTERN = re.compile(
     r'[,，]?\s*["\']?reason["\']?\s*[:：]',
     re.IGNORECASE,
 )
+_PLACEHOLDER_ONLY_PATTERN = re.compile(r"^(?:\.{2,}|。{2,}|…+|⋯+|··+)$")
 
 # 运行时 assistant 注入队列：
 # 用于接收主动续话/内心独白等外部插件产生的上下文。
@@ -143,7 +162,10 @@ class _WorkflowRuntime:
     think_only_retry_count: int = 0
     must_reply: bool = False
     must_reply_retry_count: int = 0
+    requires_inner_monologue: bool = False
+    inner_monologue_retry_count: int = 0
     pending_transient_context_text: str = ""
+    pending_life_context_high_water: int = 0
 
 
 # ── Actions ───────────────────────────────────────────────────
@@ -264,6 +286,13 @@ class LifeSendTextAction(BaseAction):
         return _REASON_LEAK_PATTERN.split(content, maxsplit=1)[0].strip()
 
     @staticmethod
+    def _is_placeholder_only_segment(content: str) -> bool:
+        stripped = str(content or "").strip()
+        if not stripped:
+            return False
+        return bool(_PLACEHOLDER_ONLY_PATTERN.fullmatch(stripped))
+
+    @staticmethod
     def _calculate_typing_delay(content: str) -> float:
         chars_per_sec = 15.0
         min_delay = 0.8
@@ -327,7 +356,7 @@ class LifeSendTextAction(BaseAction):
                 processed_plain_text=content,
                 message_type=MessageType.TEXT,
                 sender_id=bot_info.get("bot_id", "") if bot_info else "",
-                sender_name=bot_info.get("bot_nickname", "Bot") if bot_info else "Bot",
+                sender_name=bot_info.get("bot_name", "Bot") if bot_info else "Bot",
                 platform=platform,
                 chat_type=chat_type,
                 stream_id=target_stream_id,
@@ -359,7 +388,14 @@ class LifeSendTextAction(BaseAction):
         cleaned_segments = [s for s in cleaned_segments if s]
 
         if not cleaned_segments:
-            return True, "内容为空，跳过发送"
+            return False, "发送内容为空"
+
+        cleaned_segments = [
+            segment for segment in cleaned_segments
+            if not self._is_placeholder_only_segment(segment)
+        ]
+        if not cleaned_segments:
+            return False, "发送内容不能只是省略号或占位符"
 
         sent_count = 0
         for index, segment in enumerate(cleaned_segments):
@@ -534,6 +570,8 @@ class LifeChatter(BaseChatter):
 ## 工具使用
 - think: 发送回复前记录内心活动；如果你准备回复用户，优先先 think，再调用 `life_send_text`。
   严禁单独调用 think，think 必须与至少一个可执行动作同轮出现。
+- record_inner_monologue: 把当前这一刻的内心独白写回同一主体的运行态。
+  尤其在主动机会、延迟续话、犹豫要不要开口时，优先先记录，再决定回复还是继续等待。
 - life_send_text: 发送文本消息。content 只能写纯文本正文，禁止塞入元信息。
   长回复优先使用 `content: ["第一段", "第二段", ...]` 分段发送，不要把大段文字塞进一条。
   禁止在单条 content 里写换行符；想换行就拆成数组里的下一条。
@@ -548,6 +586,14 @@ class LifeChatter(BaseChatter):
 3. 推荐顺序：先 `action-think`，再 `action-life_send_text`。
 4. 如果本轮决定不回复：不要调用 think，直接用 `action-life_pass_and_wait`。
 5. 禁止把最终给用户看的正文只写在 think 里，用户可见内容必须写进 `life_send_text.content`。
+6. 记住“二选一模板”：
+   - 回用户：`action-think` + `action-life_send_text`
+   - 不回用户：`action-life_pass_and_wait`（不要 think）
+
+### 主动机会 / 续话机会 规则
+1. 当你收到的是系统注入的主动机会或延迟续话机会，而不是用户新消息时，先调用 `action-record_inner_monologue`。
+2. 记录完内心独白后，再决定是自然开口，还是 `action-life_pass_and_wait`。
+3. 不要把主动机会当成“对方刚刚发了新消息”；这是一次交给你判断要不要说话的时机。
 
 ### life_send_text 分段策略（强烈建议）
 1. 默认优先分段发送，尤其是解释型、安抚型、叙事型回复。
@@ -561,15 +607,14 @@ class LifeChatter(BaseChatter):
 - 不生成有害、暴力、歧视性内容。
 - 遇到违规请求，以合适方式回应。
 
-## 内在状态说明
-- 你的内在状态（情绪、驱力等）会以 <inner_state> 标签呈现在用户消息中。
-- 这些状态反映你当前的心理感受，请自然地融入对话，而非机械地报告。
-- 近期事件会以 <recent_context> 标签呈现，帮助你了解最近发生了什么。
+## 运行态上下文说明
+- 同一主体的 life_mode 运行态会以 <life_runtime_context> 标签呈现在用户消息中。
+- 其中可能包含当前内在状态、活跃思考流、新增 life 事件流、运行时内心独白。
+- 这些上下文只在本轮临时可见，不会长期留在 payload；请自然地融入对话，而非机械地报告。
 - 聊天历史会以 <chat_history> 标签呈现；当用户说“刚刚/这个/那你觉得呢/感觉如何”等依赖前文的话时，
   必须先结合 <chat_history> 和 <new_messages> 理解语境，不要只根据最后一句泛泛回应。
-- 运行时注入的内心独白会以 <runtime_assistant_context> 标签呈现，
-  它代表你此前已经产生但尚未进入当前 payload 的心理活动。
-- 如果 <chat_history> 仍不足以判断前文，可调用 fetch_chat_history 检索当前聊天流的历史。"""
+- 如果 <chat_history> 仍不足以判断前文，可调用 fetch_chat_history 检索当前聊天流的历史。
+- 如果 life_runtime_context 中的事件不够，可调用 grep_life_events 检索同一主体的事件流。"""
 
     @staticmethod
     def _build_scene_guide(chat_stream: ChatStream) -> str:
@@ -613,21 +658,15 @@ class LifeChatter(BaseChatter):
         长生命周期上下文中只保留聊天历史和新消息；内在状态、近期事件等
         动态快照由发送前的 transient context 注入，避免多轮后堆积旧状态。
         """
-        _ = service
         parts: list[str] = []
 
         stream_name = str(getattr(chat_stream, "stream_name", "") or chat_stream.stream_id[:16])
         parts.append(f'你当前正在名为"{stream_name}"的对话中。')
         parts.append("消息格式说明：【时间】<群组角色> [平台ID] 昵称$群名片 [消息ID]： 消息内容\n")
 
-        if include_dynamic_context:
-            dynamic_context = self._build_dynamic_context_text(
-                chat_stream,
-                service,
-                runtime_context_text=runtime_context_text,
-            )
-            if dynamic_context:
-                parts.append(dynamic_context)
+        # 兼容旧测试/调用方：动态 life 运行态现在由 execute() 在发送前
+        # transient 注入，不写入持久 USER prompt。
+        _ = include_dynamic_context, runtime_context_text, service
 
         # 1) 聊天历史
         if history_text:
@@ -640,31 +679,37 @@ class LifeChatter(BaseChatter):
         parts.append("---\n请基于上述信息决定接下来的动作。")
         return "\n".join(parts)
 
-    def _build_dynamic_context_text(
+    async def _build_dynamic_context_text(
         self,
         chat_stream: ChatStream,
         service: LifeEngineService | None,
         runtime_context_text: str = "",
-    ) -> str:
-        """构建仅本次请求可见的动态上下文快照。"""
-        parts: list[str] = []
-
-        inner_state_text = self._read_inner_state(service)
-        if inner_state_text:
-            parts.append(f"<inner_state>\n{inner_state_text}\n</inner_state>")
-
-        recent_context = self._read_recent_events(service, chat_stream.stream_id)
-        if recent_context:
-            parts.append(f"<recent_context>\n{recent_context}\n</recent_context>")
-
-        if runtime_context_text:
-            parts.append(
-                "<runtime_assistant_context>\n"
-                f"{runtime_context_text}\n"
-                "</runtime_assistant_context>"
+    ) -> tuple[str, int]:
+        """构建仅本次请求可见的 life 运行态快照。"""
+        if service is None:
+            text = str(runtime_context_text or "").strip()
+            if not text:
+                return "", 0
+            return (
+                "<life_runtime_context>\n"
+                "### 运行时内心独白\n"
+                f"{text}\n"
+                "</life_runtime_context>",
+                0,
             )
 
-        return "\n\n".join(parts)
+        context_text, high_water = await service.build_chatter_runtime_context(
+            chat_stream,
+            runtime_context_text=runtime_context_text,
+        )
+        if not context_text:
+            return "", high_water
+        return (
+            "<life_runtime_context>\n"
+            f"{context_text}\n"
+            "</life_runtime_context>",
+            high_water,
+        )
 
     @staticmethod
     def _read_inner_state(service: LifeEngineService | None) -> str:
@@ -781,6 +826,24 @@ class LifeChatter(BaseChatter):
                 if kw and kw.lower() in text:
                     return {"reason": f"消息中包含关键词 {kw}", "should_respond": True}
 
+        if unread_msgs and all(self._is_proactive_trigger_message(msg) for msg in unread_msgs):
+            service = self._get_life_service()
+            if service is not None:
+                paused, silence_minutes, threshold = service.get_external_silence_pause_status()
+                if paused:
+                    silence_label = (
+                        f"{silence_minutes} 分钟"
+                        if silence_minutes is not None
+                        else "未知时长"
+                    )
+                    return {
+                        "reason": (
+                            "当前仅收到主动机会触发，且已命中 life 外界静默暂停阈值 "
+                            f"({silence_label} / {threshold} 分钟)，本轮继续等待"
+                        ),
+                        "should_respond": False,
+                    }
+
         # Layer 4: LLM sub_agent fallback
         try:
             from plugins.default_chatter.decision_agent import decide_should_respond
@@ -809,6 +872,18 @@ class LifeChatter(BaseChatter):
         if not history_msgs:
             return ""
 
+        history_msgs = [
+            msg
+            for msg in history_msgs
+            if not (
+                LifeChatter._message_flag(msg, "is_inner_monologue")
+                or LifeChatter._message_flag(msg, "is_proactive_opportunity_trigger")
+                or LifeChatter._message_flag(msg, "is_proactive_followup_trigger")
+            )
+        ]
+        if not history_msgs:
+            return ""
+
         if max_messages is not None:
             if max_messages <= 0:
                 return ""
@@ -816,6 +891,39 @@ class LifeChatter(BaseChatter):
 
         lines = [BaseChatter.format_message_line(msg) for msg in history_msgs]
         return "\n".join(lines)
+
+    def _get_initial_history_message_limit(self) -> int | None:
+        """读取首轮 chat_history 注入条数。
+
+        优先使用新配置 `initial_history_messages`；若旧字段
+        `recent_history_tail_messages` 被显式设置为正数，则作为兼容回退。
+        返回 None 表示不限制，返回 0 表示禁用历史注入。
+        """
+        plugin_config = getattr(getattr(self, "plugin", None), "config", None)
+        chatter_cfg = getattr(plugin_config, "chatter", None)
+        if chatter_cfg is None:
+            return 30
+
+        initial_limit = getattr(chatter_cfg, "initial_history_messages", 30)
+        if initial_limit is None:
+            initial_limit = 30
+
+        try:
+            initial_limit = int(initial_limit)
+        except (TypeError, ValueError):
+            initial_limit = 30
+
+        legacy_limit = getattr(chatter_cfg, "recent_history_tail_messages", 0)
+        try:
+            legacy_limit = int(legacy_limit)
+        except (TypeError, ValueError):
+            legacy_limit = 0
+
+        if initial_limit == 30 and legacy_limit > 0:
+            return legacy_limit
+        if initial_limit < 0:
+            return 0
+        return initial_limit
 
     @staticmethod
     def _append_transient_context(response: Any, context_text: str) -> None:
@@ -891,6 +999,32 @@ class LifeChatter(BaseChatter):
             return ""
         return "\n".join(f"- {line}" for line in lines)
 
+    @staticmethod
+    def _message_flag(message: Message, flag_name: str) -> bool:
+        if bool(getattr(message, flag_name, False)):
+            return True
+        extra = getattr(message, "extra", None)
+        if isinstance(extra, dict):
+            return bool(extra.get(flag_name, False))
+        return False
+
+    @classmethod
+    def _is_proactive_trigger_message(cls, message: Message) -> bool:
+        return bool(
+            cls._message_flag(message, "is_proactive_opportunity_trigger")
+            or cls._message_flag(message, "is_proactive_followup_trigger")
+        )
+
+    @classmethod
+    def _should_force_reply_for_unread_batch(cls, unread_msgs: list[Message]) -> bool:
+        for msg in unread_msgs:
+            if cls._is_proactive_trigger_message(msg):
+                continue
+            if str(getattr(msg, "sender_role", "") or "").lower() == "bot":
+                continue
+            return True
+        return False
+
     def _consume_runtime_assistant_context(
         self,
         chat_stream: ChatStream,
@@ -930,9 +1064,14 @@ class LifeChatter(BaseChatter):
         return all(cls._is_think_call_name(name) for name in names)
 
     @staticmethod
-    def _append_think_only_retry_instruction(response: Any) -> None:
-        response.add_payload(LLMPayload(ROLE.SYSTEM, Text(_THINK_ONLY_RETRY_REMINDER)))
-        logger.warning("检测到本轮仅调用 action-think，已注入系统提醒并触发重试")
+    def _append_think_only_retry_instruction(response: Any, *, retry_count: int = 1) -> None:
+        reminder = (
+            _THINK_ONLY_RETRY_REMINDER_STRICT
+            if retry_count >= _MAX_THINK_ONLY_RETRIES
+            else _THINK_ONLY_RETRY_REMINDER
+        )
+        response.add_payload(LLMPayload(ROLE.SYSTEM, Text(reminder)))
+        logger.warning("检测到本轮仅调用 action-think，已注入系统阻断提醒并触发重试")
 
     @staticmethod
     def _should_encourage_segment_send(call_name: str, call_args: dict[str, object]) -> bool:
@@ -955,7 +1094,28 @@ class LifeChatter(BaseChatter):
     @staticmethod
     def _append_must_reply_retry_instruction(response: Any) -> None:
         response.add_payload(LLMPayload(ROLE.SYSTEM, Text(_MUST_REPLY_RETRY_REMINDER)))
-        logger.warning("检测到应回复轮次却未发送文本，已注入强制回复提醒")
+        logger.warning("检测到应回复轮次却未产生面向用户的回复，已注入强制回复提醒")
+
+    @staticmethod
+    def _append_inner_monologue_retry_instruction(response: Any) -> None:
+        response.add_payload(LLMPayload(ROLE.SYSTEM, Text(_INNER_MONOLOGUE_RETRY_REMINDER)))
+        logger.warning("主动机会轮次缺少内心独白记录，已注入重试提醒")
+
+    @staticmethod
+    def _is_visible_reply_action(call_name: str) -> bool:
+        normalized = str(call_name or "").strip().lower()
+        return normalized in {
+            _SEND_TEXT,
+            _SEND_EMOJI_MEME,
+        }
+
+    @staticmethod
+    def _is_inner_monologue_record_action(call_name: str) -> bool:
+        return str(call_name or "").strip().lower() == _RECORD_INNER_MONOLOGUE
+
+    @classmethod
+    def _requires_inner_monologue_for_unread_batch(cls, unread_msgs: list[Message]) -> bool:
+        return bool(unread_msgs) and all(cls._is_proactive_trigger_message(msg) for msg in unread_msgs)
 
     @staticmethod
     def _should_compact_successful_tool_result(call_name: str) -> bool:
@@ -964,7 +1124,9 @@ class LifeChatter(BaseChatter):
         return normalized in {
             "action-think",
             "think",
+            _RECORD_INNER_MONOLOGUE,
             _SEND_TEXT,
+            _SEND_EMOJI_MEME,
             _PASS_AND_WAIT,
         }
 
@@ -1031,7 +1193,10 @@ class LifeChatter(BaseChatter):
         request.add_payload(LLMPayload(ROLE.SYSTEM, Text(system_text)))
 
         # 历史文本只在首轮合并一次；后续依赖长连接 payload 中的真实对话链。
-        history_text = self._build_history_text(chat_stream)
+        history_text = self._build_history_text(
+            chat_stream,
+            max_messages=self._get_initial_history_message_limit(),
+        )
 
         # 注入工具
         usable_map = await self.inject_usables(request)
@@ -1081,6 +1246,8 @@ class LifeChatter(BaseChatter):
 
                 if not decision.get("should_respond", False):
                     logger.info("决定不响应，继续等待...")
+                    rt.requires_inner_monologue = False
+                    rt.inner_monologue_retry_count = 0
                     rt.must_reply = False
                     rt.must_reply_retry_count = 0
                     await self.flush_unreads(unread_msgs)
@@ -1098,7 +1265,10 @@ class LifeChatter(BaseChatter):
                     unread_lines=unread_lines,
                     history_text=history_text if not rt.history_merged else "",
                 )
-                rt.pending_transient_context_text = self._build_dynamic_context_text(
+                (
+                    rt.pending_transient_context_text,
+                    rt.pending_life_context_high_water,
+                ) = await self._build_dynamic_context_text(
                     chat_stream,
                     service,
                     runtime_context_text=runtime_context_text,
@@ -1109,7 +1279,9 @@ class LifeChatter(BaseChatter):
                     formatted_content=Text(user_prompt_text),
                 )
                 rt.history_merged = True
-                rt.must_reply = True
+                rt.requires_inner_monologue = self._requires_inner_monologue_for_unread_batch(unread_msgs)
+                rt.inner_monologue_retry_count = 0
+                rt.must_reply = self._should_force_reply_for_unread_batch(unread_msgs)
                 rt.must_reply_retry_count = 0
                 self._transition(rt, _Phase.MODEL_TURN, "accepted unread batch")
                 rt.unread_msgs_to_flush = unread_msgs
@@ -1132,6 +1304,13 @@ class LifeChatter(BaseChatter):
                         if rt.unread_msgs_to_flush:
                             await self.flush_unreads(rt.unread_msgs_to_flush)
                         rt.unread_msgs_to_flush = []
+                        if service is not None and rt.pending_life_context_high_water > 0:
+                            await service.mark_chatter_runtime_context_seen(
+                                chat_stream.stream_id,
+                                rt.pending_life_context_high_water,
+                            )
+                            await service._save_runtime_context()
+                        rt.pending_life_context_high_water = 0
                         rt.pending_transient_context_text = ""
 
                 except Exception as error:
@@ -1167,7 +1346,8 @@ class LifeChatter(BaseChatter):
                 should_wait = False
                 has_pending_tool_results = False
                 seen_sigs: set[str] = set()
-                sent_text_this_round = False
+                sent_visible_reply_this_round = False
+                recorded_inner_monologue_this_round = False
 
                 for call in call_list:
                     get_watchdog().feed_dog(self.stream_id)
@@ -1233,10 +1413,15 @@ class LifeChatter(BaseChatter):
                     ):
                         self._append_segment_send_retry_instruction(llm_response)
 
-                    if success and call_name == _SEND_TEXT:
-                        sent_text_this_round = True
+                    if success and self._is_visible_reply_action(call_name):
+                        sent_visible_reply_this_round = True
                         rt.must_reply = False
                         rt.must_reply_retry_count = 0
+
+                    if success and self._is_inner_monologue_record_action(call_name):
+                        recorded_inner_monologue_this_round = True
+                        rt.requires_inner_monologue = False
+                        rt.inner_monologue_retry_count = 0
 
                     if appended and not call_name.startswith("action-"):
                         has_pending_tool_results = True
@@ -1249,14 +1434,27 @@ class LifeChatter(BaseChatter):
                 ):
                     if rt.think_only_retry_count < _MAX_THINK_ONLY_RETRIES:
                         rt.think_only_retry_count += 1
-                        self._append_think_only_retry_instruction(llm_response)
+                        self._append_think_only_retry_instruction(
+                            llm_response,
+                            retry_count=rt.think_only_retry_count,
+                        )
                         self._transition(rt, _Phase.FOLLOW_UP, "think-only guard retry")
                         continue
                     logger.warning("连续仅调用 action-think，达到重试上限，本轮按 action-only 收敛等待")
                 else:
                     rt.think_only_retry_count = 0
 
-                if rt.must_reply and not sent_text_this_round:
+                if rt.requires_inner_monologue and not recorded_inner_monologue_this_round:
+                    rt.inner_monologue_retry_count += 1
+                    self._append_inner_monologue_retry_instruction(llm_response)
+                    if rt.inner_monologue_retry_count <= _MAX_INNER_MONOLOGUE_RETRIES:
+                        self._transition(rt, _Phase.FOLLOW_UP, "inner monologue guard retry")
+                        continue
+                    logger.warning("主动机会轮次未记录内心独白，达到重试上限，放弃继续强推")
+                    rt.requires_inner_monologue = False
+                    rt.inner_monologue_retry_count = 0
+
+                if rt.must_reply and not sent_visible_reply_this_round:
                     rt.must_reply_retry_count += 1
                     self._append_must_reply_retry_instruction(llm_response)
                     if rt.must_reply_retry_count <= _MAX_MUST_REPLY_RETRIES:

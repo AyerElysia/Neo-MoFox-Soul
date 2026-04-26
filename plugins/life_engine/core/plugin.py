@@ -23,11 +23,10 @@ from ..tools.event_grep_tools import LifeChatterGrepEventsTool
 from ..tools.web_tools import WEB_TOOLS
 from .compat_tools import (
     LifeThinkAction,
+    LifeRecordInnerMonologueAction,
     LifeScheduleFollowupMessageAction,
     LifeMessageNucleusTool,
     LifeConsultNucleusTool,
-    LifeSearchLifeMemoryTool,
-    LifeRetrieveMemoryTool,
 )
 
 
@@ -102,11 +101,10 @@ class LifeEnginePlugin(BasePlugin):
                 LifeSendTextAction,
                 LifePassAndWaitAction,
                 LifeThinkAction,
+                LifeRecordInnerMonologueAction,
                 LifeScheduleFollowupMessageAction,
                 LifeMessageNucleusTool,
                 LifeConsultNucleusTool,
-                LifeSearchLifeMemoryTool,
-                LifeRetrieveMemoryTool,
                 LifeChatterGrepEventsTool,
             ])
 

@@ -6,9 +6,12 @@ from types import SimpleNamespace
 
 from plugins.life_engine.core.config import LifeEngineConfig
 from plugins.life_engine.core.chatter import LifeChatter
+from plugins.life_engine.service.core import LifeEngineService
 from plugins.life_engine.service.event_builder import EventType, LifeEngineEvent
 from plugins.life_engine.tools.file_tools import LifeEngineWakeDFCTool
+from src.core.models.message import Message
 from src.kernel.llm import LLMPayload, ROLE, Text
+import pytest
 
 
 def test_life_chatter_prompt_states_single_subject_runtime_modes() -> None:
@@ -29,6 +32,8 @@ def test_life_chatter_prompt_states_single_subject_runtime_modes() -> None:
     assert "分段策略" in prompt
     assert "content: [\"第一段\", \"第二段\", ...]" in prompt
     assert "被明确点名/呼唤时优先回应" in prompt
+    assert "record_inner_monologue" in prompt
+    assert "主动机会 / 续话机会" in prompt
 
 
 def test_life_chatter_system_prompt_includes_memory_not_tool(tmp_path) -> None:
@@ -97,40 +102,86 @@ def test_life_chatter_persistent_user_prompt_excludes_dynamic_context() -> None:
     assert "<runtime_assistant_context>" not in prompt
 
 
-def test_life_chatter_dynamic_context_is_separate_snapshot() -> None:
+@pytest.mark.asyncio
+async def test_life_chatter_dynamic_context_is_separate_snapshot() -> None:
     """动态上下文应能单独构建，用于本次请求 transient 注入。"""
     chatter = LifeChatter.__new__(LifeChatter)
     chat_stream = SimpleNamespace(stream_id="stream-1")
-    service = SimpleNamespace(
-        _inner_state=SimpleNamespace(
-            format_full_state_for_prompt=lambda _today: "STATE_NOW"
-        ),
-        _event_history=[
-            LifeEngineEvent(
-                event_id="evt-1",
-                event_type=EventType.HEARTBEAT,
-                timestamp="2026-04-25T22:00:00+08:00",
-                sequence=1,
-                source="life_engine",
-                source_detail="heartbeat",
-                content="RECENT_EVENT",
-                heartbeat_index=1,
-            )
-        ],
+    service = LifeEngineService(SimpleNamespace(config=None))
+    service._inner_state = SimpleNamespace(
+        format_full_state_for_prompt=lambda _today: "STATE_NOW"
     )
+    service._thought_manager = SimpleNamespace(
+        format_for_prompt=lambda max_items=5: "THOUGHT_STREAM_NOW"
+    )
+    service._event_history = [
+        LifeEngineEvent(
+            event_id="evt-1",
+            event_type=EventType.HEARTBEAT,
+            timestamp="2026-04-25T22:00:00+08:00",
+            sequence=1,
+            source="life_engine",
+            source_detail="heartbeat",
+            content="RECENT_EVENT",
+            heartbeat_index=1,
+        )
+    ]
 
-    dynamic = chatter._build_dynamic_context_text(
+    dynamic, high_water = await chatter._build_dynamic_context_text(
         chat_stream,
         service,
         runtime_context_text="RUNTIME_NOW",
     )
 
-    assert "<inner_state>" in dynamic
+    assert "<life_runtime_context>" in dynamic
     assert "STATE_NOW" in dynamic
-    assert "<recent_context>" in dynamic
+    assert "THOUGHT_STREAM_NOW" in dynamic
     assert "RECENT_EVENT" in dynamic
-    assert "<runtime_assistant_context>" in dynamic
     assert "RUNTIME_NOW" in dynamic
+    assert high_water == 1
+
+
+@pytest.mark.asyncio
+async def test_life_chatter_runtime_context_cursor_avoids_repeat_injection() -> None:
+    service = LifeEngineService(SimpleNamespace(config=None))
+    service._event_history = [
+        LifeEngineEvent(
+            event_id="evt-1",
+            event_type=EventType.HEARTBEAT,
+            timestamp="2026-04-25T22:00:00+08:00",
+            sequence=1,
+            source="life_engine",
+            source_detail="heartbeat",
+            content="OLD_LIFE_EVENT",
+            heartbeat_index=1,
+        ),
+        LifeEngineEvent(
+            event_id="evt-2",
+            event_type=EventType.HEARTBEAT,
+            timestamp="2026-04-25T22:01:00+08:00",
+            sequence=2,
+            source="life_engine",
+            source_detail="heartbeat",
+            content="NEW_LIFE_EVENT",
+            heartbeat_index=2,
+        ),
+    ]
+    chat_stream = SimpleNamespace(stream_id="stream-1")
+
+    first_text, first_high_water = await service.build_chatter_runtime_context(chat_stream)
+    await service.mark_chatter_runtime_context_seen(chat_stream.stream_id, 1)
+    second_text, second_high_water = await service.build_chatter_runtime_context(chat_stream)
+    await service.mark_chatter_runtime_context_seen(chat_stream.stream_id, first_high_water)
+    third_text, third_high_water = await service.build_chatter_runtime_context(chat_stream)
+
+    assert "OLD_LIFE_EVENT" in first_text
+    assert "NEW_LIFE_EVENT" in first_text
+    assert first_high_water == 2
+    assert "OLD_LIFE_EVENT" not in second_text
+    assert "NEW_LIFE_EVENT" in second_text
+    assert second_high_water == 2
+    assert third_text == ""
+    assert third_high_water == 2
 
 
 def test_life_chatter_transient_context_can_be_stripped() -> None:
@@ -173,6 +224,42 @@ def test_life_chatter_second_turn_prompt_does_not_repeat_history() -> None:
     assert "首轮历史" in first_turn
     assert "<chat_history>" not in second_turn
     assert "第二轮新消息" in second_turn
+
+
+def test_life_chatter_history_excludes_internal_prompt_messages() -> None:
+    chatter = LifeChatter.__new__(LifeChatter)
+    chat_stream = SimpleNamespace(
+        context=SimpleNamespace(
+            history_messages=[
+                Message(
+                    message_id="user_1",
+                    processed_plain_text="真正的聊天历史",
+                    sender_name="Ayer",
+                    stream_id="stream-1",
+                ),
+                Message(
+                    message_id="proactive_opportunity_x",
+                    processed_plain_text="系统主动机会",
+                    sender_name="系统",
+                    stream_id="stream-1",
+                    is_proactive_opportunity_trigger=True,
+                ),
+                Message(
+                    message_id="inner_monologue_x",
+                    processed_plain_text="[内心独白] 我有点想他",
+                    sender_name="爱莉",
+                    stream_id="stream-1",
+                    is_inner_monologue=True,
+                ),
+            ]
+        )
+    )
+
+    history = chatter._build_history_text(chat_stream, max_messages=10)
+
+    assert "真正的聊天历史" in history
+    assert "系统主动机会" not in history
+    assert "内心独白" not in history
 
 
 def test_tell_dfc_tool_description_frames_as_runtime_mode_sync() -> None:

@@ -90,6 +90,35 @@ async def test_life_chatter_grep_defaults_to_current_stream() -> None:
 
 
 @pytest.mark.asyncio
+async def test_life_chatter_grep_includes_life_internal_events_by_default() -> None:
+    service = LifeEngineService(SimpleNamespace(config=None))
+    service._event_history = [
+        _event(1, "同一个关键词", stream_id="s1"),
+        _event(2, "同一个关键词", stream_id="s2"),
+        _event(
+            3,
+            "life 内部也提到同一个关键词",
+            stream_id="",
+            event_type=EventType.HEARTBEAT,
+        ),
+    ]
+
+    import plugins.life_engine.service.registry as registry
+
+    registry.register_life_engine_service(service)
+
+    tool = LifeChatterGrepEventsTool(plugin=SimpleNamespace())
+    tool.chat_stream = SimpleNamespace(stream_id="s1")
+
+    ok, payload = await tool.execute(query="关键词")
+
+    assert ok is True
+    assert isinstance(payload, dict)
+    stream_ids = [match["event"]["stream_id"] for match in payload["matches"]]
+    assert stream_ids == ["", "s1"]
+
+
+@pytest.mark.asyncio
 async def test_life_chatter_grep_context_stays_in_current_stream() -> None:
     service = LifeEngineService(SimpleNamespace(config=None))
     service._event_history = [
@@ -160,3 +189,33 @@ async def test_proactive_opportunity_is_searchable_from_event_stream() -> None:
     assert event["stream_id"] == "s-proactive"
     assert event["source"] == "proactive_message_plugin"
     assert event["content_type"] == "proactive_opportunity"
+
+
+@pytest.mark.asyncio
+async def test_chatter_inner_monologue_is_searchable_from_event_stream() -> None:
+    service = LifeEngineService(SimpleNamespace(config=None))
+    await service.record_chatter_inner_monologue(
+        "还是会忍不住想着他是不是在忙。",
+        stream_id="s-monologue",
+        platform="qq",
+        chat_type="private",
+        sender_name="爱莉",
+        mood="想念",
+        intent="先等一会儿",
+        topic="沉默等待",
+    )
+
+    import plugins.life_engine.service.registry as registry
+
+    registry.register_life_engine_service(service)
+
+    result = await grep_life_events(
+        query="沉默等待",
+        fields=["content", "content_type", "source"],
+    )
+
+    assert result["stats"]["matched_events"] == 1
+    event = result["matches"][0]["event"]
+    assert event["stream_id"] == "s-monologue"
+    assert event["source"] == "life_chatter"
+    assert event["content_type"] == "chatter_inner_monologue"

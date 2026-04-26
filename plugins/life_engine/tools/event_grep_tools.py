@@ -76,6 +76,18 @@ def _normalize_event_types(event_types: list[str] | None) -> set[str]:
     return values
 
 
+def _is_life_internal_payload(payload: dict[str, Any]) -> bool:
+    event_type = str(payload.get("event_type") or "").strip().lower()
+    if event_type in {"heartbeat", "tool_call", "tool_result"}:
+        return True
+    source = str(payload.get("source") or "").strip().lower()
+    content_type = str(payload.get("content_type") or "").strip().lower()
+    stream_id = str(payload.get("stream_id") or "").strip()
+    if source == "life_engine":
+        return True
+    return not stream_id and content_type in {"proactive_opportunity", "dfc_message", "direct_message"}
+
+
 async def grep_life_events(
     *,
     query: str,
@@ -85,6 +97,7 @@ async def grep_life_events(
     event_types: list[str] | None = None,
     fields: list[str] | None = None,
     include_pending: bool = True,
+    include_life_internal: bool = False,
     limit: int = _DEFAULT_LIMIT,
     context_before: int = 1,
     context_after: int = 1,
@@ -120,7 +133,11 @@ async def grep_life_events(
     payloads = [_event_to_payload(event) for event in events]
     scoped_payloads: list[dict[str, Any]] = []
     for payload in payloads:
-        if stream_filter and str(payload.get("stream_id") or "") not in stream_filter:
+        if (
+            stream_filter
+            and str(payload.get("stream_id") or "") not in stream_filter
+            and not (include_life_internal and _is_life_internal_payload(payload))
+        ):
             continue
         if type_filter and str(payload.get("event_type") or "") not in type_filter:
             continue
@@ -155,6 +172,7 @@ async def grep_life_events(
         "event_types": sorted(type_filter),
         "fields": field_names,
         "include_pending": bool(include_pending),
+        "include_life_internal": bool(include_life_internal),
         "order": order,
         "matches": returned,
         "stats": {
@@ -186,6 +204,7 @@ class LifeEngineGrepEventsTool(BaseTool):
         event_types: Annotated[list[str] | None, "限定事件类型：message/heartbeat/tool_call/tool_result"] = None,
         fields: Annotated[list[str] | None, "限定搜索字段；为空搜索常用文本字段"] = None,
         include_pending: Annotated[bool, "是否包含尚未进入历史的 pending 事件"] = True,
+        include_life_internal: Annotated[bool, "是否在限定 stream 时仍包含 life 内部事件"] = False,
         limit: Annotated[int, "最大返回命中数"] = _DEFAULT_LIMIT,
         context_before: Annotated[int, "每条命中前带几条相邻事件"] = 1,
         context_after: Annotated[int, "每条命中后带几条相邻事件"] = 1,
@@ -200,6 +219,7 @@ class LifeEngineGrepEventsTool(BaseTool):
                 event_types=event_types,
                 fields=fields,
                 include_pending=include_pending,
+                include_life_internal=include_life_internal,
                 limit=limit,
                 context_before=context_before,
                 context_after=context_after,
@@ -233,6 +253,7 @@ class LifeChatterGrepEventsTool(BaseTool):
         event_types: Annotated[list[str] | None, "限定事件类型：message/heartbeat/tool_call/tool_result"] = None,
         fields: Annotated[list[str] | None, "限定搜索字段；为空搜索常用文本字段"] = None,
         include_pending: Annotated[bool, "是否包含尚未进入历史的 pending 事件"] = True,
+        include_life_internal: Annotated[bool, "是否包含 life 内部事件；默认 true"] = True,
         limit: Annotated[int, "最大返回命中数"] = 8,
         context_before: Annotated[int, "每条命中前带几条相邻事件"] = 1,
         context_after: Annotated[int, "每条命中后带几条相邻事件"] = 1,
@@ -254,6 +275,7 @@ class LifeChatterGrepEventsTool(BaseTool):
                 event_types=event_types,
                 fields=fields,
                 include_pending=include_pending,
+                include_life_internal=bool(include_life_internal and not cross_stream),
                 limit=limit,
                 context_before=context_before,
                 context_after=context_after,
@@ -268,5 +290,6 @@ class LifeChatterGrepEventsTool(BaseTool):
 
 EVENT_GREP_TOOLS = [
     LifeEngineGrepEventsTool,
-    LifeChatterGrepEventsTool,
+    # LifeChatterGrepEventsTool 仅在 LifeChatter 启用时由 plugin.py 条件注册，
+    # 不放在此处，避免与 plugin.py get_components() 中的显式注册产生重复。
 ]

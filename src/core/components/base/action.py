@@ -340,15 +340,39 @@ class BaseAction(ABC, LLMUsable):
         last_msg: "Message | None",
     ) -> tuple[str | None, str | None]:
         """解析私聊真正的目标用户，避免内部 sender_id 污染发送目标。"""
-        target_user_id = str(getattr(context, "triggering_user_id", "") or "").strip() or None
+        target_user_id: str | None = None
         target_user_name: str | None = None
+
+        try:
+            from src.core.managers.stream_manager import get_stream_manager
+            from src.core.utils.user_query_helper import get_user_query_helper
+
+            stream_info = await get_stream_manager().get_stream_info(self.chat_stream.stream_id)
+            if stream_info and stream_info.get("chat_type") == "private":
+                person_id = stream_info.get("person_id")
+                if person_id:
+                    person = await get_user_query_helper().person_crud.get_by(
+                        person_id=person_id
+                    )
+                    if person and person.user_id:
+                        target_user_id = str(person.user_id)
+                    nickname = str(getattr(person, "nickname", "") or "").strip() if person else ""
+                    if nickname:
+                        target_user_name = nickname
+        except Exception:
+            pass
+
+        context_target_user_id = str(getattr(context, "triggering_user_id", "") or "").strip() or None
 
         last_extra = getattr(last_msg, "extra", {}) or {}
         extra_target_user_id = str(last_extra.get("target_user_id") or "").strip() or None
         extra_target_user_name = str(last_extra.get("target_user_name") or "").strip() or None
 
-        if self._is_internal_sender_id(target_user_id):
-            target_user_id = None
+        if self._is_internal_sender_id(context_target_user_id):
+            context_target_user_id = None
+
+        if not target_user_id:
+            target_user_id = context_target_user_id
 
         if last_msg and extra_target_user_id and (self._is_internal_message(last_msg) or not target_user_id):
             target_user_id = extra_target_user_id
@@ -357,26 +381,6 @@ class BaseAction(ABC, LLMUsable):
         if not target_user_id and last_msg and not self._is_internal_message(last_msg):
             target_user_id = str(getattr(last_msg, "sender_id", "") or "").strip() or None
             target_user_name = str(getattr(last_msg, "sender_name", "") or "").strip() or None
-
-        if not target_user_id:
-            try:
-                from src.core.managers.stream_manager import get_stream_manager
-                from src.core.utils.user_query_helper import get_user_query_helper
-
-                stream_info = await get_stream_manager().get_stream_info(self.chat_stream.stream_id)
-                if stream_info and stream_info.get("chat_type") == "private":
-                    person_id = stream_info.get("person_id")
-                    if person_id:
-                        person = await get_user_query_helper().person_crud.get_by(
-                            person_id=person_id
-                        )
-                        if person and person.user_id:
-                            target_user_id = str(person.user_id)
-                        nickname = str(getattr(person, "nickname", "") or "").strip() if person else ""
-                        if nickname:
-                            target_user_name = nickname
-            except Exception:
-                pass
 
         return target_user_id, target_user_name
 

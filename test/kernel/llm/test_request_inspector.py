@@ -125,6 +125,34 @@ def test_captured_request_to_full_includes_rendered_payload() -> None:
     assert detail["rendered"]["messages"][0]["blocks"][0]["text"] == "hello"
 
 
+def test_request_inspector_attach_response_includes_reasoning_in_detail_view() -> None:
+    """追加响应后，详情页应能展示当前轮的 content 与 reasoning。"""
+    inspector = RequestInspector()
+    req_id = inspector.capture(
+        "chat.completions.create",
+        {"messages": [{"role": "user", "content": "1+1=?"}], "tools": []},
+        {"api_provider": "DeepSeek"},
+    )
+
+    attached = inspector.attach_response(
+        req_id,
+        {
+            "role": "assistant",
+            "content": "2",
+            "reasoning_content": "因为 1+1=2。",
+        },
+    )
+
+    assert attached is True
+    detail = inspector._records[-1].to_full()
+    assert detail["has_response"] is True
+    assert detail["has_reasoning"] is True
+    assert detail["response"]["content"] == "2"
+    blocks = detail["rendered"]["response_messages"][0]["blocks"]
+    assert blocks[0]["text"] == "2"
+    assert any(block.get("label") == "Reasoning" for block in blocks)
+
+
 def test_captured_request_summary_includes_request_name_for_filtering() -> None:
     """列表摘要应带 request_name，方便实时过滤 life_chatter 等请求。"""
     record = CapturedRequest(

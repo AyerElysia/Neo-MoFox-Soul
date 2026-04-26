@@ -249,6 +249,16 @@ class ProactiveMessageService:
         state.proactive_opportunity_active = False
         state.proactive_opportunity_sent_message = False
 
+    def suspend_waiting(self, stream_id: str) -> None:
+        """暂停当前流的等待态，不再继续调度主动检查。"""
+        state = self._states.get(stream_id)
+        if not state:
+            return
+        state.next_check_time = None
+        state.is_waiting = False
+        state.scheduler_task_name = None
+        state.active_check_kind = None
+
     def on_user_message(self, chat_stream: ChatStream, cancel_task: bool = True) -> None:
         """当收到用户消息时调用
 
@@ -390,9 +400,8 @@ class ProactiveMessageService:
 
         logger.info(f"触发内心独白：{stream_id[:8]}... 已等待 {state.elapsed_minutes():.0f} 分钟")
 
-        # 实际的内心独白逻辑由 inner_monologue.py 处理
-        # 这里只是占位，实际调用会在 plugin.py 中注入
-        # 通过事件或直接调用来触发
+        # 实际的内心独白现在由 life_chatter 统一生成；
+        # proactive 这里只负责等待状态和机会触发。
 
     def clear_state(self, stream_id: str, cancel_task: bool = True) -> None:
         """清除聊天流状态

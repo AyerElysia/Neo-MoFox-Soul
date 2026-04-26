@@ -286,12 +286,12 @@ class LLMRequest:
                         isinstance(timeout_seconds, (int, float))
                         and timeout_seconds > 0
                     ):
-                        message, tool_calls, stream_iter, reasoning_content = await asyncio.wait_for(
+                        message, tool_calls, stream_iter, reasoning_content, request_record_id = await asyncio.wait_for(
                             create_task,
                             timeout=float(timeout_seconds),
                         )
                     else:
-                        message, tool_calls, stream_iter, reasoning_content = await create_task
+                        message, tool_calls, stream_iter, reasoning_content, request_record_id = await create_task
 
                 provider_usage: dict[str, Any] = {}
                 pop_last_usage = getattr(client, "pop_last_usage", None)
@@ -314,6 +314,7 @@ class LLMRequest:
                     message=message,
                     reasoning_content=reasoning_content,
                     call_list=[],
+                    request_record_id=request_record_id,
                 )
 
                 # 非流：立即解析 tool_calls
@@ -328,6 +329,7 @@ class LLMRequest:
                         )
                         for tc in tool_calls
                     ]
+                resp.attach_to_inspector()
 
                 # 记录成功指标
                 if self.enable_metrics:

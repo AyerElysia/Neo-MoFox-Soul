@@ -172,6 +172,20 @@ async def test_enqueue_dfc_message_rejects_empty_message(tmp_path: Path) -> None
 
 
 @pytest.mark.asyncio
+async def test_chatter_context_cursor_persists_across_restart(tmp_path: Path) -> None:
+    """life_chatter 事件流游标应持久化，避免重启后重复注入旧事件。"""
+    service = _make_service(tmp_path)
+
+    await service.mark_chatter_runtime_context_seen("stream-1", 42)
+    await service._save_runtime_context()
+
+    restored = _make_service(tmp_path)
+    await restored._load_runtime_context()
+
+    assert restored._state.chatter_context_cursors["stream-1"] == 42
+
+
+@pytest.mark.asyncio
 async def test_enqueue_dfc_message_rejects_when_disabled(tmp_path: Path) -> None:
     """life_engine 禁用时不应接受 DFC 留言。"""
     config = LifeEngineConfig()

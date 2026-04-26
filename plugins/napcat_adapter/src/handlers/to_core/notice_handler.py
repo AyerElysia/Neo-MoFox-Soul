@@ -155,6 +155,11 @@ class NoticeHandler:
                     notice_config["notice_type"] = "group_upload"
                     notice_config["is_notice"] = True
 
+            case NoticeType.bot_offline:
+                reason = raw.get("reason", "未知原因")
+                logger.error(f"Bot {self_id} 收到掉线通知，原因: {reason}。请检查 Bot 登录状态。")
+                return None
+
             case _:
                 logger.warning(f"不支持的notice类型: {notice_type}")
                 return None

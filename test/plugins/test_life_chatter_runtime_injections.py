@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import Any
 
@@ -26,8 +27,7 @@ class _FakeResponse:
 def _payload_text(payload: Any) -> str:
     content = getattr(payload, "content", [])
     if isinstance(content, list) and content:
-        part = content[0]
-        return str(getattr(part, "text", part))
+        return "\n".join(str(getattr(part, "text", part)) for part in content)
     return str(content)
 
 
@@ -63,9 +63,24 @@ def test_life_chatter_injects_runtime_context_after_existing_user_payload() -> N
 
     push_runtime_assistant_injection(stream.stream_id, "[内心独白] 等一等再说")
 
-    assert chatter._inject_runtime_assistant_payloads(response, stream) == 1
-    assert response.payloads[-1].role == ROLE.ASSISTANT
-    assert _payload_text(response.payloads[-1]) == "[内心独白] 等一等再说"
+    runtime_context = chatter._format_runtime_context_text(
+        chatter._consume_runtime_assistant_context(stream)
+    )
+    dynamic_context, high_water = asyncio.run(
+        chatter._build_dynamic_context_text(
+            stream,
+            service=None,
+            runtime_context_text=runtime_context,
+        )
+    )
+
+    assert high_water == 0
+    assert "[内心独白] 等一等再说" in dynamic_context
+
+    chatter._append_transient_context(response, dynamic_context)
+    assert response.payloads[-1].role == ROLE.USER
+    assert "<transient_life_context>" in _payload_text(response.payloads[-1])
+    assert "[内心独白] 等一等再说" in _payload_text(response.payloads[-1])
 
 
 def test_life_chatter_keeps_runtime_context_for_first_user_prompt() -> None:
@@ -75,9 +90,15 @@ def test_life_chatter_keeps_runtime_context_for_first_user_prompt() -> None:
 
     push_runtime_assistant_injection(stream.stream_id, "[内心独白] 先记下来")
 
-    assert chatter._inject_runtime_assistant_payloads(response, stream) == 0
     runtime_context = chatter._format_runtime_context_text(
         chatter._consume_runtime_assistant_context(stream)
+    )
+    dynamic_context, high_water = asyncio.run(
+        chatter._build_dynamic_context_text(
+            stream,
+            service=None,
+            runtime_context_text=runtime_context,
+        )
     )
 
     prompt = chatter._build_chat_user_prompt(
@@ -87,8 +108,13 @@ def test_life_chatter_keeps_runtime_context_for_first_user_prompt() -> None:
         runtime_context_text=runtime_context,
     )
 
-    assert "<runtime_assistant_context>" in prompt
-    assert "[内心独白] 先记下来" in prompt
+    assert high_water == 0
+    assert "[内心独白] 先记下来" in dynamic_context
+    assert "<life_runtime_context>" in dynamic_context
+    assert "[内心独白] 先记下来" not in prompt
+
+    chatter._append_transient_context(response, dynamic_context)
+    assert _payload_text(response.payloads[-1]) == "sys"
     assert consume_runtime_assistant_injections(stream.stream_id) == []
 
 
@@ -113,13 +139,23 @@ def test_life_chatter_history_text_can_keep_short_tail_after_first_merge() -> No
     assert "第二条旧消息" not in tail_history
 
 
-def test_life_chatter_recent_history_tail_limit_reads_config() -> None:
+def test_life_chatter_initial_history_limit_reads_config() -> None:
     config = LifeEngineConfig()
-    config.chatter.recent_history_tail_messages = 4
+    config.chatter.initial_history_messages = 4
     chatter = LifeChatter.__new__(LifeChatter)
     chatter.plugin = SimpleNamespace(config=config)
 
-    assert chatter._get_recent_history_tail_limit() == 4
+    assert chatter._get_initial_history_message_limit() == 4
+
+
+def test_life_chatter_initial_history_limit_supports_legacy_field() -> None:
+    config = LifeEngineConfig()
+    config.chatter.initial_history_messages = 30
+    config.chatter.recent_history_tail_messages = 6
+    chatter = LifeChatter.__new__(LifeChatter)
+    chatter.plugin = SimpleNamespace(config=config)
+
+    assert chatter._get_initial_history_message_limit() == 6
 
 
 def test_life_chatter_user_prompt_tells_model_to_use_chat_history_for_references() -> None:

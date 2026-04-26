@@ -34,13 +34,8 @@
             "dependencies": []
         },
         {
-            "component_type": "tool",
-            "component_name": "search_life_memory",
-            "dependencies": []
-        },
-        {
-            "component_type": "tool",
-            "component_name": "retrieve_memory",
+            "component_type": "agent",
+            "component_name": "life_memory_explorer",
             "dependencies": []
         }
     ],

@@ -6,9 +6,12 @@
 from __future__ import annotations
 
 from typing import Annotated, Any
+from uuid import uuid4
 
 from src.core.components import BaseTool
 from src.app.plugin_system.api import log_api
+from src.app.plugin_system.api import stream_api
+from src.core.models.message import Message, MessageType
 
 logger = log_api.get_logger("life_engine.social_tools")
 
@@ -94,23 +97,25 @@ class NucleusInitiateTopicTool(BaseTool):
 
         # 发送消息
         try:
-            from src.core.managers import get_stream_manager
-
-            stream_manager = get_stream_manager()
-            chat_stream = stream_manager.get_stream(target_stream_id)
+            chat_stream = await stream_api.get_stream(target_stream_id)
+            if chat_stream is None:
+                chat_stream = await stream_api.build_stream_from_database(
+                    target_stream_id
+                )
             if chat_stream is None:
                 return False, f"聊天流 {target_stream_id} 不存在"
 
-            from src.core.models.message import Message, MessageType
-
             msg = Message(
-                type=MessageType.TEXT,
-                text=text,
+                message_id=f"life_engine_proactive_{uuid4().hex}",
+                content=text,
+                processed_plain_text=text,
+                message_type=MessageType.TEXT,
                 sender_id="life_engine_proactive",
-                metadata={
-                    "source": "nucleus_initiate_topic",
-                    "reason": reason,
-                },
+                platform=str(getattr(chat_stream, "platform", "") or ""),
+                chat_type=str(getattr(chat_stream, "chat_type", "") or ""),
+                stream_id=target_stream_id,
+                source="nucleus_initiate_topic",
+                reason=reason,
             )
 
             # 尝试通过消息发送器发送
@@ -118,7 +123,7 @@ class NucleusInitiateTopicTool(BaseTool):
                 from src.core.transport import get_message_sender
                 sender = get_message_sender()
                 if sender:
-                    await sender.send_message(msg, target_stream_id)
+                    await sender.send_message(msg)
                     self._recent_initiates.append(now)
                     logger.info(
                         f"中枢主动发起话题: stream={target_stream_id} "

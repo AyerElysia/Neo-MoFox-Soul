@@ -39,7 +39,7 @@ def _log_openai_request_body(
     model_set: dict[str, Any] | None = None,
     payloads: list[LLMPayload] | None = None,
     request_name: str | None = None,
-) -> None:
+) -> int | None:
     """将 OpenAI 请求体送入请求检视器，便于在 WebUI 中核查 payload 结构。"""
     metadata: dict[str, Any] = {}
     if isinstance(model_set, dict):
@@ -58,9 +58,9 @@ def _log_openai_request_body(
             pass
     try:
         from src.kernel.llm.request_inspector import capture
-        capture(api_name, params, metadata)
+        return capture(api_name, params, metadata)
     except Exception:
-        pass
+        return None
 
 
 def _build_httpx_timeout(timeout: float | None) -> Any:
@@ -964,7 +964,7 @@ class OpenAIChatClient:
         request_name: str,
         model_set: Any,
         stream: bool,
-    ) -> tuple[str | None, list[dict[str, Any]] | None, AsyncIterator[StreamEvent] | None, str | None]:
+    ) -> tuple[str | None, list[dict[str, Any]] | None, AsyncIterator[StreamEvent] | None, str | None, int | None]:
         """发起一次聊天请求。
 
         Args:
@@ -976,10 +976,10 @@ class OpenAIChatClient:
             stream: 是否开启流式输出。
 
         Returns:
-            四元组 ``(message, tool_calls, stream_iter, reasoning_content)``：
+            五元组 ``(message, tool_calls, stream_iter, reasoning_content, request_record_id)``：
 
-            - 非流时：``(完整文本, 工具调用列表, None, 推理内容)``
-            - 流式时：``(None, None, AsyncIterator[StreamEvent], None)``
+            - 非流时：``(完整文本, 工具调用列表, None, 推理内容, 记录 ID)``
+            - 流式时：``(None, None, AsyncIterator[StreamEvent], None, 记录 ID)``
 
         Raises:
             TypeError: model_set 不是 dict 时抛出。
@@ -1072,7 +1072,7 @@ class OpenAIChatClient:
                     content = msg.get("content")
                     msg["reasoning_content"] = content if isinstance(content, str) else ""
 
-        _log_openai_request_body(
+        request_record_id = _log_openai_request_body(
             "chat.completions.create",
             params,
             model_set=model_set,
@@ -1081,7 +1081,7 @@ class OpenAIChatClient:
         )
 
         if not stream:
-            return await self._create_non_stream(
+            message_content, tool_calls, stream_iter, reasoning_content = await self._create_non_stream(
                 client=client,
                 params=params,
                 tool_call_compat=tool_call_compat,
@@ -1094,11 +1094,25 @@ class OpenAIChatClient:
                 force_ipv4=force_ipv4,
                 model_name=model_name,
             )
+            return (
+                message_content,
+                tool_calls,
+                stream_iter,
+                reasoning_content,
+                request_record_id,
+            )
 
-        return await self._create_stream(
+        message_content, tool_calls, stream_iter, reasoning_content = await self._create_stream(
             client=client,
             params=params,
             has_native_video=has_native_video,
+        )
+        return (
+            message_content,
+            tool_calls,
+            stream_iter,
+            reasoning_content,
+            request_record_id,
         )
 
     async def _create_non_stream(

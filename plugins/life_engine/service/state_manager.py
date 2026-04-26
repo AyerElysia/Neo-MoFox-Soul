@@ -8,8 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from dataclasses import asdict
-from datetime import datetime, time as dtime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -22,7 +21,6 @@ from .event_builder import (
     LifeEngineState,
     _now_iso,
     _format_time_display,
-    INTERNAL_PLATFORM,
     RUNTIME_CONTEXT_FILE,
 )
 
@@ -295,6 +293,7 @@ class StatePersistence:
                     "last_external_message_at": state.last_external_message_at,
                     "last_tell_dfc_at": state.last_tell_dfc_at,
                     "tell_dfc_count": state.tell_dfc_count,
+                    "chatter_context_cursors": state.chatter_context_cursors or {},
                 },
                 "pending_events": [event_to_dict(e) for e in pending_events],
                 "event_history": [event_to_dict(e) for e in event_history],
@@ -386,6 +385,18 @@ class StatePersistence:
             state.last_external_message_at = state_raw.get("last_external_message_at")
             state.last_tell_dfc_at = state_raw.get("last_tell_dfc_at")
             state.tell_dfc_count = int(state_raw.get("tell_dfc_count") or 0)
+            raw_cursors = state_raw.get("chatter_context_cursors")
+            if isinstance(raw_cursors, dict):
+                cursors: dict[str, int] = {}
+                for key, value in raw_cursors.items():
+                    sid = str(key).strip()
+                    if not sid:
+                        continue
+                    try:
+                        cursors[sid] = int(value or 0)
+                    except (TypeError, ValueError):
+                        continue
+                state.chatter_context_cursors = cursors
 
             if history_events:
                 max_seq = max(event.sequence for event in history_events)

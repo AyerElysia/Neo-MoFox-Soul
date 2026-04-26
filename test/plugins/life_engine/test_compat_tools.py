@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
+import pytest
+
 from plugins.life_engine.core.compat_tools import (
-    LifeConsultNucleusTool,
-    LifeMessageNucleusTool,
-    LifeScheduleFollowupMessageAction,
-    LifeRetrieveMemoryTool,
-    LifeSearchLifeMemoryTool,
-    LifeThinkAction,
+    LifeRecordInnerMonologueAction,
 )
 from plugins.life_engine.core.config import LifeEngineConfig
 from plugins.life_engine.core.plugin import LifeEnginePlugin
@@ -25,6 +24,55 @@ def test_life_engine_exposes_compat_tools_when_chatter_enabled() -> None:
     assert "LifeThinkAction" in component_names
     assert "LifeMessageNucleusTool" in component_names
     assert "LifeConsultNucleusTool" in component_names
-    assert "LifeSearchLifeMemoryTool" in component_names
-    assert "LifeRetrieveMemoryTool" in component_names
+    assert "LifeSearchLifeMemoryTool" not in component_names
+    assert "LifeRetrieveMemoryTool" not in component_names
+    assert "LifeRecordInnerMonologueAction" in component_names
     assert "LifeScheduleFollowupMessageAction" in component_names
+
+
+@pytest.mark.asyncio
+async def test_record_inner_monologue_action_delegates_to_life_service(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = []
+
+    class _FakeService:
+        async def record_chatter_inner_monologue(self, thought: str, **kwargs):
+            calls.append((thought, kwargs))
+            return {"queued": True}
+
+    fake_plugin = SimpleNamespace(service=_FakeService())
+    monkeypatch.setattr(
+        "plugins.life_engine.core.compat_tools.get_plugin_manager",
+        lambda: SimpleNamespace(get_plugin=lambda name: fake_plugin if name == "life_engine" else None),
+    )
+
+    action = LifeRecordInnerMonologueAction.__new__(LifeRecordInnerMonologueAction)
+    action.chat_stream = SimpleNamespace(
+        stream_id="stream-1",
+        platform="qq",
+        chat_type="private",
+        bot_nickname="爱莉",
+    )
+
+    ok, message = await action.execute(
+        thought="还是会想知道他现在在做什么。",
+        mood="想念",
+        intent="先轻轻等一下",
+        topic="沉默等待",
+    )
+
+    assert ok is True
+    assert "已记录" in message
+    assert calls == [
+        (
+            "还是会想知道他现在在做什么。",
+            {
+                "stream_id": "stream-1",
+                "platform": "qq",
+                "chat_type": "private",
+                "sender_name": "爱莉",
+                "mood": "想念",
+                "intent": "先轻轻等一下",
+                "topic": "沉默等待",
+            },
+        )
+    ]

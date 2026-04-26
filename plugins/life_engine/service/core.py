@@ -295,6 +295,10 @@ class LifeEngineService(BaseService):
             return False, None, threshold
         return minutes_since_external >= threshold, minutes_since_external, threshold
 
+    def get_external_silence_pause_status(self) -> tuple[bool, int | None, int]:
+        """返回外界静默暂停状态，供其它插件复用。"""
+        return self._should_pause_llm_heartbeat_for_external_silence()
+
     def record_tell_dfc(self) -> None:
         """记录一次传话给 DFC 的时间。"""
         self._state.last_tell_dfc_at = _now_iso()
@@ -427,9 +431,13 @@ class LifeEngineService(BaseService):
             ),
             "reply_to": getattr(message, "reply_to", None),
             "source": source,
-            "is_inner_monologue": bool(getattr(message, "is_inner_monologue", False)),
+            "is_inner_monologue": bool(
+                getattr(message, "is_inner_monologue", False)
+                or (getattr(message, "extra", {}) or {}).get("is_inner_monologue", False)
+            ),
             "is_proactive_followup_trigger": bool(
                 getattr(message, "is_proactive_followup_trigger", False)
+                or (getattr(message, "extra", {}) or {}).get("is_proactive_followup_trigger", False)
             ),
         }
 
@@ -874,6 +882,55 @@ class LifeEngineService(BaseService):
             "channel": "proactive_opportunity",
         }
 
+    async def record_chatter_inner_monologue(
+        self,
+        thought: str,
+        *,
+        stream_id: str = "",
+        platform: str = "",
+        chat_type: str = "",
+        sender_name: str = "",
+        mood: str = "",
+        intent: str = "",
+        topic: str = "",
+    ) -> dict[str, Any]:
+        """记录由 life_chatter 生成的内心独白。"""
+        if not self._is_enabled():
+            raise RuntimeError("life_engine 未启用")
+
+        text = str(thought or "").strip()
+        if not text:
+            raise ValueError("thought 不能为空")
+
+        event = self._event_builder.build_chatter_inner_monologue_event(
+            text,
+            stream_id=stream_id,
+            platform=platform,
+            chat_type=chat_type,
+            sender_name=sender_name,
+            mood=mood,
+            intent=intent,
+            topic=topic,
+        )
+
+        async with self._get_lock():
+            self._pending_events.append(event)
+            self._state.pending_event_count = len(self._pending_events)
+        await self._save_runtime_context()
+
+        logger.info(
+            "life_engine 已记录对话器内心独白: "
+            f"stream_id={event.stream_id or 'unknown'} "
+            f"pending={self._state.pending_event_count}"
+        )
+        return {
+            "event_id": event.event_id,
+            "stream_id": event.stream_id or "",
+            "pending_event_count": self._state.pending_event_count,
+            "queued": True,
+            "channel": "chatter_inner_monologue",
+        }
+
     async def record_tool_call(self, tool_name: str, tool_args: dict[str, Any]) -> None:
         """记录工具调用事件。"""
         event = self._event_builder.build_tool_call_event(tool_name, tool_args)
@@ -960,6 +1017,144 @@ class LifeEngineService(BaseService):
             lines.append(line)
 
         return "\n".join(lines)
+
+    @staticmethod
+    def _event_belongs_to_life_runtime(
+        event: LifeEngineEvent,
+        *,
+        current_stream_id: str,
+    ) -> bool:
+        """判断事件是否应自动给 life_chatter 作为同源运行态可见。"""
+        event_type = event.event_type
+        if event_type == EventType.HEARTBEAT:
+            stream_id = str(event.stream_id or "").strip()
+            return bool(not stream_id or stream_id == current_stream_id)
+        if event_type in {EventType.TOOL_CALL, EventType.TOOL_RESULT}:
+            return True
+
+        stream_id = str(event.stream_id or "").strip()
+        content_type = str(event.content_type or "").strip().lower()
+        source = str(event.source or "").strip().lower()
+
+        if current_stream_id and stream_id == current_stream_id:
+            return content_type != "text"
+
+        if content_type in {"heartbeat_reply", "chatter_inner_monologue", "tool_call", "tool_result"}:
+            return True
+        if content_type in {"proactive_opportunity", "dfc_message", "direct_message"}:
+            return bool(not stream_id or stream_id == current_stream_id)
+        return source == "life_engine" and not stream_id
+
+    def _chatter_context_cursor(self, stream_id: str) -> int:
+        sid = str(stream_id or "").strip()
+        if not sid:
+            return 0
+        return int((self._state.chatter_context_cursors or {}).get(sid, 0) or 0)
+
+    async def mark_chatter_runtime_context_seen(
+        self,
+        stream_id: str,
+        sequence: int,
+    ) -> None:
+        """标记某个聊天流已经看过的 life 事件流高水位。"""
+        sid = str(stream_id or "").strip()
+        if not sid or sequence <= 0:
+            return
+        async with self._get_lock():
+            cursors = self._state.chatter_context_cursors
+            cursors[sid] = max(int(cursors.get(sid, 0) or 0), int(sequence))
+
+    def _format_chatter_inner_state(self) -> str:
+        if self._inner_state is None:
+            return ""
+        try:
+            today_str = datetime.now().strftime("%Y-%m-%d")
+            return self._inner_state.format_full_state_for_prompt(today_str)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"构建 chatter inner_state 快照失败: {exc}")
+            try:
+                state_dict = self._inner_state.get_full_state()
+            except Exception:  # noqa: BLE001
+                return ""
+            if not isinstance(state_dict, dict):
+                return ""
+            return "\n".join(f"{key}: {value}" for key, value in state_dict.items())
+
+    def _format_chatter_thought_streams(self) -> str:
+        if self._thought_manager is None:
+            return ""
+        try:
+            return self._thought_manager.format_for_prompt(max_items=5)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"构建 chatter 思考流快照失败: {exc}")
+            return ""
+
+    async def build_chatter_runtime_context(
+        self,
+        chat_stream: Any,
+        *,
+        runtime_context_text: str = "",
+        event_limit: int = 80,
+    ) -> tuple[str, int]:
+        """构建给 life_chatter 的同源运行态快照。
+
+        返回值为 (context_text, high_water_sequence)。context_text 只用于本轮
+        transient 注入；high_water_sequence 在 LLM 请求成功后持久化，避免重复注入。
+        """
+        stream_id = str(getattr(chat_stream, "stream_id", "") or "").strip()
+        cursor = self._chatter_context_cursor(stream_id)
+        limit = max(1, min(int(event_limit or 80), 160))
+
+        async with self._get_lock():
+            events = list(self._event_history)
+            events.extend(list(self._pending_events))
+
+        events.sort(key=lambda event: int(event.sequence or 0))
+        relevant = [
+            event
+            for event in events
+            if int(event.sequence or 0) > cursor
+            and self._event_belongs_to_life_runtime(
+                event,
+                current_stream_id=stream_id,
+            )
+        ]
+
+        omitted = max(0, len(relevant) - limit)
+        selected = relevant[-limit:]
+        high_water = max((int(event.sequence or 0) for event in relevant), default=cursor)
+
+        sections: list[str] = []
+        inner_state_text = self._format_chatter_inner_state()
+        if inner_state_text:
+            sections.append(f"### 当前内在状态\n{inner_state_text}")
+
+        thought_streams_text = self._format_chatter_thought_streams()
+        if thought_streams_text:
+            sections.append(f"### 当前思考流\n{thought_streams_text}")
+
+        runtime_text = str(runtime_context_text or "").strip()
+        if runtime_text:
+            sections.append(f"### 运行时内心独白\n{runtime_text}")
+
+        if selected:
+            event_text = self._build_wake_context_text(selected)
+            if omitted:
+                event_text = (
+                    f"（还有 {omitted} 条更早的 life 事件未自动展开；"
+                    "需要时用 grep_life_events 检索。）\n"
+                    f"{event_text}"
+                )
+            sections.append(f"### 新增 life 事件流\n{event_text}")
+
+        if not sections:
+            return "", high_water
+
+        header = (
+            "这是同一主体 life_mode 自上次对话器读取后产生的运行态。"
+            "它只在本轮临时可见，不会长期留在对话 payload。"
+        )
+        return f"{header}\n\n" + "\n\n".join(sections), high_water
 
     async def search_outer_memory(self, query: str, top_k: int = 5) -> str:
         """供对外运行模式深度检索 life memory。"""
