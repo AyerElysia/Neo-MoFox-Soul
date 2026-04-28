@@ -357,6 +357,7 @@ class LLMRequest:
                     )
                     get_global_collector().record_request(metrics)
 
+                session.record_success(latency=timer.elapsed)
                 return resp
 
             except asyncio.CancelledError:

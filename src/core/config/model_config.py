@@ -29,8 +29,9 @@
 
 import random
 from threading import Lock as ThreadLock
-from typing import Any, Literal, cast
+from typing import Any, ClassVar, Literal, cast
 
+from pydantic import ConfigDict
 from src.kernel.config import ConfigBase, SectionBase, config_section, Field
 from src.kernel.llm.types import ModelSet
 
@@ -209,8 +210,11 @@ class TaskConfigSection(SectionBase):
 class ModelTasksSection(SectionBase):
     """模型任务配置集合
     
-    包含所有预定义任务的配置。
+    包含所有预定义任务的配置，同时允许用户添加自定义任务。
     """
+
+    model_config = ConfigDict(extra="allow")
+    __config_extra_section_model__: ClassVar[type[SectionBase]] = TaskConfigSection
 
     # ========== 核心对话任务 ==========
     utils: TaskConfigSection = Field(
@@ -278,7 +282,10 @@ class ModelTasksSection(SectionBase):
             config = getattr(self, task_name)
             if config is None:
                 raise ValueError(f"任务 '{task_name}' 未配置")
-            return config
+            if isinstance(config, TaskConfigSection):
+                return config
+            if isinstance(config, dict):
+                return TaskConfigSection.model_validate(config)
         raise ValueError(f"任务 '{task_name}' 未找到对应的配置")
 
 

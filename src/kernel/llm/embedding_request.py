@@ -98,6 +98,7 @@ class EmbeddingRequest:
                     )
                     get_global_collector().record_request(metrics)
 
+                session.record_success(latency=timer.elapsed)
                 return EmbeddingResponse(
                     embeddings=embeddings,
                     model_name=model_identifier,
