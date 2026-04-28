@@ -13,7 +13,7 @@ from typing import Any, cast
 
 import pytest
 
-from plugins.default_chatter.runners import run_enhanced
+from plugins.default_chatter.runners import run_classical, run_enhanced
 from src.core.components.base import Stop
 from src.kernel.llm import ROLE
 
@@ -39,12 +39,14 @@ class _FakeResponse:
         *,
         message: str = "ok",
         reasoning_content: str | None = None,
+        model_set: list[dict[str, object]] | None = None,
     ) -> None:
         self.payloads: list[_FakePayload] = [_FakePayload(r) for r in payload_roles]
         self.message: str = message
         self.reasoning_content: str | None = reasoning_content
         self.call_list: list[Any] = []
         self.send_count: int = 0
+        self.model_set: list[dict[str, object]] = model_set or []
 
     def add_payload(self, payload: Any) -> None:
         role = getattr(payload, "role", None)
@@ -371,3 +373,63 @@ async def test_run_enhanced_prints_actor_decision_panel_before_processing_tool_c
             "cyan",
         )
     ]
+
+
+@pytest.mark.asyncio
+async def test_run_enhanced_waits_after_anthropic_action_only_suspend() -> None:
+    """Anthropic action-only 回合注入 SUSPEND 后应直接等待。"""
+    resp = _FakeResponse(
+        payload_roles=[ROLE.USER],
+        message="",
+        model_set=[{"client_type": "anthropic"}],
+    )
+    resp.call_list = [SimpleNamespace(name="action-send_text", args={}, id="1")]
+    resp.reasoning_content = "think"
+
+    chatter = _FakeChatterAllowUser(resp)
+    chat_stream = cast(Any, SimpleNamespace(stream_id="s1", stream_name="测试流"))
+    fake_logger = cast(Any, _FakeLogger())
+
+    gen = run_enhanced(
+        chatter=cast(Any, chatter),
+        chat_stream=chat_stream,
+        logger=fake_logger,
+        pass_call_name="action-pass_and_wait",
+        stop_call_name="action-stop_conversation",
+        send_text_call_name="action-send_text",
+        suspend_text="__SUSPEND__",
+    )
+
+    first = await anext(gen)
+    assert first.__class__.__name__ == "Wait"
+    assert resp.send_count == 1
+
+
+@pytest.mark.asyncio
+async def test_run_classical_waits_after_anthropic_action_only_suspend() -> None:
+    """classical 下 Anthropic action-only 回合注入 SUSPEND 后应直接等待。"""
+    resp = _FakeResponse(
+        payload_roles=[ROLE.USER],
+        message="",
+        model_set=[{"client_type": "anthropic"}],
+    )
+    resp.call_list = [SimpleNamespace(name="action-send_text", args={}, id="1")]
+    resp.reasoning_content = "think"
+
+    chatter = _FakeChatterAllowUser(resp)
+    chat_stream = cast(Any, SimpleNamespace(stream_id="s1", stream_name="测试流"))
+    fake_logger = cast(Any, _FakeLogger())
+
+    gen = run_classical(
+        chatter=cast(Any, chatter),
+        chat_stream=chat_stream,
+        logger=fake_logger,
+        pass_call_name="action-pass_and_wait",
+        stop_call_name="action-stop_conversation",
+        send_text_call_name="action-send_text",
+        suspend_text="__SUSPEND__",
+    )
+
+    first = await anext(gen)
+    assert first.__class__.__name__ == "Wait"
+    assert resp.send_count == 1

@@ -82,6 +82,17 @@ class TestAPIProviderSection:
         with pytest.raises(ValueError, match="API密钥列表为空"):
             provider.get_api_key()
 
+    def test_provider_supports_anthropic_client_type(self):
+        """测试 provider 支持 anthropic 客户端类型。"""
+        provider = APIProviderSection(
+            name="anthropic",
+            base_url="https://api.anthropic.com/v1",
+            api_key="sk-ant-test",
+            client_type="anthropic",
+        )
+
+        assert provider.client_type == "anthropic"
+
 
 class TestModelInfoSection:
     """测试 ModelInfoSection 配置节。"""
@@ -198,7 +209,7 @@ class TestModelTasksSection:
     def test_get_none_task_raises(self):
         """测试获取 None 任务抛出异常。"""
         tasks = ModelTasksSection()
-        tasks.utils = None
+        object.__setattr__(tasks, "utils", None)
 
         with pytest.raises(ValueError, match="任务 'utils' 未配置"):
             tasks.get_task("utils")
