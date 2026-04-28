@@ -32,7 +32,7 @@ class NucleusInitiateTopicTool(BaseTool):
         "- 想发起一个讨论\n"
         "\n"
         "**与 nucleus_tell_dfc 的区别：**\n"
-        "- nucleus_tell_dfc: 留言给社交态，等它下次对话时自然融入\n"
+        "- nucleus_tell_dfc: 只补充表达层当前可能没看到的信息差/背景\n"
         "- nucleus_initiate_topic: 直接送出消息，立即可见\n"
         "\n"
         "**注意：** 这是较强力的主动行为，请确保有真正的表达欲，不要频繁使用。"

@@ -268,3 +268,5 @@ def test_tell_dfc_tool_description_frames_as_runtime_mode_sync() -> None:
 
     assert "同一主体的表达层" in description
     assert "不是在和另一个意识体对话" in description
+    assert "信息差" in description
+    assert "不用于指导" in description

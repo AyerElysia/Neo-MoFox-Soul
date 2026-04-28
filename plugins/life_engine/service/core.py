@@ -1142,7 +1142,7 @@ class LifeEngineService(BaseService):
             if omitted:
                 event_text = (
                     f"（还有 {omitted} 条更早的 life 事件未自动展开；"
-                    "需要时用 grep_life_events 检索。）\n"
+                    "需要时可先基于当前上下文继续对话。）\n"
                     f"{event_text}"
                 )
             sections.append(f"### 新增 life 事件流\n{event_text}")
@@ -1372,20 +1372,22 @@ class LifeEngineService(BaseService):
             "### 你可以做什么", "",
             "1. **思考** — 推进你正在想的思考流（`nucleus_advance_thought_stream`）",
             "2. **探索** — 搜索感兴趣的东西（`nucleus_web_search`）、阅读记忆（`nucleus_search_memory`）",
-            "3. **表达** — 把心里话说出来（`nucleus_tell_dfc`）或者直接在聊天里说一句（`nucleus_initiate_topic`）",
-            "4. **记录** — 写下感悟（`nucleus_write_file`）、管理待办（`nucleus_list_todos`）",
-            "5. **新建思考流** — 开始琢磨一个新话题（`nucleus_create_thought_stream`）",
-            "6. **什么都不做** — 休息也是可以的", "",
-            "### `nucleus_tell_dfc` — 把心里话说出来", "",
-            "这个工具不是汇报，是表达。", "",
+            "3. **补充上下文** — 给表达层补充它当前看不到、但对对话可能重要的信息差（`nucleus_tell_dfc`）",
+            "4. **直接开口** — 如果你自己就想说一句，直接在聊天里发出去（`nucleus_initiate_topic`）",
+            "5. **记录** — 写下感悟（`nucleus_write_file`）、管理待办（`nucleus_list_todos`）",
+            "6. **新建思考流** — 开始琢磨一个新话题（`nucleus_create_thought_stream`）",
+            "7. **什么都不做** — 休息也是可以的", "",
+            "### `nucleus_tell_dfc` — 给表达层补充信息差", "",
+            "这个工具用于补充背景，不用于指导表达层怎么说、怎么做。", "",
             "你应该用它：",
-            "- 你有话想说，不管是因为好奇、想念、想分享、还是单纯想说话",
-            "- 你想让社交态的你带上某种倾向或情绪",
-            "- 你想主动发起话题或关心某人", "",
+            "- 你发现了表达层当前未必看到的事实、背景、记忆线索、情绪来源或潜在风险",
+            "- 你补上一段信息后，表达层会更不容易误解对方或误判局势",
+            "- 你掌握了某条近期事件链，能解释对方现在为什么这样说/这样做", "",
             "你不该用它：",
-            "- 没什么想说的，只是觉得「应该用一下」",
-            "- 机械地转发信息", "",
-            "记住：想到就说，不要等「合适的时机」。", "",
+            "- 替表达层写回复、写台词、写步骤",
+            "- 告诉表达层“立刻去做什么”“不要怎么说”“应该怎么问”",
+            "- 你自己其实就想直接说一句：这种情况用 `nucleus_initiate_topic`", "",
+            "记住：`nucleus_tell_dfc` 是补信息差，不是遥控器。", "",
             "### 工具边界", "",
             "- `nucleus_search_memory` 是历史检索，不要反复重搜同一主题",
             "- 本地文件路径优先用 `nucleus_read_file` / `nucleus_grep_file`",

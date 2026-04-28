@@ -614,7 +614,7 @@ class LifeChatter(BaseChatter):
 - 聊天历史会以 <chat_history> 标签呈现；当用户说“刚刚/这个/那你觉得呢/感觉如何”等依赖前文的话时，
   必须先结合 <chat_history> 和 <new_messages> 理解语境，不要只根据最后一句泛泛回应。
 - 如果 <chat_history> 仍不足以判断前文，可调用 fetch_chat_history 检索当前聊天流的历史。
-- 如果 life_runtime_context 中的事件不够，可调用 grep_life_events 检索同一主体的事件流。"""
+- 如果 life_runtime_context 中的事件不够，可优先基于现有上下文谨慎回应，避免臆断未给出的事件细节。"""
 
     @staticmethod
     def _build_scene_guide(chat_stream: ChatStream) -> str:

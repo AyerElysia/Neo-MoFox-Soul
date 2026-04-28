@@ -114,6 +114,47 @@ def test_tell_dfc_default_is_queue_only(monkeypatch: pytest.MonkeyPatch) -> None
     assert loop_manager.calls == []
     assert life_service.tell_count == 1
 
+    wake_message = stream.context.unread_messages[0]
+    assert "[信息差补充]" in wake_message.content
+    assert "不是命令" in wake_message.content
+
+
+def test_tell_dfc_rejects_guidance_style_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """指导式台词应被拒绝，避免把 tell_dfc 当成遥控器。"""
+    stream = _DummyStream()
+    stream_manager = _DummyStreamManager(stream)
+    loop_manager = _DummyLoopManager(start_ok=True)
+    life_service = _DummyLifeService()
+    _patch_runtime(
+        monkeypatch,
+        stream_manager=stream_manager,
+        loop_manager=loop_manager,
+        life_service=life_service,
+    )
+
+    tool = LifeEngineWakeDFCTool(plugin=object())
+    ok, result = asyncio.run(
+        tool.execute(
+            message=(
+                "如果他说委屈的事，就认真听，不急着给建议。"
+                "先确认他在，再温柔地问“昨晚的事还在心里吗？”"
+            ),
+            reason="我想补充一些观察。",
+            importance="normal",
+            stream_id="stream-1",
+        )
+    )
+
+    assert ok is False
+    assert isinstance(result, str)
+    assert "补充信息差" in result
+    assert "不用于指导表达层怎么回复" in result
+    assert len(stream.context.unread_messages) == 0
+    assert loop_manager.calls == []
+    assert life_service.tell_count == 0
+
 
 def test_tell_dfc_proactive_wake_requires_detailed_reason(
     monkeypatch: pytest.MonkeyPatch,
@@ -133,7 +174,7 @@ def test_tell_dfc_proactive_wake_requires_detailed_reason(
     tool = LifeEngineWakeDFCTool(plugin=object())
     ok, result = asyncio.run(
         tool.execute(
-            message="[信息差] 需要马上说。",
+            message="[信息差] 我刚确认对方在这个话题上明显更敏感了。",
             reason="很急",
             importance="high",
             proactive_wake=True,

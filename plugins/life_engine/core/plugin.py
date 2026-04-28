@@ -19,7 +19,6 @@ from ..tools import ALL_TOOLS
 from ..tools.todo_tools import TODO_TOOLS
 from ..memory.tools import MEMORY_TOOLS
 from ..tools.grep_tools import GREP_TOOLS
-from ..tools.event_grep_tools import LifeChatterGrepEventsTool
 from ..tools.web_tools import WEB_TOOLS
 from .compat_tools import (
     LifeThinkAction,
@@ -105,7 +104,6 @@ class LifeEnginePlugin(BasePlugin):
                 LifeScheduleFollowupMessageAction,
                 LifeMessageNucleusTool,
                 LifeConsultNucleusTool,
-                LifeChatterGrepEventsTool,
             ])
 
         return components

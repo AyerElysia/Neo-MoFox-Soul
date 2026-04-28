@@ -37,6 +37,14 @@ from ..memory.prompting import build_memory_write_warning
 
 logger = log_api.get_logger("life_engine.tools")
 
+_DFC_GUIDANCE_PATTERNS = (
+    r"(不要再|别再|务必|记得|立刻|马上|赶紧|直接).{0,18}(说|回复|回|问|讲|开始|继续|安慰|道歉|主持|接住|确认|听)",
+    r"先.{0,24}(说|回复|回|问|安慰|确认|听).{0,24}再.{0,24}(说|回复|回|问|讲|开始|继续|安慰|确认)",
+    r"如果.{0,24}(说|提到|问起|聊到|回应).{0,12}就.{0,24}(说|回复|回|问|安慰|确认|道歉|继续|开始|听)",
+    r"(温柔地|轻轻地|认真地).{0,12}(问|说|回复|回|安慰|确认|道歉|讲|听)",
+    r"[\"“][^\"”\n]{2,40}[\"”].{0,12}(问|说|回复|回|发|讲)",
+)
+
 
 def _get_workspace(plugin: Any) -> Path:
     """获取工作空间路径。"""
@@ -188,47 +196,54 @@ def _is_detailed_proactive_wake_reason(reason: str) -> bool:
     return any(keyword in text for keyword in PROACTIVE_WAKE_KEYWORDS)
 
 
+def _looks_like_dfc_guidance(message: str) -> bool:
+    """检测 message 是否在指导表达层如何回复/行动。"""
+    text = " ".join(str(message or "").split())
+    if not text:
+        return False
+    return any(re.search(pattern, text) for pattern in _DFC_GUIDANCE_PATTERNS)
+
+
 class LifeEngineWakeDFCTool(BaseTool):
-    """向同一主体的表达层传递内在碎片。"""
+    """向同一主体的表达层补充信息差。"""
 
     tool_name: str = "nucleus_tell_dfc"
     tool_description: str = (
-        "向同一主体的表达层传递内在碎片——把心里话说出来。"
+        "向同一主体的表达层补充信息差——补一段它当前暂时看不到、但对接下来对话可能重要的背景。"
         "\n\n"
-        "**你不是在写报告，而是在让自己知道——就像心里冒出一个念头，然后自然地说出口。**"
-        " 这不是在和另一个意识体对话，而是同一个你在不同运行状态之间同步感受。"
+        "**这不是在遥控社交态，更不是替它写台词；它不用于指导表达层怎么回复。**"
+        " 这不是在和另一个意识体对话，而是同一个你在不同运行状态之间补充上下文。"
         "\n\n"
         "**何时使用：**\n"
-        "- 你有想法想说出来（不只是「新信息」——也包括感受、冲动、想分享的事）\n"
-        "- 你想主动和谁说话\n"
-        "- 你想发起一个话题\n"
-        "- 你想让社交态的自己带上某种情绪倾向\n"
-        "- 外界安静太久，你想打破沉默\n"
+        "- 你掌握了表达层当前可能不知道的事实、背景、记忆线索、情绪来源或潜在风险\n"
+        "- 你发现某段近期事件能解释对方现在为什么这样说/这样做\n"
+        "- 你需要补一个隐藏前提，避免表达层误解上下文\n"
         "\n"
         "**何时不用：**\n"
-        "- 没什么想说的，只是觉得「应该用一下」\n"
-        "- 机械地转发信息\n"
+        "- 你想教表达层该怎么回、该怎么问、该怎么安慰\n"
+        "- 你在替表达层写台词、步骤或策略\n"
+        "- 你自己其实想直接开口 → 用 `nucleus_initiate_topic`\n"
         "\n"
-        "**注意：** 默认只入队，不主动唤醒表达层。留下的想法会在表达层下次处理对话时自然浮现。"
-        "语句尽量感性、简练，像心里突然冒出来的念头。"
+        "**注意：** 默认只入队，不主动唤醒表达层。补充内容会在表达层下次处理对话时作为背景自然被看见。"
+        " 写法尽量是观察/背景/风险/线索，不要写命令句或示范回复。"
         "\n\n"
         "**参数写法建议：**\n"
-        "- `message`: 你想表达的内在碎片。感性、简练，像心里突然冒出来的念头\n"
-        "- `reason`: 这股冲动来自哪里（好奇/想念/想分享/想说话/等）\n"
+        "- `message`: 只写信息差本身：你发现了什么、这说明什么、可能影响什么\n"
+        "- `reason`: 为什么这是表达层当前可能不知道、但值得补充的信息差\n"
         "- `importance`: 常规用 normal；只有紧急时用 high/critical\n"
         "- `proactive_wake`: 默认 false。仅在 high/critical 且 reason 详尽时允许 true\n"
         "- `stream_id`: 不确定就留空，让系统自动路由\n"
         "\n"
-        "**记住：想到就说，不要等「合适的时机」。**"
+        "**记住：补背景，不下指导。**"
     )
     chatter_allow: list[str] = ["life_engine_internal"]
 
     async def execute(
         self,
-        message: Annotated[str, "想要沉淀给同一主体表达层的内心话（具体内容会自然融入对话）"],
+        message: Annotated[str, "要补充给表达层的信息差：事实/背景/线索/风险，不要写指导台词"],
         reason: Annotated[
             str,
-            "同步原因（如：长期沉默想主动问候/内心反思有重要领悟/完成TODO想分享/发现有趣事物等）",
+            "为什么这是表达层当前可能不知道、但值得补充的信息差",
         ] = "",
         importance: Annotated[str, "重要度（可选：low/normal/high/critical，默认 normal）"] = "normal",
         proactive_wake: Annotated[
@@ -250,6 +265,12 @@ class LifeEngineWakeDFCTool(BaseTool):
         text = str(message or "").strip()
         if not text:
             return False, "message 不能为空"
+        if _looks_like_dfc_guidance(text):
+            return (
+                False,
+                "nucleus_tell_dfc 只用于补充信息差，不用于指导表达层怎么回复。"
+                "请改写成“你发现了什么 / 这说明什么 / 可能影响什么”，不要写“该怎么说/怎么做”的指令。",
+            )
 
         normalized_importance = str(importance or "normal").strip().lower() or "normal"
         if normalized_importance not in {"low", "normal", "high", "critical"}:
@@ -335,11 +356,12 @@ class LifeEngineWakeDFCTool(BaseTool):
                     logger.debug(f"life_engine 无法为表达层唤醒解析私聊目标: {exc}")
 
         wake_prompt = (
-            "[潜意识浮现]\n"
+            "[信息差补充]\n"
             f"重要度: {normalized_importance}\n"
             f"缘由: {reason or '潜意识波动'}\n"
-            f"内心灵感/直觉碎片: {text}\n"
-            "（你的一段记忆/内在状态在你休眠时整理出了上述直觉。这只是一阵涌上心头的感受，请结合当前对话上下文，自然决定是否将这份直觉具象化表达，或者仅作为内在情感驱动你此刻的回复语气。）"
+            f"补充背景/线索: {text}\n"
+            "（这是同一主体的内在层补充的一段上下文：可能有帮助，也可能只作为背景。"
+            "它不是命令，不是指定措辞，更不是必须照做的脚本。请结合当前对话上下文，自行判断是否吸收、如何吸收。）"
         )
 
         trigger_message = Message(
@@ -386,9 +408,9 @@ class LifeEngineWakeDFCTool(BaseTool):
             f"reason={reason or '未说明'} "
         )
 
-        note = "已沉淀到同一主体的表达层待处理队列。表达层会结合当前上下文自然融入回复。"
+        note = "已补充到同一主体的表达层待处理队列。表达层会自行判断是否吸收；这不是指令。"
         if proactive_wake:
-            note = "已沉淀并主动唤醒同一主体的表达层。请仅在必须即时介入时使用此模式。"
+            note = "已补充并主动唤醒同一主体的表达层。请仅在存在高优先级信息差且必须即时介入时使用此模式。"
 
         result = {
             "action": "message_to_dfc",
