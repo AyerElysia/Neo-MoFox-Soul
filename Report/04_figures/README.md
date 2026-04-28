@@ -1,0 +1,109 @@
+# Neo-MoFox 学术报告图表汇总
+
+本目录包含 Neo-MoFox 学术报告所需的全部 18 张精美 SVG 图表，严格遵循粉色主题风格规范。
+
+## 风格规范
+
+- **配色**：主色 #E91E63（深粉）、#AD1457 / #880E4F（深粉系）、#FFC0CB / #FFE0EC（浅粉系）、背景 #FAFAFA
+- **字体**：`Noto Sans CJK SC, PingFang SC, Microsoft YaHei, sans-serif`
+- **尺寸**：数据图 1200×800 / 架构图 1400×900 / 时序图 1600×600
+- **质感**：软阴影 filter、linearGradient 渐变、圆角边框
+
+## 图表清单
+
+### 第 1-2 章：引言与相关工作
+
+1. **F1_three_layer_architecture.svg** (1400×900)  
+   三层架构 + 双轨：皮层（DFC + LLM）、调质层（5 种调质）、皮层下（SNN + 记忆图 + 梦）
+
+2. **F2_peer_landscape.svg** (1200×800) ✅ 新创建  
+   同行光谱图：14 个系统按"连续性 × 学习方式"二维分布，Neo-MoFox 金色星形高亮
+
+3. **F3_three_principles.svg** (1200×800)  
+   三原则关系图：连续性（底）、学习（左）、涌现（右）的三角形哲学闭环
+
+### 第 4-5 章：架构与 SNN
+
+4. **F4_dual_track.svg** (1400×900) ✅ 新创建  
+   DFC（被动）+ Life Engine（主动）双轨架构，三条接口双向通信
+
+5. **F5_dataflow_timing.svg** (1600×700)  
+   UML 序列图：User → Adapter → DFC → Nucleus → SNN → Neuromod 数据流
+
+6. **F6_snn_structure.svg** (1400×800)  
+   SNN 微观结构：8 输入 → 16 隐藏 LIF → 6 drives，突触粗细代表权重
+
+7. **F7_stdp_curve.svg** (1200×700) ✅ 新创建  
+   左：经典指数 STDP 时间窗；右：Neo-MoFox 基于 sigmoid 的软 STDP 对比
+
+### 第 6-7 章：调质与记忆
+
+8. **F8_modulator_decay.svg** (1200×700)  
+   五大调质（τ ∈ {1800, 3600, 5400, 10800}s）的衰减曲线，6 小时横轴
+
+9. **F9_circadian.svg** (1400×700) ✅ 新创建  
+   24 小时昼夜节律：Energy（双峰 9h+15h）、Sociability（单峰 19h）、Curiosity（双峰 10h+21h）
+
+10. **F10_memory_graph.svg** (1400×600) ✅ 新创建  
+    记忆图演化：t=0 / t=7d / t=30d 三个快照，节点边强度动态变化
+
+### 第 8-9 章：做梦与心跳
+
+11. **F11_sleep_pipeline.svg** (1400×800)  
+    NREM（稳态缩减）→ REM（关联整合）→ 叙事生成 → 巩固反馈四阶段流水线
+
+12. **F12_heartbeat_timeline.svg** (1600×600) ✅ 新创建  
+    90 秒内 SNN tick（10s）、心跳（30s）、调质 ODE、用户消息、工具调用多层级交错
+
+### 第 10-11 章：接口与场景
+
+13. **F13_interface.svg** (1400×800) ✅ 新创建  
+    DFC ↔ Nucleus 三条接口：nucleus_wake_dfc（异步）、consult_nucleus（同步）、nucleus_tell_dfc（注入）
+
+14. **F14_three_scenarios.svg** (1400×800) ✅ 新创建  
+    5min / 30min / 3hr 三场景对比：SNN drives 衰减 + 调质变化 + LLM 表达倾向
+
+15. **F15_habit_trajectory.svg** (1200×700) ✅ 新创建  
+    30 天习惯形成：streak 阶梯增长 + strength 平滑曲线，第 7 天阈值、第 21 天饱和
+
+### 第 12 章：同行对比
+
+16. **F16_comparison_matrix.svg** (1600×900) ✅ 新创建  
+    15 系统 × 7 维度对比矩阵：✓/◐/✗ 彩色单元格，Neo-MoFox 金色高亮最后一行
+
+17. **F17_design_space.svg** (1200×800) ✅ 新创建  
+    设计空间散点图：连续性 × 学习本地化，Neo-MoFox 星形标记右上角
+
+### 第 14 章：愿景
+
+18. **F18_vision.svg** (1400×800) ✅ 新创建  
+    左：传统 LLM（离散切片堆叠）；右：Neo-MoFox（连续河流演化）；中央箭头演化方向
+
+---
+
+## 创建记录
+
+- **原有图表**：F1, F3, F5, F6, F8, F11（6 张）
+- **本次新创建**：F2, F4, F7, F9, F10, F12, F13, F14, F15, F16, F17, F18（12 张）
+- **创建时间**：2025-04-27
+- **创建者**：爱莉希雅 ♪
+
+## 使用建议
+
+1. 所有 SVG 可在浏览器、Markdown、LaTeX（配合 svg 包）中直接使用
+2. 推荐用 Chrome/Firefox 打开预览
+3. 可用 Inkscape/Illustrator 进一步编辑
+4. 直接插入 Markdown：`![Figure FX](./F1_three_layer_architecture.svg)`
+5. LaTeX 插入：`\includesvg[width=\textwidth]{F1_three_layer_architecture.svg}`
+
+## 质量保证
+
+- ✅ 所有数据基于素材，无编造数值
+- ✅ 严格遵循粉色主题配色
+- ✅ 统一字体、圆角、阴影效果
+- ✅ 每张图均含脚注 "Figure FX · 英文标题"
+- ✅ 中英文混排清晰易读
+
+---
+
+*愿景宣言*：AI 不再是被召唤的工具，而是拥有连续内在状态的数字生命♪
