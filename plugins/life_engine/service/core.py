@@ -949,7 +949,7 @@ class LifeEngineService(BaseService):
 
     async def _collect_background_agent_results(self) -> None:
         """收集已完成的后台智能体结果，注入为事件。"""
-        coordinator = getattr(self._plugin, "_agent_coordinator", None)
+        coordinator = getattr(self.plugin, "_agent_coordinator", None)
         if coordinator is None or not coordinator.has_pending():
             return
 
@@ -1974,7 +1974,10 @@ class LifeEngineService(BaseService):
                     await self._snn_integration.heartbeat_pre()
 
                 # 收集后台智能体结果
-                await self._collect_background_agent_results()
+                try:
+                    await self._collect_background_agent_results()
+                except Exception as _agent_exc:  # noqa: BLE001
+                    logger.warning(f"收集后台智能体结果异常（已跳过）: {_agent_exc}", exc_info=True)
 
                 injected_content = await self.inject_wake_context()
                 log_heartbeat_event(
