@@ -27,6 +27,7 @@ from .compat_tools import (
     LifeMessageNucleusTool,
     LifeConsultNucleusTool,
 )
+from ..agents import register_builtin_agents
 
 
 logger = get_logger("life_engine", display="life_engine")
@@ -110,6 +111,7 @@ class LifeEnginePlugin(BasePlugin):
 
     async def on_plugin_loaded(self) -> None:
         """插件加载后启动心跳。"""
+        register_builtin_agents()
         setup_life_audit_logger()
         if isinstance(self.config, LifeEngineConfig) and not self.config.settings.enabled:
             logger.info("life_engine 已禁用，未启动")

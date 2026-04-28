@@ -21,6 +21,7 @@ class EventType(str, Enum):
     HEARTBEAT = "heartbeat"      # 心跳回复（内部思考）
     TOOL_CALL = "tool_call"      # 工具调用
     TOOL_RESULT = "tool_result"  # 工具返回结果
+    AGENT_RESULT = "agent_result"  # 后台智能体执行结果
 
 
 @dataclass(slots=True)
@@ -381,6 +382,30 @@ class EventBuilder:
             content=_shorten_text(result, max_length=500),
             content_type="tool_result",
             tool_name=tool_name,
+            tool_success=success,
+        )
+
+    def build_agent_result_event(
+        self,
+        agent_type: str,
+        result_text: str,
+        *,
+        success: bool = True,
+        rounds: int = 0,
+        duration_ms: int = 0,
+    ) -> LifeEngineEvent:
+        """构建后台智能体执行结果事件。"""
+        status = "成功" if success else "失败"
+        return LifeEngineEvent(
+            event_id=f"agent_result_{self._next_sequence()}",
+            event_type=EventType.AGENT_RESULT,
+            timestamp=_now_iso(),
+            sequence=self._next_sequence(),
+            source=INTERNAL_PLATFORM,
+            source_detail=f"后台智能体 | {agent_type} | {status} | {rounds}轮 | {duration_ms}ms",
+            content=_shorten_text(result_text, max_length=500),
+            content_type="agent_result",
+            tool_name=f"agent:{agent_type}",
             tool_success=success,
         )
 

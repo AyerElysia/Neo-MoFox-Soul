@@ -136,18 +136,16 @@
 
 ## 2. 她会用哪些能力（工具全览）
 
-总共 24 种能力，按 6 组：
+总共 25 种能力，按 7 组：
 
-### A. 文件与空间整理（10）
+### A. 文件与空间整理（8）
 
 - `nucleus_read_file` 读内容  
 - `nucleus_write_file` 新建/覆盖  
 - `nucleus_edit_file` 精准改段落  
-- `nucleus_move_file` 挪动/改名  
-- `nucleus_delete_file` 删除  
 - `nucleus_list_files` 看目录  
-- `nucleus_file_info` 看详情  
 - `nucleus_mkdir` 建目录  
+- `nucleus_bash` 执行命令（移动/删除文件也可用此工具）
 - `nucleus_tell_dfc` 给对外运行模式留直觉
 - `nucleus_run_agent` 分派子任务
 
@@ -159,23 +157,24 @@
 
 - `fetch_chat_history` 检索历史消息（支持跨流、时间范围、NapCat 回补）
 
-### D. 愿望清单（5）
+### D. 愿望清单（2）
 
-- `nucleus_create_todo`
-- `nucleus_edit_todo`
-- `nucleus_list_todos`
-- `nucleus_get_todo`
-- `nucleus_delete_todo`
+- `nucleus_manage_todo` 管理待办（通过 action=create/edit/delete 操作）
+- `nucleus_list_todos` 查看待办（传 todo_id 查详情，不传返回列表）
 
 ### E. 记忆网络（5）
 
-- `nucleus_search_memory` 找记忆 + 联想  
-- `nucleus_relate_file` 建立“这两件事有关”  
-- `nucleus_view_relations` 看关系图  
-- `nucleus_forget_relation` 弱化/删除关系  
+- `nucleus_search_memory` 找记忆 + 联想
+- `nucleus_relate_file` 建立”这两件事有关”
+- `nucleus_view_relations` 看关系图
+- `nucleus_forget_relation` 弱化/删除关系
 - `nucleus_memory_stats` 看记忆整体状态
 
-### F. 网络世界（2）
+### F. 思考流（1）
+
+- `nucleus_manage_thought_stream` 管理持久兴趣线索（通过 action=create/list/advance/retire 操作）
+
+### G. 网络世界（2）
 
 - `nucleus_web_search` 联网搜索（Tavily）
 - `nucleus_browser_fetch` 打开网页并提取正文（Tavily Extract）

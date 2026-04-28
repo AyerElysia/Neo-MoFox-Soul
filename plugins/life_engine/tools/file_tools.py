@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import json
 import re
-import shutil
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -680,181 +679,8 @@ class LifeEngineEditFileTool(BaseTool):
             return False, f"编辑文件失败: {e}"
 
 
-class LifeEngineMoveFileTool(BaseTool):
-    """移动/重命名文件工具。"""
-
-    tool_name: str = "nucleus_move_file"
-    tool_description: str = (
-        "移动或重命名文件/目录。\n\n"
-        "**何时使用：** 整理文件结构、重命名文件时。\n"
-        "**💡 记忆提示：** 本工具会在移动后自动迁移对应的记忆路径映射（节点/关联/索引）。"
-        "如果迁移失败，会在返回里给出失败数量，建议随后手动检查。"
-    )
-    chatter_allow: list[str] = ["life_engine_internal"]
-
-    async def execute(
-        self,
-        source: Annotated[str, "源路径（相对于工作空间）"],
-        destination: Annotated[str, "目标路径（相对于工作空间）"],
-    ) -> tuple[bool, str | dict]:
-        """移动或重命名文件/目录。
-
-        Args:
-            source: 源路径
-            destination: 目标路径
-
-        Returns:
-            成功返回 (True, {"source": ..., "destination": ...})
-            失败返回 (False, error_message)
-        """
-        valid_src, result_src = _resolve_path(self.plugin, source)
-        if not valid_src:
-            return False, f"源路径无效: {result_src}"
-
-        valid_dst, result_dst = _resolve_path(self.plugin, destination)
-        if not valid_dst:
-            return False, f"目标路径无效: {result_dst}"
-
-        src_path = result_src
-        dst_path = result_dst
-
-        if not src_path.exists():
-            return False, f"源文件/目录不存在: {source}"
-
-        try:
-            workspace = _get_workspace(self.plugin)
-            src_is_dir = src_path.is_dir()
-            files_before_move: list[Path] = []
-            if src_is_dir:
-                files_before_move = [p for p in src_path.rglob("*") if p.is_file()]
-            elif src_path.is_file():
-                files_before_move = [src_path]
-
-            dst_path.parent.mkdir(parents=True, exist_ok=True)
-            moved_to = Path(shutil.move(str(src_path), str(dst_path))).resolve()
-
-            migrated_count = 0
-            failed_count = 0
-            failed_items: list[str] = []
-            try:
-                from ..service import LifeEngineService
-
-                life_service = LifeEngineService.get_instance()
-                memory_service = getattr(life_service, "_memory_service", None) if life_service else None
-                if memory_service:
-                    for old_file in files_before_move:
-                        try:
-                            if src_is_dir:
-                                suffix = old_file.relative_to(src_path)
-                                new_file = moved_to / suffix
-                            else:
-                                new_file = moved_to
-
-                            old_rel = old_file.relative_to(workspace).as_posix()
-                            new_rel = new_file.relative_to(workspace).as_posix()
-
-                            migrated = await memory_service.migrate_file_path(old_rel, new_rel)
-                            if migrated:
-                                migrated_count += 1
-                        except Exception as item_exc:  # noqa: BLE001
-                            failed_count += 1
-                            failed_items.append(f"{old_file}: {item_exc}")
-                    if failed_count > 0:
-                        logger.warning(
-                            f"move 后记忆迁移部分失败: failed={failed_count}, details={failed_items[:3]}"
-                        )
-            except Exception as mem_exc:  # noqa: BLE001
-                logger.warning(f"move 后记忆迁移流程异常（不影响文件移动）: {mem_exc}")
-
-            return True, {
-                "action": "move_file",
-                "source": source,
-                "destination": destination,
-                "source_absolute": str(src_path),
-                "destination_absolute": str(moved_to),
-                "memory_migration": {
-                    "attempted_files": len(files_before_move),
-                    "migrated_files": migrated_count,
-                    "failed_files": failed_count,
-                },
-            }
-        except Exception as e:
-            logger.error(f"移动文件失败 {source} -> {destination}: {e}", exc_info=True)
-            return False, f"移动文件失败: {e}"
-
-
-class LifeEngineDeleteFileTool(BaseTool):
-    """删除文件工具。"""
-
-    tool_name: str = "nucleus_delete_file"
-    tool_description: str = (
-        "删除文件或目录。\n\n"
-        "**⚠️ 慎用：** 删除操作不可撤销。\n"
-        "- 非空目录需要 recursive=True\n"
-        "- 删除前建议先用 nucleus_read_file 确认内容"
-    )
-    chatter_allow: list[str] = ["life_engine_internal"]
-
-    async def execute(
-        self,
-        path: Annotated[str, "相对于工作空间的文件/目录路径"],
-        recursive: Annotated[bool, "是否递归删除目录（危险操作）"] = False,
-    ) -> tuple[bool, str | dict]:
-        """删除文件或目录。
-
-        Args:
-            path: 相对于工作空间的路径
-            recursive: 是否递归删除目录（仅对目录有效）
-
-        Returns:
-            成功返回 (True, {"path": ..., "type": ...})
-            失败返回 (False, error_message)
-        """
-        valid, result = _resolve_path(self.plugin, path)
-        if not valid:
-            return False, str(result)
-
-        target = result
-        if not target.exists():
-            return False, f"文件/目录不存在: {path}"
-
-        try:
-            if target.is_file():
-                target.unlink()
-                return True, {
-                    "action": "delete_file",
-                    "path": path,
-                    "absolute_path": str(target),
-                    "type": "file",
-                }
-            elif target.is_dir():
-                if recursive:
-                    shutil.rmtree(target)
-                    return True, {
-                        "action": "delete_file",
-                        "path": path,
-                        "absolute_path": str(target),
-                        "type": "directory",
-                        "recursive": True,
-                    }
-                else:
-                    target.rmdir()  # 只能删除空目录
-                    return True, {
-                        "action": "delete_file",
-                        "path": path,
-                        "absolute_path": str(target),
-                        "type": "directory",
-                        "recursive": False,
-                    }
-            else:
-                return False, f"不支持的文件类型: {path}"
-        except OSError as e:
-            if "not empty" in str(e).lower() or "目录非空" in str(e):
-                return False, "目录非空，如需删除请设置 recursive=True"
-            return False, f"删除失败: {e}"
-        except Exception as e:
-            logger.error(f"删除文件失败 {path}: {e}", exc_info=True)
-            return False, f"删除失败: {e}"
+# LifeEngineMoveFileTool 和 LifeEngineDeleteFileTool 已移除。
+# 移动/删除文件可通过 nucleus_bash 执行 mv/rm 命令实现。
 
 
 class LifeEngineListFilesTool(BaseTool):
@@ -870,7 +696,7 @@ class LifeEngineListFilesTool(BaseTool):
         "\n"
         "**何时不用：**\n"
         "- ✗ 想搜索文件内容 → 用 nucleus_grep_file\n"
-        "- ✗ 想看一个文件的详细信息 → 用 nucleus_file_info"
+        "- ✗ 想看文件的大小/修改时间等 → nucleus_list_files 返回的列表已经包含这些信息"
     )
     chatter_allow: list[str] = ["life_engine_internal"]
 
@@ -942,67 +768,6 @@ class LifeEngineListFilesTool(BaseTool):
         except Exception as e:
             logger.error(f"列出目录失败 {path}: {e}", exc_info=True)
             return False, f"列出目录失败: {e}"
-
-
-class LifeEngineFileInfoTool(BaseTool):
-    """获取文件详细信息工具。"""
-
-    tool_name: str = "nucleus_file_info"
-    tool_description: str = "获取文件或目录的详细元数据（大小、修改时间、子项数量等）。"
-    chatter_allow: list[str] = ["life_engine_internal"]
-
-    async def execute(
-        self,
-        path: Annotated[str, "相对于工作空间的文件/目录路径"],
-    ) -> tuple[bool, str | dict]:
-        """获取文件或目录的详细信息。
-
-        Args:
-            path: 相对于工作空间的路径
-
-        Returns:
-            成功返回 (True, {"path": ..., "type": ..., "size": ..., ...})
-            失败返回 (False, error_message)
-        """
-        valid, result = _resolve_path(self.plugin, path)
-        if not valid:
-            return False, str(result)
-
-        target = result
-        if not target.exists():
-            return False, f"文件/目录不存在: {path}"
-
-        try:
-            stat = target.stat()
-            info = {
-                "action": "file_info",
-                "path": path,
-                "absolute_path": str(target),
-                "name": target.name,
-                "type": "directory" if target.is_dir() else "file",
-                "size": stat.st_size,
-                "size_human": _format_size(stat.st_size),
-                "created_at": _format_time(stat.st_ctime),
-                "modified_at": _format_time(stat.st_mtime),
-                "accessed_at": _format_time(stat.st_atime),
-            }
-
-            if target.is_file():
-                info["extension"] = target.suffix or None
-
-            if target.is_dir():
-                try:
-                    children = list(target.iterdir())
-                    info["child_count"] = len(children)
-                    info["child_files"] = len([c for c in children if c.is_file()])
-                    info["child_dirs"] = len([c for c in children if c.is_dir()])
-                except PermissionError:
-                    info["child_count"] = "permission_denied"
-
-            return True, info
-        except Exception as e:
-            logger.error(f"获取文件信息失败 {path}: {e}", exc_info=True)
-            return False, f"获取文件信息失败: {e}"
 
 
 class LifeEngineMakeDirectoryTool(BaseTool):
@@ -1092,159 +857,87 @@ class LifeEngineRunAgentTool(BaseTool):
         context: Annotated[str, "背景信息：你已经了解的、排除的、尝试过的"] = "",
         expected_output: Annotated[str, "期望的输出形式（如 '生成一个文件' 或 '返回一段总结'）"] = "",
         max_rounds: Annotated[int, "最大工具调用轮数（默认 5）"] = 5,
+        subagent_type: Annotated[str, "智能体类型: explore, plan, general-purpose, verification"] = "general-purpose",
+        run_in_background: Annotated[bool, "是否后台异步运行（结果在下次心跳注入）"] = False,
     ) -> tuple[bool, str | dict]:
         """启动子代理执行复杂任务。
 
-        子代理在独立上下文中运行，拥有与你相同的文件操作工具，
-        但不能使用 nucleus_tell_dfc 和 nucleus_run_agent（防止嵌套）。
+        子代理在独立上下文中运行，工具权限由智能体类型决定。
+        general-purpose 拥有完整读写能力，explore/plan/verification 为只读。
 
         Returns:
-            成功返回 (True, {"task": ..., "result": ..., "rounds": ...})
+            成功返回 (True, {"task": ..., "result": ..., "rounds": ..., "agent_type": ...})
             失败返回 (False, error_message)
         """
         if not task.strip():
             return False, "任务描述不能为空"
 
-        # 构建子代理提示词（简报原则）
-        prompt_parts = [
-            "你是生命中枢分派的子代理，正在完成一个具体任务。",
-            "完成后清晰地报告：做了什么、结果是什么、过程中发现了什么。",
-            "",
-            "## 任务简报",
-            "",
-            task.strip(),
-        ]
-
-        if context.strip():
-            prompt_parts.extend([
-                "",
-                "## 背景信息",
-                "",
-                context.strip(),
-            ])
-
-        if expected_output.strip():
-            prompt_parts.extend([
-                "",
-                "## 期望输出",
-                "",
-                expected_output.strip(),
-            ])
-
-        prompt_parts.extend([
-            "",
-            "## 执行原则",
-            "",
-            "- 直接开始执行，不要询问或确认",
-            "- 使用工具完成任务时，注意先读后改",
-            "- 完成后报告：(1) 做了什么 (2) 结果是什么 (3) 发现了什么",
-            "- 如果遇到阻碍，说明原因并报告当前已完成的部分",
-        ])
-
-        task_prompt = "\n".join(prompt_parts)
-
         try:
-            from ..core.config import LifeEngineConfig
+            from ..agents.registry import get_agent_type_registry
+            from ..agents.runner import AgentRunner
+            from ..agents.coordinator import AgentCoordinator
 
-            config = getattr(self.plugin, "config", None)
-            if not isinstance(config, LifeEngineConfig):
-                return False, "无法获取配置"
+            registry = get_agent_type_registry()
+            type_def = registry.get(subagent_type)
+            if type_def is None:
+                return False, f"未知智能体类型: {subagent_type}"
 
-            from src.app.plugin_system.api.llm_api import create_llm_request, get_model_set_by_task
-            from src.kernel.llm import LLMPayload, ROLE, Text, ToolRegistry, ToolResult
+            # 允许调用方覆盖 max_rounds
+            if max_rounds > 0 and max_rounds != type_def.max_rounds:
+                from dataclasses import replace
+                type_def = replace(type_def, max_rounds=max(1, min(20, max_rounds)))
 
-            task_name = "sub_actor"
-            model_set = get_model_set_by_task(task_name)
-            if not model_set:
-                return False, f"找不到模型配置: {task_name}"
+            # 拼接上下文信息
+            full_context = context
+            if expected_output.strip():
+                full_context = f"{full_context}\n\n期望输出: {expected_output.strip()}" if full_context else f"期望输出: {expected_output.strip()}"
 
-            # 获取子代理可用工具（排除自身和 tell_dfc，防止嵌套和越权）
-            from .todo_tools import TODO_TOOLS
-            from ..memory.tools import MEMORY_TOOLS
-            from .grep_tools import GREP_TOOLS
-            from .web_tools import WEB_TOOLS
+            # 后台模式：通过 AgentCoordinator 异步执行
+            if run_in_background:
+                coordinator = self._get_coordinator()
+                agent_id = await coordinator.spawn(
+                    agent_type=subagent_type,
+                    task=task,
+                    context=full_context,
+                )
+                return True, {
+                    "action": "run_agent_background",
+                    "task": task[:200],
+                    "agent_id": agent_id,
+                    "agent_type": subagent_type,
+                    "status": "running",
+                }
 
-            excluded_names = {"nucleus_run_agent", "nucleus_tell_dfc"}
-            agent_tools = []
-            for tool_cls in ALL_TOOLS + TODO_TOOLS + MEMORY_TOOLS + GREP_TOOLS + WEB_TOOLS:
-                if hasattr(tool_cls, "tool_name") and tool_cls.tool_name not in excluded_names:
-                    agent_tools.append(tool_cls)
-
-            registry = ToolRegistry()
-            for tool_cls in agent_tools:
-                registry.register(tool_cls)
-
-            # 创建请求
-            workspace = Path(config.settings.workspace_path)
-            system_prompt = (
-                "你是生命中枢的子代理。接下来有一个具体任务需要你完成。\n"
-                f"工作空间: {workspace}\n"
-                "使用工具完成任务，最后简洁地报告结果。"
+            # 同步模式：直接执行
+            runner = AgentRunner(
+                plugin=self.plugin,
+                agent_type_def=type_def,
+                task_prompt=task,
+                context=full_context,
             )
+            result = await runner.run()
 
-            request = create_llm_request(
-                model_set=model_set,
-                request_name="life_engine_agent",
-            )
-            request.add_payload(LLMPayload(ROLE.SYSTEM, Text(system_prompt)))
-            request.add_payload(LLMPayload(ROLE.TOOL, agent_tools))
-            request.add_payload(LLMPayload(ROLE.USER, Text(task_prompt)))
-
-            # 执行多轮工具调用
-            max_rounds = max(1, min(10, max_rounds))
-            final_result = ""
-            round_num = 0
-
-            response = await request.send(stream=False)
-
-            for round_num in range(max_rounds):
-                response_text = await response
-                reply_text = str(response_text or "").strip()
-
-                call_list = list(getattr(response, "call_list", []) or [])
-                if not call_list:
-                    final_result = reply_text
-                    break
-
-                # 执行工具调用
-                for call in call_list:
-                    tool_name = getattr(call, "name", "") or ""
-                    raw_args = getattr(call, "args", {}) or {}
-                    args = dict(raw_args) if isinstance(raw_args, dict) else {}
-
-                    usable_cls = registry.get(tool_name)
-                    if usable_cls:
-                        try:
-                            tool_instance = usable_cls(plugin=self.plugin)
-                            success, result = await tool_instance.execute(**args)
-                            result_text = str(result) if success else f"失败: {result}"
-                        except Exception as exc:
-                            result_text = f"异常: {exc}"
-                    else:
-                        result_text = f"未知工具: {tool_name}"
-
-                    call_id = getattr(call, "id", None)
-                    response.add_payload(
-                        LLMPayload(
-                            ROLE.TOOL_RESULT,
-                            ToolResult(value=result_text, call_id=call_id, name=tool_name),
-                        )
-                    )
-
-                response = await response.send(stream=False)
+            if result.success:
+                return True, {
+                    "action": "run_agent",
+                    "task": task[:200],
+                    "result": result.result_text,
+                    "rounds": result.rounds_used,
+                    "agent_type": subagent_type,
+                }
             else:
-                final_result = reply_text if reply_text else f"子代理在 {max_rounds} 轮内未完成"
-
-            return True, {
-                "action": "run_agent",
-                "task": task[:200],
-                "result": final_result,
-                "rounds": round_num + 1,
-            }
+                return False, result.result_text
 
         except Exception as e:
             logger.error(f"执行子代理失败: {e}", exc_info=True)
             return False, f"执行失败: {e}"
+
+    def _get_coordinator(self) -> AgentCoordinator:
+        """获取或创建 AgentCoordinator 单例。"""
+        if not hasattr(self.plugin, "_agent_coordinator"):
+            from ..agents.coordinator import AgentCoordinator
+            self.plugin._agent_coordinator = AgentCoordinator(self.plugin)
+        return self.plugin._agent_coordinator
 
 
 class FetchLifeMemoryTool(BaseTool):
@@ -1409,10 +1102,7 @@ ALL_TOOLS = [
     LifeEngineReadFileTool,
     LifeEngineWriteFileTool,
     LifeEngineEditFileTool,
-    LifeEngineMoveFileTool,
-    LifeEngineDeleteFileTool,
     LifeEngineListFilesTool,
-    LifeEngineFileInfoTool,
     LifeEngineMakeDirectoryTool,
     LifeEngineWakeDFCTool,
     LifeEngineRunAgentTool,

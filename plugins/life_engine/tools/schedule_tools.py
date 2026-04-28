@@ -4,8 +4,7 @@
 - 创建
 - 修改
 - 删除
-- 查询
-- 列表
+- 查询/列表
 
 仅允许几类安全模板：
 - heartbeat: 触发一次心跳
@@ -32,6 +31,7 @@ logger = log_api.get_logger("life_engine.schedule_tools")
 
 ScheduleKind = Literal["heartbeat", "dream", "message"]
 TriggerMode = Literal["at", "delay", "interval"]
+ScheduleAction = Literal["create", "update", "delete"]
 
 _REGISTRY_FILE = "life_engine_schedules.json"
 _REGISTRY_VERSION = 1
@@ -486,36 +486,71 @@ async def cleanup_life_schedules(plugin: Any) -> int:
     return removed
 
 
-class LifeEngineCreateScheduleTool(BaseTool):
-    """创建生命中枢定时任务。"""
+def _resolve_single_record(store: ScheduleStore, task_ref: str) -> tuple[bool, ScheduleRecord | str]:
+    """解析 task_ref 到单条记录，失败返回 (False, error_msg)。"""
+    ref = _normalize_text(task_ref)
+    if not ref:
+        return False, "task_ref 不能为空"
+    matches = store.find_matches(ref)
+    if not matches:
+        return False, "没有找到对应的定时任务"
+    if len(matches) > 1:
+        return False, "task_ref 对应多个任务，请改用更精确的 record_id 或 schedule_id"
+    return True, matches[0]
 
-    tool_name = "nucleus_create_schedule"
+
+class LifeEngineManageScheduleTool(BaseTool):
+    """管理生命中枢定时任务（创建/修改/删除合一）。"""
+
+    tool_name = "nucleus_manage_schedule"
     tool_description = (
-        "为生命中枢创建一个定时任务。"
-        "适合用来安排心跳、做梦、或在某个时间点给自己塞一句提醒。"
+        "管理生命中枢定时任务：创建、修改或删除。"
         "仅允许安全模板：heartbeat / dream / message。"
         "\n\n"
-        "trigger_mode 说明："
-        "- at: 绝对时间触发，使用 trigger_at"
-        "- delay: 相对延迟触发，使用 delay_seconds"
-        "- interval: 周期触发，使用 interval_seconds"
+        "**action=create** — 创建新的定时任务。"
+        "\ntrigger_mode 说明：at（绝对时间）/ delay（相对延迟）/ interval（周期触发）。"
+        "如果想安排每天/每隔一段时间执行一次，请优先选择 interval。"
         "\n\n"
-        "如果你想安排每天/每隔一段时间执行一次，请优先选择 interval。"
+        "**action=update** — 修改已有的定时任务。只改部分字段，其他保持不变。"
+        "\n\n"
+        "**action=delete** — 删除定时任务，从调度器和登记册中移除。"
     )
     chatter_allow: list[str] = ["life_engine_internal", "life_chatter"]
 
     async def execute(
         self,
-        title: Annotated[str, "任务标题，尽量简短清楚，用于识别这条定时任务"],
-        kind: Annotated[ScheduleKind, "任务模板：heartbeat / dream / message"],
+        action: Annotated[ScheduleAction, "操作：create / update / delete"],
+        # create & update 共用参数
+        title: Annotated[str, "任务标题（create 必填，update 可选）"] = "",
+        kind: Annotated[ScheduleKind, "任务模板：heartbeat / dream / message"] = "message",
         trigger_mode: Annotated[TriggerMode, "触发方式：at / delay / interval"] = "delay",
         trigger_at: Annotated[str | None, "绝对时间（ISO 格式）"] = None,
         delay_seconds: Annotated[float | None, "延迟秒数"] = None,
         interval_seconds: Annotated[float | None, "周期秒数"] = None,
-        recurring: Annotated[bool, "是否循环执行。interval 模式会自动视为循环"] = False,
+        recurring: Annotated[bool | None, "是否循环执行"] = None,
         message: Annotated[str, "kind=message 时要注入的提醒内容"] = "",
-        notes: Annotated[str, "补充说明，帮助以后理解为什么要安排这个任务"] = "",
-        replace_existing: Annotated[bool, "若已存在同标题任务，先移除旧任务再创建"] = True,
+        notes: Annotated[str, "补充说明"] = "",
+        # create 专用
+        replace_existing: Annotated[bool, "create 时若已存在同标题任务，先移除旧任务再创建"] = True,
+        # update & delete 专用
+        task_ref: Annotated[str, "任务引用：record_id / schedule_id / task_name / title（update/delete 必填）"] = "",
+    ) -> tuple[bool, str | dict]:
+        if action == "create":
+            return await self._create(title, kind, trigger_mode, trigger_at,
+                                      delay_seconds, interval_seconds, recurring,
+                                      message, notes, replace_existing)
+        if action == "update":
+            return await self._update(task_ref, title, kind, trigger_mode, trigger_at,
+                                      delay_seconds, interval_seconds, recurring,
+                                      message, notes)
+        if action == "delete":
+            return await self._delete(task_ref)
+        return False, f"未知 action: {action}，请使用 create/update/delete"
+
+    async def _create(
+        self, title, kind, trigger_mode, trigger_at,
+        delay_seconds, interval_seconds, recurring,
+        message, notes, replace_existing,
     ) -> tuple[bool, str | dict]:
         title_text = _normalize_text(title)
         if not title_text:
@@ -534,7 +569,8 @@ class LifeEngineCreateScheduleTool(BaseTool):
 
         try:
             trigger_type, trigger_config, recurring_value = _build_trigger_spec(
-                trigger_mode_value, trigger_at, delay_seconds, interval_seconds, recurring
+                trigger_mode_value, trigger_at, delay_seconds, interval_seconds,
+                bool(recurring) if recurring is not None else False,
             )
         except Exception as exc:  # noqa: BLE001
             return False, f"触发配置无效: {exc}"
@@ -595,43 +631,17 @@ class LifeEngineCreateScheduleTool(BaseTool):
             "notes": record.notes,
         }
 
-
-class LifeEngineUpdateScheduleTool(BaseTool):
-    """修改生命中枢定时任务。"""
-
-    tool_name = "nucleus_update_schedule"
-    tool_description = (
-        "修改一个已有的生命中枢定时任务。"
-        "可以调整标题、模板类型、触发方式、时间参数、提醒内容等。"
-        "如果只改部分字段，其他字段会保持不变。"
-    )
-    chatter_allow: list[str] = ["life_engine_internal", "life_chatter"]
-
-    async def execute(
-        self,
-        task_ref: Annotated[str, "任务引用：record_id / schedule_id / task_name / title"],
-        title: Annotated[str | None, "新的任务标题"] = None,
-        kind: Annotated[ScheduleKind | None, "新的任务模板"] = None,
-        trigger_mode: Annotated[TriggerMode | None, "新的触发方式"] = None,
-        trigger_at: Annotated[str | None, "新的绝对时间"] = None,
-        delay_seconds: Annotated[float | None, "新的延迟秒数"] = None,
-        interval_seconds: Annotated[float | None, "新的周期秒数"] = None,
-        recurring: Annotated[bool | None, "是否循环执行"] = None,
-        message: Annotated[str | None, "新的提醒内容"] = None,
-        notes: Annotated[str | None, "新的说明"] = None,
+    async def _update(
+        self, task_ref, title, kind, trigger_mode, trigger_at,
+        delay_seconds, interval_seconds, recurring,
+        message, notes,
     ) -> tuple[bool, str | dict]:
-        ref = _normalize_text(task_ref)
-        if not ref:
-            return False, "task_ref 不能为空"
-
         store = _get_store(self.plugin)
-        matches = store.find_matches(ref)
-        if not matches:
-            return False, "没有找到对应的定时任务"
-        if len(matches) > 1:
-            return False, "task_ref 对应多个任务，请改用更精确的 record_id 或 schedule_id"
+        ok, result = _resolve_single_record(store, task_ref)
+        if not ok:
+            return False, str(result)
+        record = result
 
-        record = matches[0]
         new_title = _normalize_text(title) or record.title
         new_kind = _normalize_text(kind) or record.kind
         if new_kind not in {"heartbeat", "dream", "message"}:
@@ -691,33 +701,13 @@ class LifeEngineUpdateScheduleTool(BaseTool):
             "notes": record.notes,
         }
 
-
-class LifeEngineDeleteScheduleTool(BaseTool):
-    """删除生命中枢定时任务。"""
-
-    tool_name = "nucleus_delete_schedule"
-    tool_description = (
-        "删除一个已有的生命中枢定时任务。"
-        "删除后任务会从调度器中移除，并从登记册中清掉。"
-    )
-    chatter_allow: list[str] = ["life_engine_internal", "life_chatter"]
-
-    async def execute(
-        self,
-        task_ref: Annotated[str, "任务引用：record_id / schedule_id / task_name / title"],
-    ) -> tuple[bool, str | dict]:
-        ref = _normalize_text(task_ref)
-        if not ref:
-            return False, "task_ref 不能为空"
-
+    async def _delete(self, task_ref: str) -> tuple[bool, str | dict]:
         store = _get_store(self.plugin)
-        matches = store.find_matches(ref)
-        if not matches:
-            return False, "没有找到对应的定时任务"
-        if len(matches) > 1:
-            return False, "task_ref 对应多个任务，请改用更精确的 record_id 或 schedule_id"
+        ok, result = _resolve_single_record(store, task_ref)
+        if not ok:
+            return False, str(result)
+        record = result
 
-        record = matches[0]
         await _remove_scheduler_task_by_record(self.plugin, record)
         removed = store.remove(record.record_id)
         if not removed:
@@ -733,53 +723,38 @@ class LifeEngineDeleteScheduleTool(BaseTool):
         }
 
 
-class LifeEngineGetScheduleTool(BaseTool):
-    """查询单个生命中枢定时任务。"""
-
-    tool_name = "nucleus_get_schedule"
-    tool_description = (
-        "查询一个已有的生命中枢定时任务。"
-        "会返回登记册信息，并尽量附带调度器中的实时状态。"
-    )
-    chatter_allow: list[str] = ["life_engine_internal", "life_chatter"]
-
-    async def execute(
-        self,
-        task_ref: Annotated[str, "任务引用：record_id / schedule_id / task_name / title"],
-    ) -> tuple[bool, str | dict]:
-        ref = _normalize_text(task_ref)
-        if not ref:
-            return False, "task_ref 不能为空"
-
-        store = _get_store(self.plugin)
-        matches = store.find_matches(ref)
-        if not matches:
-            return False, "没有找到对应的定时任务"
-        if len(matches) > 1:
-            return False, "task_ref 对应多个任务，请改用更精确的 record_id 或 schedule_id"
-
-        record = matches[0]
-        task_info = await _resolve_live_task_info(record)
-        return True, _record_to_summary(record, task_info)
-
-
 class LifeEngineListSchedulesTool(BaseTool):
-    """列出生命中枢全部定时任务。"""
+    """列出/查询生命中枢定时任务。"""
 
     tool_name = "nucleus_list_schedules"
     tool_description = (
-        "列出生命中枢所有定时任务。"
-        "可以按 kind 或 status 过滤。"
-        "status 取值来自调度器，如 pending/running/completed/failed/cancelled/paused/timeout，"
-        "若登记册里有但调度器中已经不存在，则显示 missing。"
+        "列出生命中枢所有定时任务，或查询单条任务详情。"
+        "\n\n"
+        "- 不带 task_ref → 列表模式：返回所有任务，可按 kind/status 过滤"
+        "- 带 task_ref → 详情模式：返回该条任务的登记册信息和调度器实时状态"
+        "\n\n"
+        "status 取值来自调度器：pending/running/completed/failed/cancelled/paused/timeout，"
+        "若登记册里有但调度器中已不存在则显示 missing。"
     )
     chatter_allow: list[str] = ["life_engine_internal", "life_chatter"]
 
     async def execute(
         self,
-        kind: Annotated[str, "过滤 kind：heartbeat / dream / message / all"] = "all",
-        status: Annotated[str, "过滤状态：pending / running / completed / failed / cancelled / paused / timeout / missing / all"] = "all",
+        task_ref: Annotated[str, "任务引用（填写则返回单条详情，留空返回列表）"] = "",
+        kind: Annotated[str, "列表模式过滤 kind：heartbeat / dream / message / all"] = "all",
+        status: Annotated[str, "列表模式过滤状态：pending/running/completed/failed/cancelled/paused/timeout/missing/all"] = "all",
     ) -> tuple[bool, str | dict]:
+        # 单条详情模式
+        if _normalize_text(task_ref):
+            store = _get_store(self.plugin)
+            ok, result = _resolve_single_record(store, task_ref)
+            if not ok:
+                return False, str(result)
+            record = result
+            task_info = await _resolve_live_task_info(record)
+            return True, _record_to_summary(record, task_info)
+
+        # 列表模式
         kind_value = _normalize_text(kind).lower()
         status_value = _normalize_text(status).lower()
         if kind_value not in {"all", "heartbeat", "dream", "message"}:
@@ -814,10 +789,7 @@ class LifeEngineListSchedulesTool(BaseTool):
 
 
 SCHEDULE_TOOLS = [
-    LifeEngineCreateScheduleTool,
-    LifeEngineUpdateScheduleTool,
-    LifeEngineDeleteScheduleTool,
-    LifeEngineGetScheduleTool,
+    LifeEngineManageScheduleTool,
     LifeEngineListSchedulesTool,
 ]
 
@@ -826,10 +798,7 @@ __all__ = [
     "ScheduleStore",
     "restore_life_schedules_when_ready",
     "cleanup_life_schedules",
-    "LifeEngineCreateScheduleTool",
-    "LifeEngineUpdateScheduleTool",
-    "LifeEngineDeleteScheduleTool",
-    "LifeEngineGetScheduleTool",
+    "LifeEngineManageScheduleTool",
     "LifeEngineListSchedulesTool",
     "SCHEDULE_TOOLS",
 ]

@@ -90,7 +90,7 @@ def extract_features(
             tool_name = str(getattr(e, "tool_name", "") or "")
             if success:
                 tool_success += 1
-                if tool_name in ("nucleus_write_file", "nucleus_create_todo", "nucleus_relate_file"):
+                if tool_name in ("nucleus_write_file", "nucleus_manage_todo", "nucleus_relate_file"):
                     new_content += 1
             else:
                 tool_fail += 1

@@ -24,7 +24,7 @@ curiosity_explore = ImpulseRule(
     name="curiosity_explore",
     condition=_curiosity_explore_condition,
     suggestion="你的好奇心正盛，有没有感兴趣的话题想深入了解？",
-    tools=["nucleus_web_search", "nucleus_advance_thought_stream"],
+    tools=["nucleus_web_search", "nucleus_manage_thought_stream"],
     cooldown_minutes=45,
 )
 
@@ -66,7 +66,7 @@ break_silence = ImpulseRule(
     name="break_silence",
     condition=_break_silence_condition,
     suggestion="安静很久了，也许可以主动做点什么",
-    tools=["nucleus_tell_dfc", "nucleus_initiate_topic", "nucleus_create_thought_stream"],
+    tools=["nucleus_tell_dfc", "nucleus_initiate_topic", "nucleus_manage_thought_stream"],
     cooldown_minutes=60,
 )
 
@@ -80,7 +80,7 @@ thought_pursue = ImpulseRule(
     name="thought_pursue",
     condition=_thought_pursue_condition,
     suggestion="你有未完成的思考，也许可以继续深入",
-    tools=["nucleus_advance_thought_stream"],
+    tools=["nucleus_manage_thought_stream"],
     cooldown_minutes=20,
 )
 

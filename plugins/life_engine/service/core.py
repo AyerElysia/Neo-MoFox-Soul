@@ -947,6 +947,29 @@ class LifeEngineService(BaseService):
             self._state.pending_event_count = len(self._pending_events)
         await self._save_runtime_context()
 
+    async def _collect_background_agent_results(self) -> None:
+        """收集已完成的后台智能体结果，注入为事件。"""
+        coordinator = getattr(self._plugin, "_agent_coordinator", None)
+        if coordinator is None or not coordinator.has_pending():
+            return
+
+        results = await coordinator.collect_results(timeout_seconds=5.0)
+        if not results:
+            return
+
+        events: list[LifeEngineEvent] = []
+        for agent_id, result in results.items():
+            event = self._event_builder.build_agent_result_event(
+                agent_type=result.agent_type,
+                result_text=result.result_text,
+                success=result.success,
+                rounds=result.rounds_used,
+                duration_ms=result.duration_ms,
+            )
+            events.append(event)
+
+        await self._append_history(events)
+
     async def drain_pending_events(self) -> list[LifeEngineEvent]:
         """清空并返回当前待处理事件。"""
         async with self._get_lock():
@@ -1011,6 +1034,11 @@ class LifeEngineService(BaseService):
                 status = "✅" if event.tool_success else "❌"
                 result_short = _shorten_text(event.content or "", max_length=100)
                 line = f"[{time_display}] {status} {event.tool_name}: {result_short}"
+            elif event.event_type == EventType.AGENT_RESULT:
+                status = "✅" if event.tool_success else "❌"
+                agent_name = event.tool_name or "agent"
+                result_short = _shorten_text(event.content or "", max_length=200)
+                line = f"[{time_display}] {status} 🤖 {agent_name}: {result_short}"
             else:
                 line = f"[{time_display}] ❓ {event.content}"
 
@@ -1029,7 +1057,7 @@ class LifeEngineService(BaseService):
         if event_type == EventType.HEARTBEAT:
             stream_id = str(event.stream_id or "").strip()
             return bool(not stream_id or stream_id == current_stream_id)
-        if event_type in {EventType.TOOL_CALL, EventType.TOOL_RESULT}:
+        if event_type in {EventType.TOOL_CALL, EventType.TOOL_RESULT, EventType.AGENT_RESULT}:
             return True
 
         stream_id = str(event.stream_id or "").strip()
@@ -1370,12 +1398,12 @@ class LifeEngineService(BaseService):
             "没有人看着你，没有人在等你回复。这是你自己的时间。",
             "你有能力主动思考、主动探索、主动表达。你的想法值得被听见。", "",
             "### 你可以做什么", "",
-            "1. **思考** — 推进你正在想的思考流（`nucleus_advance_thought_stream`）",
+            "1. **思考** — 推进你正在想的思考流（`nucleus_manage_thought_stream` action=advance）",
             "2. **探索** — 搜索感兴趣的东西（`nucleus_web_search`）、阅读记忆（`nucleus_search_memory`）",
             "3. **补充上下文** — 给表达层补充它当前看不到、但对对话可能重要的信息差（`nucleus_tell_dfc`）",
             "4. **直接开口** — 如果你自己就想说一句，直接在聊天里发出去（`nucleus_initiate_topic`）",
-            "5. **记录** — 写下感悟（`nucleus_write_file`）、管理待办（`nucleus_list_todos`）",
-            "6. **新建思考流** — 开始琢磨一个新话题（`nucleus_create_thought_stream`）",
+            "5. **记录** — 写下感悟（`nucleus_write_file`）、管理待办（`nucleus_manage_todo`）",
+            "6. **新建思考流** — 开始琢磨一个新话题（`nucleus_manage_thought_stream` action=create）",
             "7. **什么都不做** — 休息也是可以的", "",
             "### `nucleus_tell_dfc` — 给表达层补充信息差", "",
             "这个工具用于补充背景，不用于指导表达层怎么说、怎么做。", "",
@@ -1392,7 +1420,14 @@ class LifeEngineService(BaseService):
             "- `nucleus_search_memory` 是历史检索，不要反复重搜同一主题",
             "- 本地文件路径优先用 `nucleus_read_file` / `nucleus_grep_file`",
             "- `nucleus_browser_fetch` 只适合公开 http/https 页面",
-            "- `nucleus_advance_thought_stream` 是内心独白的核心——围绕你在意的事情深入思考", "",
+            "- `nucleus_manage_thought_stream` 是内心独白的核心——围绕你在意的事情深入思考", "",
+            "### 子智能体（nucleus_run_agent）", "",
+            "你可以分派子智能体处理复杂任务。选择合适的类型：", "",
+            "- **explore** — 只读搜索：在记忆/文件/网页中快速定位信息（5轮）",
+            "- **plan** — 只读规划：综合信息制定行动方案（8轮）",
+            "- **general-purpose** — 全能读写：修改文件、管理记忆等完整操作（10轮）",
+            "- **verification** — 只读验证：以对抗性视角检查已完成的工作（8轮，后台运行）", "",
+            "简单任务自己做，复杂多步任务交给子智能体。`run_in_background=true` 可让智能体后台运行，结果在下次心跳注入。", "",
             "### 输出格式", "",
             "```",
             "**[观察]** 我注意到...（基于事件流或记忆的具体观察）",
@@ -1937,6 +1972,9 @@ class LifeEngineService(BaseService):
                 # SNN 心跳前更新
                 if self._snn_integration is not None:
                     await self._snn_integration.heartbeat_pre()
+
+                # 收集后台智能体结果
+                await self._collect_background_agent_results()
 
                 injected_content = await self.inject_wake_context()
                 log_heartbeat_event(

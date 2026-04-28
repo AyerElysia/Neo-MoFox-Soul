@@ -251,7 +251,7 @@ class HabitTracker:
             Habit("diary", "写日记", ["nucleus_write_file"]),
             Habit("memory", "整理记忆", ["nucleus_search_memory"]),
             Habit("relate", "建立关联", ["nucleus_relate_file"]),
-            Habit("todo", "管理待办", ["nucleus_list_todos", "nucleus_create_todo", "nucleus_complete_todo"]),
+            Habit("todo", "管理待办", ["nucleus_manage_todo", "nucleus_list_todos"]),
             Habit("web_search", "联网搜索", ["nucleus_web_search"]),
             Habit("reflection", "自我反思", ["nucleus_write_file"]),  # 通过写文件路径区分
         ]

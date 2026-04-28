@@ -47,7 +47,7 @@ Storage: JSON file in workspace `thoughts/` directory, persisted and loaded by a
 
 ### 1.3 Thought Stream Lifecycle
 
-1. **Birth**: Elysia encounters something interesting (web search result, conversation topic, dream residue) and decides to "keep thinking about this." LLM calls `nucleus_create_thought_stream`.
+1. **Birth**: Elysia encounters something interesting (web search result, conversation topic, dream residue) and decides to "keep thinking about this." LLM calls `nucleus_manage_thought_stream` with `action=create`.
 2. **Advancement**: During heartbeats with no external events, Elysia picks an active Thought Stream and pursues it -- reading related memories, searching the web, writing reflections. This is the core of the inner voice.
 3. **Dormancy**: If `curiosity_score` drops below 0.3 (not thought about for >24h), the stream goes dormant.
 4. **Completion**: If Elysia concludes the thought (e.g., "I've decided X about Y"), she marks it completed and optionally tells DFC.
@@ -58,10 +58,10 @@ File: `plugins/life_engine/streams/tools.py`
 
 | Tool | Purpose |
 |------|---------|
-| `nucleus_create_thought_stream` | Create a new persistent thought interest |
-| `nucleus_list_thought_streams` | List active thought streams (sorted by curiosity) |
-| `nucleus_advance_thought_stream` | Record an advancement on a thought stream |
-| `nucleus_retire_thought_stream` | Mark a thought stream as completed/dormant |
+| `nucleus_manage_thought_stream` (action=create) | Create a new persistent thought interest |
+| `nucleus_manage_thought_stream` (action=list) | List active thought streams (sorted by curiosity) |
+| `nucleus_manage_thought_stream` (action=advance) | Record an advancement on a thought stream |
+| `nucleus_manage_thought_stream` (action=retire) | Mark a thought stream as completed/dormant |
 
 ### 1.5 Integration into Heartbeat Prompt
 
@@ -83,7 +83,7 @@ This replaces the current empty space when there are no external events. Elysia 
 | `plugins/life_engine/streams/__init__.py` | NEW - package |
 | `plugins/life_engine/streams/models.py` | NEW - ThoughtStream dataclass |
 | `plugins/life_engine/streams/manager.py` | NEW - ThoughtStreamManager CRUD + scoring |
-| `plugins/life_engine/streams/tools.py` | NEW - 4 nucleus tools |
+| `plugins/life_engine/streams/tools.py` | NEW - `nucleus_manage_thought_stream` tool (4 actions) |
 | `plugins/life_engine/service/core.py` | MODIFY - `_build_heartbeat_model_prompt()` to inject thought streams |
 | `plugins/life_engine/service/core.py` | MODIFY - `_get_nucleus_tools()` to include stream tools |
 | `plugins/life_engine/tools/__init__.py` | MODIFY - export stream tools |
@@ -117,11 +117,11 @@ Example rules:
 
 | Rule | Condition | Suggestion | Tools |
 |------|-----------|------------|-------|
-| `curiosity_explore` | curiosity > 0.65 AND idle > 2 | "你的好奇心正盛，有没有感兴趣的话题想深入了解？" | `nucleus_web_search`, `nucleus_advance_thought_stream` |
+| `curiosity_explore` | curiosity > 0.65 AND idle > 2 | "你的好奇心正盛，有没有感兴趣的话题想深入了解？" | `nucleus_web_search`, `nucleus_manage_thought_stream` (action=advance) |
 | `social_reach_out` | sociability > 0.6 AND silence > 30min | "你很想和大家说说话，有什么想分享的吗？" | `nucleus_tell_dfc` |
-| `diligence_todo` | diligence > 0.65 AND has_urgent_todos | "你的专注力很好，正好可以推进待办事项" | `nucleus_list_todos`, `nucleus_complete_todo` |
-| `break_silence` | silence > 60min AND energy > 0.5 | "安静很久了，也许可以主动做点什么" | `nucleus_tell_dfc`, `nucleus_create_thought_stream` |
-| `thought_pursue` | has_active_thoughts AND idle > 1 | "你有未完成的思考，也许可以继续深入" | `nucleus_advance_thought_stream` |
+| `diligence_todo` | diligence > 0.65 AND has_urgent_todos | "你的专注力很好，正好可以推进待办事项" | `nucleus_list_todos`, `nucleus_manage_todo` (action=edit, status=completed) |
+| `break_silence` | silence > 60min AND energy > 0.5 | "安静很久了，也许可以主动做点什么" | `nucleus_tell_dfc`, `nucleus_manage_thought_stream` (action=create) |
+| `thought_pursue` | has_active_thoughts AND idle > 1 | "你有未完成的思考，也许可以继续深入" | `nucleus_manage_thought_stream` (action=advance) |
 
 ### 2.3 Pipeline Execution
 

@@ -247,15 +247,20 @@ class MessageConverter:
             if text:
                 seg_list.append({"type": "text", "data": text})
 
-        primary_media = self._extract_primary_outbound_media(message)
-        if primary_media:
-            seg_list.append(primary_media)
-
+        # 去重：对 seg_list 中已有的媒体段建 key 集合，避免主媒体重复追加
         media_seed = {
             (str(seg.get("type", "")), str(seg.get("data", "")))
             for seg in seg_list
             if isinstance(seg, dict) and seg.get("type") != "text"
         }
+
+        primary_media = self._extract_primary_outbound_media(message)
+        if primary_media:
+            key = (str(primary_media.get("type", "")), str(primary_media.get("data", "")))
+            if key not in media_seed:
+                media_seed.add(key)
+                seg_list.append(primary_media)
+
         seg_list.extend(self._collect_outbound_media_segments(message, seed=media_seed))
 
         # 万一消息内容完全为空，至少构造一个空文本段，以避免适配器解析异常
