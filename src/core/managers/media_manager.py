@@ -18,7 +18,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import hashlib
 import shutil
 import time
@@ -35,6 +34,8 @@ from src.app.plugin_system.api.llm_api import get_model_set_by_task
 from src.kernel.llm.model_client.registry import ModelClientRegistry
 from src.core.prompt import PromptTemplate, get_prompt_manager
 from src.core.config import get_core_config
+from src.core.utils.base64_helper import base64_decode_to_bytes
+from src.kernel.concurrency import get_task_manager
 from src.kernel.scheduler import get_unified_scheduler, TriggerType
 from src.kernel.db.core.session import get_db_session
 from src.core.models.sql_alchemy import Images, ImageDescriptions
@@ -950,7 +951,10 @@ class MediaManager:
             model_name = model_entry.get("model_identifier") if isinstance(model_entry, dict) else str(model_entry)
 
             clean_b64 = self._extract_clean_base64(audio_base64)
-            audio_bytes = base64.b64decode(clean_b64)
+            audio_bytes = await get_task_manager().to_process(
+                base64_decode_to_bytes,
+                clean_b64,
+            )
 
             text = await client.create_transcription(
                 model_name=model_name,
@@ -1214,7 +1218,10 @@ class MediaManager:
             clean_base64 = self._extract_clean_base64(base64_data)
             
             # 解码为二进制数据
-            binary_data = base64.b64decode(clean_base64)
+            binary_data = await get_task_manager().to_process(
+                base64_decode_to_bytes,
+                clean_base64,
+            )
             
             # 根据类型确定文件扩展名
             ext = ".jpg" if media_type == "image" else ".png"
