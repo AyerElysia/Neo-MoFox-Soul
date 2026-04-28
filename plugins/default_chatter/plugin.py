@@ -209,17 +209,6 @@ tool_call: [send_text, send_emoji]
 </tool_usage>
 
 <extra_info>
-# 其他信息
-现在是 {current_time}。
-你目前正在聊天的平台是：{platform}，聊天类型是 {chat_type}。
-
-你的行为应当与当前的平台和聊天类型相匹配，例如你不应该在群聊中过于热情，也不应该在私聊中过于冷淡。
-
-
-# 会话适配
-- 你会在前置 SYSTEM 固定块中看到当前会话的场景引导（平台、聊天类型、场景规则等）。
-- 你需要根据这些上下文调整表达方式与互动策略：私聊更自然亲近，群聊更克制简洁，避免刷屏与过度热情。
-
 {extra_info}
 </extra_info>
 """
@@ -234,6 +223,23 @@ user_prompt = """你当前正在名为"{stream_name}"的对话中。
 {unreads}
 
 {extra}
+
+<extra_info>
+# 其他信息
+现在是 {current_time}。
+你目前正在聊天的平台是：{platform}，聊天类型是 {chat_type}。
+
+你的行为应当与当前的平台和聊天类型相匹配，例如你不应该在群聊中过于热情，也不应该在私聊中过于冷淡。
+
+在该平台你的信息：
+- 昵称：{platform_name}
+- id：{platform_id}
+
+# 会话适配
+- 你需要根据这些上下文调整表达方式与互动策略：私聊更自然亲近，群聊更克制简洁，避免刷屏与过度热情。
+
+{extra_info}
+</extra_info>
 ---
 请基于上述信息决定接下来你要调用的工具或动作。
 重申：请务必使用工具来实现你的任何行为，不要直接在文本里写出你想说的话。
@@ -1424,10 +1430,7 @@ class DefaultChatterPlugin(BasePlugin):
                 "reply_style": optional(personality.reply_style),
                 "safety_guidelines": optional("\n".join(personality.safety_guidelines)),
                 "negative_behaviors": optional("\n".join(personality.negative_behaviors)),
-                "current_time": optional(
-                    datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                ),
-                "extra_info": optional("")
+                "extra_info": optional(""),
             },
         )
 
@@ -1448,6 +1451,12 @@ class DefaultChatterPlugin(BasePlugin):
             template=user_prompt,
             policies={
                 "stream_name": optional("未知对话"),
+                "current_time": optional("未知时间"),
+                "platform": optional("未知平台"),
+                "chat_type": optional("未知类型"),
+                "platform_name": optional("未知"),
+                "platform_id": optional("未知ID"),
+                "extra_info": optional(""),
                 "continuous_memory": optional(""),
                 "history": optional("")
                 .then(min_len(2))

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 from collections.abc import Callable
 
 from src.core.components.types import ChatType
@@ -190,6 +191,23 @@ class DefaultChatterPromptBuilder:
         include_continuous_memory: bool = True,
     ) -> str:
         """通过 user prompt 模板构建用户提示词。"""
+        from src.app.plugin_system.api import adapter_api
+
+        platform = str(chat_stream.platform or "").strip()
+        bot_info: dict[str, str] = {}
+        if platform:
+            bot_info = await adapter_api.get_bot_info_by_platform(platform) or {}
+        platform_name = str(
+            bot_info.get("bot_name")
+            or chat_stream.bot_nickname
+            or "未知"
+        )
+        platform_id = str(
+            bot_info.get("bot_id")
+            or chat_stream.bot_id
+            or "未知"
+        )
+
         stream_name = chat_stream.stream_name
         tmpl = get_prompt_manager().get_template("default_chatter_user_prompt")
         assert tmpl, "缺少 default_chatter_user_prompt 模板，请检查提示词管理器配置"
@@ -197,6 +215,12 @@ class DefaultChatterPromptBuilder:
         return await (
             tmpl
             .set("stream_name", stream_name)
+            .set("current_time", datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+            .set("platform", chat_stream.platform)
+            .set("chat_type", chat_stream.chat_type)
+            .set("platform_id", platform_id)
+            .set("platform_name", platform_name)
+            .set("extra_info", "")
             .set("continuous_memory", "")
             .set("inject_continuous_memory", include_continuous_memory)
             .set("history", history_text)

@@ -248,6 +248,63 @@ def test_build_system_prompt_falls_back_to_stream_values(
     assert prompt == "platform_name=stream-name|platform_id=stream-id"
 
 
+def test_build_user_prompt_injects_runtime_platform_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """用户提示词应注入每轮动态时间与平台身份信息。"""
+    stream = ChatStream(
+        stream_id="s_user",
+        platform="qq",
+        chat_type="group",
+        bot_id="stream-id",
+        bot_nickname="stream-name",
+    )
+
+    class _FakeTemplate:
+        def __init__(self) -> None:
+            self.values: dict[str, str] = {}
+
+        def set(self, key: str, value: str):
+            self.values[key] = value
+            return self
+
+        async def build(self) -> str:
+            return (
+                f"time={bool(self.values.get('current_time'))}|"
+                f"platform={self.values.get('platform', '')}|"
+                f"chat_type={self.values.get('chat_type', '')}|"
+                f"platform_name={self.values.get('platform_name', '')}|"
+                f"platform_id={self.values.get('platform_id', '')}"
+            )
+
+    fake_template = _FakeTemplate()
+    monkeypatch.setattr(
+        "plugins.default_chatter.prompt_builder.get_prompt_manager",
+        lambda: SimpleNamespace(get_template=lambda _name: fake_template),
+    )
+
+    async def _fake_get_bot_info(_platform: str) -> dict[str, str]:
+        return {"bot_id": "3602291932", "bot_name": "MoFox"}
+
+    monkeypatch.setattr(
+        "src.app.plugin_system.api.adapter_api.get_bot_info_by_platform",
+        _fake_get_bot_info,
+    )
+
+    prompt = asyncio.run(
+        DefaultChatterPromptBuilder.build_user_prompt(
+            stream,
+            history_text="history",
+            unread_lines="unread",
+        )
+    )
+
+    assert prompt == (
+        "time=True|platform=qq|chat_type=group|"
+        "platform_name=MoFox|platform_id=3602291932"
+    )
+
+
 def test_build_system_prompt_skips_bot_lookup_when_platform_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
