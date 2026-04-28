@@ -208,6 +208,7 @@ tool_call: [send_text, send_emoji]
 
 <extra_info>
 # 其他信息
+现在是 {current_time}。
 你目前正在聊天的平台是：{platform}，聊天类型是 {chat_type}。
 
 你的行为应当与当前的平台和聊天类型相匹配，例如你不应该在群聊中过于热情，也不应该在私聊中过于冷淡。
@@ -684,10 +685,38 @@ class PassAndWaitAction(BaseAction):
     async def execute(self) -> tuple[bool, str]:
         """跳过本次动作，不执行任何操作"""
         return True, "已跳过，等待新消息"
+
+
+class StopConversationAction(BaseAction):
+    """结束当前对话轮次。"""
+
+    action_name = "stop_conversation"
+    action_description = (
+        "结束当前对话，过一段时间后再允许开启新对话。"
+        "如果对话已经自然结束，或者你认为本轮对话可以告一段落，"
+        "或者你暂时不想继续对话，使用本工具结束这轮对话。"
+        "通常当你已经做出回应，且后续的消息很可能是新的话题时，使用本工具结束对话。"
+    )
+
+    chatter_allow: list[str] = ["default_chatter"]
+
+    async def execute(
+        self,
+        minutes: Annotated[
+            float,
+            "冷却时间，单位分钟。默认 5 分钟，最小 0 分钟。",
+        ] = 5.0,
+    ) -> tuple[bool, str]:
+        """结束当前对话轮次。"""
+        normalized_minutes = max(0.0, float(minutes))
+        return True, f"对话已结束，将在 {normalized_minutes:g} 分钟后允许新对话"
+
+
 # ─── Chatter ────────────────────────────────────────────────
 
 # 控制流标记名称，与 BaseAction.to_schema() 生成的 name 保持一致（含 action- 前缀）
 _PASS_AND_WAIT = "action-pass_and_wait"
+_STOP_CONVERSATION = "action-stop_conversation"
 _SEND_TEXT = "action-send_text"
 _MESSAGE_NUCLEUS = "tool-message_nucleus"
 
@@ -1162,6 +1191,7 @@ class DefaultChatter(BaseChatter):
             chat_stream=chat_stream,
             logger=logger,
             pass_call_name=_PASS_AND_WAIT,
+            stop_call_name=_STOP_CONVERSATION,
             send_text_call_name=_SEND_TEXT,
             suspend_text=_SUSPEND_TEXT,
         ):
@@ -1176,6 +1206,7 @@ class DefaultChatter(BaseChatter):
             chat_stream=chat_stream,
             logger=logger,
             pass_call_name=_PASS_AND_WAIT,
+            stop_call_name=_STOP_CONVERSATION,
             send_text_call_name=_SEND_TEXT,
             suspend_text=_SUSPEND_TEXT,
         ):
@@ -1183,30 +1214,117 @@ class DefaultChatter(BaseChatter):
 
     async def run_tool_call(
         self,
-        call,
-        response: LLMResponseLike,
-        usable_map,
-        trigger_msg: Message | None,
-    ) -> tuple[bool, bool]:
-        """执行工具调用并将结果写回响应上下文。"""
-        if call.name == _MESSAGE_NUCLEUS and trigger_msg is not None:
-            raw_args = dict(call.args) if isinstance(getattr(call, "args", None), dict) else {}
-            legacy_message = raw_args.pop("message", None)
-            if legacy_message is not None and "content" not in raw_args:
-                raw_args["content"] = legacy_message
-            raw_args.setdefault("stream_id", str(getattr(trigger_msg, "stream_id", "") or self.stream_id))
-            raw_args.setdefault("platform", str(getattr(trigger_msg, "platform", "") or ""))
-            raw_args.setdefault("chat_type", str(getattr(trigger_msg, "chat_type", "") or ""))
-            raw_args.setdefault("sender_name", str(getattr(trigger_msg, "sender_name", "") or "DFC"))
+        calls=None,
+        response: LLMResponseLike | None = None,
+        usable_map=None,
+        trigger_msg: Message | None = None,
+        **legacy_kwargs,
+    ) -> list[tuple[bool, bool]] | tuple[bool, bool]:
+        """执行一次响应中的一批普通工具调用并写回响应上下文。
 
-            from src.kernel.llm import ToolCall
+        Args:
+            calls: 待执行的 tool call 列表，按 LLM 输出顺序排列。
+            response: 当前响应对象；执行结果会按 ``calls`` 顺序写回。
+            usable_map: 可调用组件注册表。
+            trigger_msg: 触发本轮对话的消息。
 
-            call = ToolCall(
-                id=getattr(call, "id", None),
-                name=call.name,
-                args=raw_args,
-            )
-        return await super().run_tool_call(call, response, usable_map, trigger_msg)
+        Returns:
+            list[tuple[bool, bool]]: 与 ``calls`` 顺序一致的
+            ``(是否已写回 TOOL_RESULT, execute 是否成功)`` 列表。
+        """
+        legacy_single = False
+        if calls is None and "call" in legacy_kwargs:
+            calls = legacy_kwargs["call"]
+            legacy_single = True
+        elif calls is not None and not isinstance(calls, list):
+            legacy_single = True
+
+        call_list = [calls] if legacy_single else list(calls or [])
+        normalized_calls = []
+        for call in call_list:
+            if call.name == _MESSAGE_NUCLEUS and trigger_msg is not None:
+                raw_args = (
+                    dict(call.args)
+                    if isinstance(getattr(call, "args", None), dict)
+                    else {}
+                )
+                legacy_message = raw_args.pop("message", None)
+                if legacy_message is not None and "content" not in raw_args:
+                    raw_args["content"] = legacy_message
+                raw_args.setdefault(
+                    "stream_id",
+                    str(getattr(trigger_msg, "stream_id", "") or self.stream_id),
+                )
+                raw_args.setdefault(
+                    "platform",
+                    str(getattr(trigger_msg, "platform", "") or ""),
+                )
+                raw_args.setdefault(
+                    "chat_type",
+                    str(getattr(trigger_msg, "chat_type", "") or ""),
+                )
+                raw_args.setdefault(
+                    "sender_name",
+                    str(getattr(trigger_msg, "sender_name", "") or "DFC"),
+                )
+
+                from src.kernel.llm import ToolCall
+
+                call = ToolCall(
+                    id=getattr(call, "id", None),
+                    name=call.name,
+                    args=raw_args,
+                )
+            normalized_calls.append(call)
+
+        if legacy_single:
+            call = normalized_calls[0]
+            from src.kernel.llm import LLMPayload, ROLE, ToolResult
+
+            args = dict(call.args) if isinstance(call.args, dict) else {}
+            args.pop("reason", None)
+            exec_success = False
+            usable_cls = usable_map.get(call.name) if usable_map is not None else None
+            if not usable_cls:
+                result_text = f"未知的工具: {call.name}"
+                logger.warning(result_text)
+            elif trigger_msg is None:
+                result_text = "无触发消息，跳过执行"
+                logger.debug(f"[{self.chatter_name}] 无触发消息，跳过工具调用: {call.name}")
+            else:
+                try:
+                    exec_success, result = await self.exec_llm_usable(
+                        usable_cls,
+                        trigger_msg,
+                        **args,
+                    )
+                    result_text = str(result) if exec_success else f"执行失败: {result}"
+                except Exception as exc:
+                    result_text = f"执行异常: {exc}"
+                    logger.error(f"执行 {call.name} 异常: {exc}", exc_info=True)
+
+            if response is not None:
+                response.add_payload(
+                    LLMPayload(
+                        ROLE.TOOL_RESULT,
+                        ToolResult(
+                            value=result_text,
+                            call_id=call.id,
+                            name=call.name,
+                        ),
+                    )
+                )
+            return True, exec_success
+
+        if response is None or usable_map is None:
+            return []
+
+        return await super().run_tool_call(
+            normalized_calls,
+            response,
+            usable_map,
+            trigger_msg,
+        )
 
     def _register_vlm_skip(self) -> None:
         """启用原生多模态时，跳过当前聊天流的 VLM 转译。"""
@@ -1338,6 +1456,7 @@ class DefaultChatterPlugin(BasePlugin):
             DefaultChatter,
             SendTextAction,
             PassAndWaitAction,
+            StopConversationAction,
             MessageNucleusTool,
             ConsultNucleusTool,
             LifeMemoryExplorerAgent,

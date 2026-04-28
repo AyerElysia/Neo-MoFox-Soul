@@ -35,9 +35,9 @@ async def test_process_tool_calls_stops_on_send_text_when_enabled() -> None:
 
     called_names: list[str] = []
 
-    async def _run_tool_call(call: Any, _resp: Any, _usable: Any, _trigger: Any) -> tuple[bool, bool]:
-        called_names.append(call.name)
-        return True, True
+    async def _run_tool_call(calls: list[Any], _resp: Any, _usable: Any, _trigger: Any) -> list[tuple[bool, bool]]:
+        called_names.extend(call.name for call in calls)
+        return [(True, True) for _call in calls]
 
     outcome = await process_tool_calls(
         stream_id="s1",
@@ -67,9 +67,9 @@ async def test_process_tool_calls_allows_multiple_send_text_in_one_batch() -> No
 
     called_ids: list[str] = []
 
-    async def _run_tool_call(call: Any, _resp: Any, _usable: Any, _trigger: Any) -> tuple[bool, bool]:
-        called_ids.append(call.id)
-        return True, True
+    async def _run_tool_call(calls: list[Any], _resp: Any, _usable: Any, _trigger: Any) -> list[tuple[bool, bool]]:
+        called_ids.extend(call.id for call in calls)
+        return [(True, True) for _call in calls]
 
     outcome = await process_tool_calls(
         stream_id="s1",
@@ -100,9 +100,9 @@ async def test_process_tool_calls_deduplicates_same_tool_and_args_in_one_batch()
 
     called_ids: list[str] = []
 
-    async def _run_tool_call(call: Any, _resp: Any, _usable: Any, _trigger: Any) -> tuple[bool, bool]:
-        called_ids.append(call.id)
-        return True, True
+    async def _run_tool_call(calls: list[Any], _resp: Any, _usable: Any, _trigger: Any) -> list[tuple[bool, bool]]:
+        called_ids.extend(call.id for call in calls)
+        return [(True, True) for _call in calls]
 
     outcome = await process_tool_calls(
         stream_id="s1",
@@ -131,8 +131,8 @@ async def test_process_tool_calls_marks_wait_and_stop_and_pending() -> None:
         SimpleNamespace(name="tool-weather", args={}, id="t"),
     ]
 
-    async def _run_tool_call(_call: Any, _resp: Any, _usable: Any, _trigger: Any) -> tuple[bool, bool]:
-        return True, True
+    async def _run_tool_call(calls: list[Any], _resp: Any, _usable: Any, _trigger: Any) -> list[tuple[bool, bool]]:
+        return [(True, True) for _call in calls]
 
     outcome = await process_tool_calls(
         stream_id="s1",
@@ -172,9 +172,9 @@ async def test_process_tool_calls_deduplicates_same_send_text_content_in_one_bat
 
     called_ids: list[str] = []
 
-    async def _run_tool_call(call: Any, _resp: Any, _usable: Any, _trigger: Any) -> tuple[bool, bool]:
-        called_ids.append(call.id)
-        return True, True
+    async def _run_tool_call(calls: list[Any], _resp: Any, _usable: Any, _trigger: Any) -> list[tuple[bool, bool]]:
+        called_ids.extend(call.id for call in calls)
+        return [(True, True) for _call in calls]
 
     outcome = await process_tool_calls(
         stream_id="s1",
@@ -206,8 +206,8 @@ async def test_process_tool_calls_action_call_does_not_mark_pending() -> None:
         )
     ]
 
-    async def _run_tool_call(_call: Any, _resp: Any, _usable: Any, _trigger: Any) -> tuple[bool, bool]:
-        return True, True
+    async def _run_tool_call(calls: list[Any], _resp: Any, _usable: Any, _trigger: Any) -> list[tuple[bool, bool]]:
+        return [(True, True) for _call in calls]
 
     outcome = await process_tool_calls(
         stream_id="s1",
@@ -236,9 +236,9 @@ async def test_process_tool_calls_deduplicates_across_rounds_when_state_provided
     called_ids: list[str] = []
     cross_round_seen: set[str] = set()
 
-    async def _run_tool_call(call: Any, _resp: Any, _usable: Any, _trigger: Any) -> tuple[bool, bool]:
-        called_ids.append(call.id)
-        return True, True
+    async def _run_tool_call(calls: list[Any], _resp: Any, _usable: Any, _trigger: Any) -> list[tuple[bool, bool]]:
+        called_ids.extend(call.id for call in calls)
+        return [(True, True) for _call in calls]
 
     await process_tool_calls(
         stream_id="s1",

@@ -411,7 +411,6 @@ async def run_enhanced(
     stop_call_name: str = "action-stop_conversation",
 ) -> AsyncGenerator[Wait | Success | Failure | Stop, None]:
     """enhanced 模式执行流程。"""
-    _ = stop_call_name
     try:
         request = chatter.create_request("actor", with_reminder="actor")
     except (ValueError, KeyError) as error:
@@ -573,10 +572,17 @@ async def run_enhanced(
                 usable_map=usable_map,
                 trigger_msg=rt.unreads[-1] if rt.unreads else None,
                 pass_call_name=pass_call_name,
+                stop_call_name=stop_call_name,
                 send_text_call_name=send_text_call_name,
                 break_on_send_text=False,
                 cross_round_seen_signatures=rt.cross_round_seen_signatures,
             )
+
+            if call_outcome.should_stop:
+                _append_suspend_if_tool_result_tail(rt.response, suspend_text, logger)
+                yield Stop(call_outcome.stop_minutes * 60)
+                _transition(rt=rt, to_phase=_ToolCallWorkflowPhase.WAIT_USER, logger=logger, reason="stop_conversation")
+                return
 
             think_only_calls = _is_think_only_calls(llm_response.call_list or [])
             if (
@@ -632,7 +638,6 @@ async def run_classical(
     stop_call_name: str = "action-stop_conversation",
 ) -> AsyncGenerator[Wait | Success | Failure | Stop, None]:
     """classical 模式执行流程。"""
-    _ = stop_call_name
     try:
         base_request = chatter.create_request("actor", with_reminder="actor")
     except (ValueError, KeyError) as error:
@@ -738,6 +743,7 @@ async def run_classical(
                 usable_map=usable_map,
                 trigger_msg=unreads[-1] if unreads else None,
                 pass_call_name=pass_call_name,
+                stop_call_name=stop_call_name,
                 send_text_call_name=send_text_call_name,
                 break_on_send_text=True,
                 cross_round_seen_signatures=cross_round_seen_signatures,
@@ -758,6 +764,12 @@ async def run_classical(
                 logger.warning("classical 模式连续仅调用 action-think，达到重试上限，本轮转入等待")
             else:
                 think_only_retry_count = 0
+
+            if call_outcome.should_stop:
+                _append_suspend_if_tool_result_tail(response, suspend_text, logger)
+                await chatter.flush_unreads(unread_msgs)
+                yield Stop(call_outcome.stop_minutes * 60)
+                return
 
             if not call_outcome.has_pending_tool_results:
                 append_suspend_payload_if_action_only(
