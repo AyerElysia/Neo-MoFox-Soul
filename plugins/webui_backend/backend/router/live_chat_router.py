@@ -86,7 +86,7 @@ class LiveChatRouter(BaseRouter):
     router_description = "实时聊天 WebSocket 和 HTTP API 接口"
 
     custom_route_path = "/webui/api/live_chat"
-    cors_origins = ["*"]
+    cors_origins = []
 
     # WebSocket 连接池（类级别变量，所有实例共享）
     # stream_id -> Set[WebSocket]

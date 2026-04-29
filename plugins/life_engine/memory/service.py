@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 import time
 from pathlib import Path
@@ -162,78 +163,81 @@ class LifeMemoryService:
 
     async def _create_tables(self) -> None:
         """创建数据库表。"""
-        cursor = self._db.cursor()
+        def _do_db_work() -> None:
+            cursor = self._db.cursor()
 
-        # 记忆节点表
-        cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS memory_nodes (
-                node_id TEXT PRIMARY KEY,
-                node_type TEXT NOT NULL,
-                file_path TEXT,
-                content_hash TEXT,
-                title TEXT,
-                activation_strength REAL DEFAULT 1.0,
-                access_count INTEGER DEFAULT 0,
-                last_accessed_at REAL,
-                emotional_valence REAL DEFAULT 0.0,
-                emotional_arousal REAL DEFAULT 0.0,
-                importance REAL DEFAULT 0.5,
-                created_at REAL NOT NULL,
-                updated_at REAL NOT NULL,
-                embedding_synced INTEGER DEFAULT 0
+            # 记忆节点表
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS memory_nodes (
+                    node_id TEXT PRIMARY KEY,
+                    node_type TEXT NOT NULL,
+                    file_path TEXT,
+                    content_hash TEXT,
+                    title TEXT,
+                    activation_strength REAL DEFAULT 1.0,
+                    access_count INTEGER DEFAULT 0,
+                    last_accessed_at REAL,
+                    emotional_valence REAL DEFAULT 0.0,
+                    emotional_arousal REAL DEFAULT 0.0,
+                    importance REAL DEFAULT 0.5,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL,
+                    embedding_synced INTEGER DEFAULT 0
+                )
+                """
             )
-            """
-        )
 
-        # 记忆边表
-        cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS memory_edges (
-                edge_id TEXT PRIMARY KEY,
-                source_id TEXT NOT NULL,
-                target_id TEXT NOT NULL,
-                edge_type TEXT NOT NULL,
-                weight REAL DEFAULT 0.5,
-                base_strength REAL DEFAULT 0.5,
-                reinforcement REAL DEFAULT 0.0,
-                activation_count INTEGER DEFAULT 0,
-                last_activated_at REAL,
-                reason TEXT,
-                created_at REAL NOT NULL,
-                bidirectional INTEGER DEFAULT 1,
-                FOREIGN KEY (source_id) REFERENCES memory_nodes(node_id) ON DELETE CASCADE,
-                FOREIGN KEY (target_id) REFERENCES memory_nodes(node_id) ON DELETE CASCADE,
-                UNIQUE(source_id, target_id, edge_type)
+            # 记忆边表
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS memory_edges (
+                    edge_id TEXT PRIMARY KEY,
+                    source_id TEXT NOT NULL,
+                    target_id TEXT NOT NULL,
+                    edge_type TEXT NOT NULL,
+                    weight REAL DEFAULT 0.5,
+                    base_strength REAL DEFAULT 0.5,
+                    reinforcement REAL DEFAULT 0.0,
+                    activation_count INTEGER DEFAULT 0,
+                    last_activated_at REAL,
+                    reason TEXT,
+                    created_at REAL NOT NULL,
+                    bidirectional INTEGER DEFAULT 1,
+                    FOREIGN KEY (source_id) REFERENCES memory_nodes(node_id) ON DELETE CASCADE,
+                    FOREIGN KEY (target_id) REFERENCES memory_nodes(node_id) ON DELETE CASCADE,
+                    UNIQUE(source_id, target_id, edge_type)
+                )
+                """
             )
-            """
-        )
 
-        # 索引
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_nodes_type ON memory_nodes(node_type)")
-        cursor.execute(
-            "CREATE INDEX IF NOT EXISTS idx_nodes_activation ON memory_nodes(activation_strength DESC)"
-        )
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_nodes_file_path ON memory_nodes(file_path)")
-        cursor.execute(
-            "CREATE INDEX IF NOT EXISTS idx_edges_source ON memory_edges(source_id, weight DESC)"
-        )
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_edges_target ON memory_edges(target_id)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_edges_type ON memory_edges(edge_type)")
-
-        # 全文搜索虚拟表（存储文件内容摘要）
-        cursor.execute(
-            """
-            CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
-                node_id,
-                title,
-                content,
-                tokenize='unicode61'
+            # 索引
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_nodes_type ON memory_nodes(node_type)")
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_nodes_activation ON memory_nodes(activation_strength DESC)"
             )
-            """
-        )
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_nodes_file_path ON memory_nodes(file_path)")
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_edges_source ON memory_edges(source_id, weight DESC)"
+            )
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_edges_target ON memory_edges(target_id)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_edges_type ON memory_edges(edge_type)")
 
-        self._db.commit()
+            # 全文搜索虚拟表（存储文件内容摘要）
+            cursor.execute(
+                """
+                CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
+                    node_id,
+                    title,
+                    content,
+                    tokenize='unicode61'
+                )
+                """
+            )
+
+            self._db.commit()
+
+        await asyncio.to_thread(_do_db_work)
         logger.debug("记忆数据库表创建完成")
 
     # --------------------------------------------------------

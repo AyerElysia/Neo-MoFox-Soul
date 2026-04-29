@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import posixpath
 import sqlite3
@@ -152,37 +153,43 @@ async def get_or_create_file_node(
     node_id = generate_file_node_id(normalized_path)
     legacy_node_id = generate_legacy_file_node_id(file_path)
 
-    cursor = db.cursor()
-    cursor.execute("SELECT * FROM memory_nodes WHERE node_id = ?", (node_id,))
-    row = cursor.fetchone()
-    if row is None and legacy_node_id != node_id:
-        cursor.execute("SELECT * FROM memory_nodes WHERE node_id = ?", (legacy_node_id,))
-        legacy_row = cursor.fetchone()
-        if legacy_row is not None and migrate_node_identity_func:
+    def _lookup_node(nid: str) -> Optional[MemoryNode]:
+        cursor = db.cursor()
+        cursor.execute("SELECT * FROM memory_nodes WHERE node_id = ?", (nid,))
+        row = cursor.fetchone()
+        return row_to_node(row) if row else None
+
+    row_result = await asyncio.to_thread(_lookup_node, node_id)
+    if row_result is None and legacy_node_id != node_id:
+        legacy_row_result = await asyncio.to_thread(_lookup_node, legacy_node_id)
+        if legacy_row_result is not None and migrate_node_identity_func:
             await migrate_node_identity_func(
                 old_node_id=legacy_node_id,
                 new_node_id=node_id,
                 new_file_path=normalized_path,
             )
-            cursor.execute("SELECT * FROM memory_nodes WHERE node_id = ?", (node_id,))
-            row = cursor.fetchone()
+            row_result = await asyncio.to_thread(_lookup_node, node_id)
 
     now = time.time()
     content_hash = compute_content_hash(content) if content else None
 
-    if row:
-        node = row_to_node(row)
+    if row_result:
+        node = row_result
 
         if content_hash and node.content_hash != content_hash:
-            cursor.execute(
-                """
-                UPDATE memory_nodes
-                SET content_hash = ?, title = ?, updated_at = ?, embedding_synced = 0
-                WHERE node_id = ?
-                """,
-                (content_hash, title or node.title, now, node_id),
-            )
-            db.commit()
+            def _update_node_hash() -> None:
+                cursor = db.cursor()
+                cursor.execute(
+                    """
+                    UPDATE memory_nodes
+                    SET content_hash = ?, title = ?, updated_at = ?, embedding_synced = 0
+                    WHERE node_id = ?
+                    """,
+                    (content_hash, title or node.title, now, node_id),
+                )
+                db.commit()
+
+            await asyncio.to_thread(_update_node_hash)
             node.content_hash = content_hash
             node.title = title or node.title
             node.updated_at = now
@@ -203,33 +210,37 @@ async def get_or_create_file_node(
         updated_at=now,
     )
 
-    cursor.execute(
-        """
-        INSERT INTO memory_nodes
-        (node_id, node_type, file_path, content_hash, title,
-         activation_strength, access_count, last_accessed_at,
-         emotional_valence, emotional_arousal, importance,
-         created_at, updated_at, embedding_synced)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            node.node_id,
-            node.node_type.value,
-            node.file_path,
-            node.content_hash,
-            node.title,
-            node.activation_strength,
-            node.access_count,
-            node.last_accessed_at,
-            node.emotional_valence,
-            node.emotional_arousal,
-            node.importance,
-            node.created_at,
-            node.updated_at,
-            0,
-        ),
-    )
-    db.commit()
+    def _insert_node() -> None:
+        cursor = db.cursor()
+        cursor.execute(
+            """
+            INSERT INTO memory_nodes
+            (node_id, node_type, file_path, content_hash, title,
+             activation_strength, access_count, last_accessed_at,
+             emotional_valence, emotional_arousal, importance,
+             created_at, updated_at, embedding_synced)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                node.node_id,
+                node.node_type.value,
+                node.file_path,
+                node.content_hash,
+                node.title,
+                node.activation_strength,
+                node.access_count,
+                node.last_accessed_at,
+                node.emotional_valence,
+                node.emotional_arousal,
+                node.importance,
+                node.created_at,
+                node.updated_at,
+                0,
+            ),
+        )
+        db.commit()
+
+    await asyncio.to_thread(_insert_node)
 
     if content and update_fts_func:
         await update_fts_func(node_id, title, content[:2000])
@@ -272,23 +283,26 @@ async def get_node_by_file_path(
     if not normalized_path:
         return None
     node_id = generate_file_node_id(normalized_path)
-    cursor = db.cursor()
-    cursor.execute("SELECT * FROM memory_nodes WHERE node_id = ?", (node_id,))
-    row = cursor.fetchone()
-    if row is None:
+
+    def _lookup_node(nid: str) -> Optional[MemoryNode]:
+        cursor = db.cursor()
+        cursor.execute("SELECT * FROM memory_nodes WHERE node_id = ?", (nid,))
+        row = cursor.fetchone()
+        return row_to_node(row) if row else None
+
+    row_result = await asyncio.to_thread(_lookup_node, node_id)
+    if row_result is None:
         legacy_node_id = generate_legacy_file_node_id(file_path)
         if legacy_node_id != node_id:
-            cursor.execute("SELECT * FROM memory_nodes WHERE node_id = ?", (legacy_node_id,))
-            row = cursor.fetchone()
-            if row is not None and migrate_node_identity_func:
+            legacy_row_result = await asyncio.to_thread(_lookup_node, legacy_node_id)
+            if legacy_row_result is not None and migrate_node_identity_func:
                 await migrate_node_identity_func(
                     old_node_id=legacy_node_id,
                     new_node_id=node_id,
                     new_file_path=normalized_path,
                 )
-                cursor.execute("SELECT * FROM memory_nodes WHERE node_id = ?", (node_id,))
-                row = cursor.fetchone()
-    return row_to_node(row) if row else None
+                row_result = await asyncio.to_thread(_lookup_node, node_id)
+    return row_result
 
 
 async def migrate_node_identity(
@@ -315,22 +329,27 @@ async def migrate_node_identity(
     from .edges import EdgeType
 
     if old_node_id == new_node_id:
-        cursor = db.cursor()
-        cursor.execute(
-            "UPDATE memory_nodes SET file_path = ?, updated_at = ? WHERE node_id = ?",
-            (new_file_path, time.time(), old_node_id),
-        )
-        db.commit()
-        return cursor.rowcount > 0
+        def _update_path() -> bool:
+            cursor = db.cursor()
+            cursor.execute(
+                "UPDATE memory_nodes SET file_path = ?, updated_at = ? WHERE node_id = ?",
+                (new_file_path, time.time(), old_node_id),
+            )
+            db.commit()
+            return cursor.rowcount > 0
 
-    cursor = db.cursor()
-    cursor.execute("SELECT * FROM memory_nodes WHERE node_id = ?", (old_node_id,))
-    old_row = cursor.fetchone()
+        return await asyncio.to_thread(_update_path)
+
+    def _load_node(nid: str) -> Optional[sqlite3.Row]:
+        cursor = db.cursor()
+        cursor.execute("SELECT * FROM memory_nodes WHERE node_id = ?", (nid,))
+        return cursor.fetchone()
+
+    old_row = await asyncio.to_thread(_load_node, old_node_id)
     if not old_row:
         return False
 
-    cursor.execute("SELECT * FROM memory_nodes WHERE node_id = ?", (new_node_id,))
-    new_row = cursor.fetchone()
+    new_row = await asyncio.to_thread(_load_node, new_node_id)
     now = time.time()
 
     if new_row:
@@ -364,134 +383,147 @@ async def migrate_node_identity(
             float(old_row["created_at"] or now),
         )
 
-        cursor.execute(
-            """
-            UPDATE memory_nodes
-            SET file_path = ?,
-                content_hash = ?,
-                title = ?,
-                activation_strength = ?,
-                access_count = ?,
-                last_accessed_at = ?,
-                emotional_valence = ?,
-                emotional_arousal = ?,
-                importance = ?,
-                created_at = ?,
-                updated_at = ?,
-                embedding_synced = 0
-            WHERE node_id = ?
-            """,
-            (
-                new_file_path,
-                merged_content_hash,
-                merged_title,
-                merged_activation,
-                merged_access_count,
-                merged_last_accessed,
-                merged_emotional_valence,
-                merged_emotional_arousal,
-                merged_importance,
-                merged_created_at,
-                now,
-                new_node_id,
-            ),
-        )
+        def _update_merged() -> None:
+            cursor = db.cursor()
+            cursor.execute(
+                """
+                UPDATE memory_nodes
+                SET file_path = ?,
+                    content_hash = ?,
+                    title = ?,
+                    activation_strength = ?,
+                    access_count = ?,
+                    last_accessed_at = ?,
+                    emotional_valence = ?,
+                    emotional_arousal = ?,
+                    importance = ?,
+                    created_at = ?,
+                    updated_at = ?,
+                    embedding_synced = 0
+                WHERE node_id = ?
+                """,
+                (
+                    new_file_path,
+                    merged_content_hash,
+                    merged_title,
+                    merged_activation,
+                    merged_access_count,
+                    merged_last_accessed,
+                    merged_emotional_valence,
+                    merged_emotional_arousal,
+                    merged_importance,
+                    merged_created_at,
+                    now,
+                    new_node_id,
+                ),
+            )
+
+        await asyncio.to_thread(_update_merged)
     else:
+        def _insert_merged() -> None:
+            cursor = db.cursor()
+            cursor.execute(
+                """
+                INSERT INTO memory_nodes
+                (node_id, node_type, file_path, content_hash, title,
+                 activation_strength, access_count, last_accessed_at,
+                 emotional_valence, emotional_arousal, importance,
+                 created_at, updated_at, embedding_synced)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    new_node_id,
+                    old_row["node_type"],
+                    new_file_path,
+                    old_row["content_hash"],
+                    old_row["title"],
+                    old_row["activation_strength"],
+                    old_row["access_count"],
+                    old_row["last_accessed_at"],
+                    old_row["emotional_valence"],
+                    old_row["emotional_arousal"],
+                    old_row["importance"],
+                    old_row["created_at"],
+                    now,
+                    0,
+                ),
+            )
+
+        await asyncio.to_thread(_insert_merged)
+
+    # Migrate edges and FTS data (sync DB, single transaction)
+    def _migrate_edges_and_fts() -> None:
+        cursor = db.cursor()
         cursor.execute(
-            """
-            INSERT INTO memory_nodes
-            (node_id, node_type, file_path, content_hash, title,
-             activation_strength, access_count, last_accessed_at,
-             emotional_valence, emotional_arousal, importance,
-             created_at, updated_at, embedding_synced)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                new_node_id,
-                old_row["node_type"],
-                new_file_path,
-                old_row["content_hash"],
-                old_row["title"],
-                old_row["activation_strength"],
-                old_row["access_count"],
-                old_row["last_accessed_at"],
-                old_row["emotional_valence"],
-                old_row["emotional_arousal"],
-                old_row["importance"],
-                old_row["created_at"],
-                now,
-                0,
-            ),
+            "SELECT * FROM memory_edges WHERE source_id = ? OR target_id = ?",
+            (old_node_id, old_node_id),
         )
+        old_edges = cursor.fetchall()
+        for edge in old_edges:
+            mapped_source = new_node_id if edge["source_id"] == old_node_id else edge["source_id"]
+            mapped_target = new_node_id if edge["target_id"] == old_node_id else edge["target_id"]
+            if mapped_source == mapped_target:
+                continue
 
-    cursor.execute(
-        "SELECT * FROM memory_edges WHERE source_id = ? OR target_id = ?",
-        (old_node_id, old_node_id),
-    )
-    old_edges = cursor.fetchall()
-    for edge in old_edges:
-        mapped_source = new_node_id if edge["source_id"] == old_node_id else edge["source_id"]
-        mapped_target = new_node_id if edge["target_id"] == old_node_id else edge["target_id"]
-        if mapped_source == mapped_target:
-            continue
+            cursor.execute(
+                """
+                INSERT INTO memory_edges
+                (edge_id, source_id, target_id, edge_type, weight, base_strength,
+                 reinforcement, activation_count, last_activated_at, reason, created_at, bidirectional)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(source_id, target_id, edge_type) DO UPDATE SET
+                    weight = MAX(weight, excluded.weight),
+                    base_strength = MAX(base_strength, excluded.base_strength),
+                    reinforcement = reinforcement + excluded.reinforcement,
+                    activation_count = activation_count + excluded.activation_count,
+                    last_activated_at = CASE
+                        WHEN last_activated_at IS NULL THEN excluded.last_activated_at
+                        WHEN excluded.last_activated_at IS NULL THEN last_activated_at
+                        ELSE MAX(last_activated_at, excluded.last_activated_at)
+                    END,
+                    reason = CASE
+                        WHEN reason IS NULL OR reason = '' THEN excluded.reason
+                        ELSE reason
+                    END,
+                    bidirectional = MAX(bidirectional, excluded.bidirectional)
+                """,
+                (
+                    str(uuid.uuid4())[:8],
+                    mapped_source,
+                    mapped_target,
+                    edge["edge_type"],
+                    edge["weight"],
+                    edge["base_strength"],
+                    edge["reinforcement"],
+                    edge["activation_count"],
+                    edge["last_activated_at"],
+                    edge["reason"],
+                    edge["created_at"],
+                    edge["bidirectional"],
+                ),
+            )
 
         cursor.execute(
-            """
-            INSERT INTO memory_edges
-            (edge_id, source_id, target_id, edge_type, weight, base_strength,
-             reinforcement, activation_count, last_activated_at, reason, created_at, bidirectional)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(source_id, target_id, edge_type) DO UPDATE SET
-                weight = MAX(weight, excluded.weight),
-                base_strength = MAX(base_strength, excluded.base_strength),
-                reinforcement = reinforcement + excluded.reinforcement,
-                activation_count = activation_count + excluded.activation_count,
-                last_activated_at = CASE
-                    WHEN last_activated_at IS NULL THEN excluded.last_activated_at
-                    WHEN excluded.last_activated_at IS NULL THEN last_activated_at
-                    ELSE MAX(last_activated_at, excluded.last_activated_at)
-                END,
-                reason = CASE
-                    WHEN reason IS NULL OR reason = '' THEN excluded.reason
-                    ELSE reason
-                END,
-                bidirectional = MAX(bidirectional, excluded.bidirectional)
-            """,
-            (
-                str(uuid.uuid4())[:8],
-                mapped_source,
-                mapped_target,
-                edge["edge_type"],
-                edge["weight"],
-                edge["base_strength"],
-                edge["reinforcement"],
-                edge["activation_count"],
-                edge["last_activated_at"],
-                edge["reason"],
-                edge["created_at"],
-                edge["bidirectional"],
-            ),
+            "SELECT title, content FROM memory_fts WHERE node_id = ? LIMIT 1",
+            (old_node_id,),
         )
+        old_fts_row = cursor.fetchone()
+        if old_fts_row:
+            cursor.execute("DELETE FROM memory_fts WHERE node_id = ?", (new_node_id,))
+            cursor.execute(
+                "INSERT INTO memory_fts (node_id, title, content) VALUES (?, ?, ?)",
+                (new_node_id, old_fts_row["title"], old_fts_row["content"]),
+            )
 
-    cursor.execute(
-        "SELECT title, content FROM memory_fts WHERE node_id = ? LIMIT 1",
-        (old_node_id,),
-    )
-    old_fts_row = cursor.fetchone()
-    if old_fts_row:
-        cursor.execute("DELETE FROM memory_fts WHERE node_id = ?", (new_node_id,))
         cursor.execute(
-            "INSERT INTO memory_fts (node_id, title, content) VALUES (?, ?, ?)",
-            (new_node_id, old_fts_row["title"], old_fts_row["content"]),
+            "DELETE FROM memory_edges WHERE source_id = ? OR target_id = ?",
+            (old_node_id, old_node_id),
         )
+        cursor.execute("DELETE FROM memory_fts WHERE node_id = ?", (old_node_id,))
+        cursor.execute("DELETE FROM memory_nodes WHERE node_id = ?", (old_node_id,))
+        db.commit()
 
-    cursor.execute(
-        "DELETE FROM memory_edges WHERE source_id = ? OR target_id = ?",
-        (old_node_id, old_node_id),
-    )
-    cursor.execute("DELETE FROM memory_fts WHERE node_id = ?", (old_node_id,))
-    cursor.execute("DELETE FROM memory_nodes WHERE node_id = ?", (old_node_id,))
-    db.commit()
+    await asyncio.to_thread(_migrate_edges_and_fts)
 
     if migrate_vector_identity_func:
         await migrate_vector_identity_func(
@@ -550,13 +582,16 @@ async def update_fts(db: sqlite3.Connection, node_id: str, title: str, content: 
         title: 标题
         content: 内容
     """
-    cursor = db.cursor()
-    cursor.execute("DELETE FROM memory_fts WHERE node_id = ?", (node_id,))
-    cursor.execute(
-        "INSERT INTO memory_fts (node_id, title, content) VALUES (?, ?, ?)",
-        (node_id, title, content),
-    )
-    db.commit()
+    def _do_db_work() -> None:
+        cursor = db.cursor()
+        cursor.execute("DELETE FROM memory_fts WHERE node_id = ?", (node_id,))
+        cursor.execute(
+            "INSERT INTO memory_fts (node_id, title, content) VALUES (?, ?, ?)",
+            (node_id, title, content),
+        )
+        db.commit()
+
+    await asyncio.to_thread(_do_db_work)
 
 
 async def increment_access(
@@ -572,33 +607,40 @@ async def increment_access(
         emit_visual_event: 可视化事件发射函数
     """
     now = time.time()
-    cursor = db.cursor()
-    cursor.execute(
-        """
-        UPDATE memory_nodes
-        SET access_count = access_count + 1,
-            last_accessed_at = ?,
-            activation_strength = MIN(1.0, activation_strength + 0.1)
-        WHERE node_id = ?
-        """,
-        (now, node_id),
-    )
-    db.commit()
-    cursor.execute(
-        "SELECT activation_strength, access_count, last_accessed_at FROM memory_nodes WHERE node_id = ?",
-        (node_id,),
-    )
-    row = cursor.fetchone()
-    if row and emit_visual_event:
+
+    def _do_db_work() -> Optional[tuple]:
+        cursor = db.cursor()
+        cursor.execute(
+            """
+            UPDATE memory_nodes
+            SET access_count = access_count + 1,
+                last_accessed_at = ?,
+                activation_strength = MIN(1.0, activation_strength + 0.1)
+            WHERE node_id = ?
+            """,
+            (now, node_id),
+        )
+        db.commit()
+        cursor.execute(
+            "SELECT activation_strength, access_count, last_accessed_at FROM memory_nodes WHERE node_id = ?",
+            (node_id,),
+        )
+        row = cursor.fetchone()
+        if row:
+            return (float(row["activation_strength"] or 0.0), int(row["access_count"] or 0), row["last_accessed_at"])
+        return None
+
+    row_data = await asyncio.to_thread(_do_db_work)
+    if row_data and emit_visual_event:
         emit_visual_event(
             "memory.nodes.updated",
             {
                 "nodes": [
                     {
                         "id": node_id,
-                        "activation": float(row["activation_strength"] or 0.0),
-                        "access_count": int(row["access_count"] or 0),
-                        "last_accessed_at": row["last_accessed_at"],
+                        "activation": row_data[0],
+                        "access_count": row_data[1],
+                        "last_accessed_at": row_data[2],
                     }
                 ]
             },

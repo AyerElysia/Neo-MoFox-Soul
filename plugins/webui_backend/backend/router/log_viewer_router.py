@@ -231,7 +231,7 @@ class LogViewerRouter(BaseRouter):
     router_description = "历史日志查看器接口"
 
     custom_route_path = "/webui/api/log_viewer"
-    cors_origins = ["*"]
+    cors_origins = []
 
     def register_endpoints(self) -> None:
         """注册所有 HTTP 端点"""

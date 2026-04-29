@@ -317,7 +317,7 @@ class RelationshipRouter(BaseRouter):
     router_description = "人物关系管理接口"
 
     custom_route_path = "/webui/api/relationship"
-    cors_origins = ["*"]
+    cors_origins = []
 
     def register_endpoints(self) -> None:
         """注册所有 HTTP 端点"""

@@ -285,7 +285,7 @@ class CoreConfigRouter(BaseRouter):
     router_description = "Core 配置管理接口"
 
     custom_route_path = "/webui/api/core-config"
-    cors_origins = ["*"]
+    cors_origins = []
 
     def register_endpoints(self) -> None:
         """注册所有 HTTP 端点"""

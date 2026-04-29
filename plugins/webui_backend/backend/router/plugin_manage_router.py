@@ -281,7 +281,7 @@ class PluginManageRouter(BaseRouter):
     router_description = "插件管理接口"
 
     custom_route_path = "/webui/api/plugin_manager"
-    cors_origins = ["*"]
+    cors_origins = []
 
     def register_endpoints(self) -> None:
         """注册所有 HTTP 端点"""

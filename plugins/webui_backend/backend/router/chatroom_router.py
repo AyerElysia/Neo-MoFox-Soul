@@ -99,7 +99,7 @@ class ChatroomRouter(BaseRouter):
 
     router_name = "ChatroomRouter"
     custom_route_path = "/webui/api/chatroom"
-    cors_origins = ["*"]
+    cors_origins = []
 
     def register_endpoints(self) -> None:  # type: ignore[override]
         """注册所有 /webui/api/chatroom/* 端点"""

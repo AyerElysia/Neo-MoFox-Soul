@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from src.app.plugin_system.api._utils import _validate_non_empty
+
 if TYPE_CHECKING:
     from src.core.components.base.adapter import BaseAdapter
     from src.core.managers.adapter_manager import AdapterManager
@@ -22,20 +24,6 @@ def _get_adapter_manager() -> "AdapterManager":
     from src.core.managers.adapter_manager import get_adapter_manager
 
     return get_adapter_manager()
-
-
-def _validate_non_empty(value: str, name: str) -> None:
-    """校验字符串参数非空。
-
-    Args:
-        value: 待校验的字符串
-        name: 参数名称
-
-    Returns:
-        None
-    """
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"{name} 不能为空")
 
 
 def _validate_command_data(command_data: dict[str, Any]) -> None:

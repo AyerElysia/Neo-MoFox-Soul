@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Type
 
+from src.app.plugin_system.api._utils import _validate_non_empty
+
 from src.core.components.base.config import BaseConfig
 
 if TYPE_CHECKING:
@@ -23,20 +25,6 @@ def _get_config_manager() -> "ConfigManager":
     from src.core.managers.config_manager import get_config_manager
 
     return get_config_manager()
-
-
-def _validate_non_empty(value: str, name: str) -> None:
-    """校验字符串参数非空。
-
-    Args:
-        value: 待校验的字符串
-        name: 参数名称
-
-    Returns:
-        None
-    """
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"{name} 不能为空")
 
 
 def _validate_config_class(config_class: Type[BaseConfig]) -> None:

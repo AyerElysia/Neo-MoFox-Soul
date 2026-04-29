@@ -32,7 +32,7 @@ class RealtimeLogRouter(BaseRouter):
     router_description = "实时日志 WebSocket 接口"
 
     custom_route_path = "/webui/api/realtime_log"
-    cors_origins = ["*"]
+    cors_origins = []
 
     # WebSocket 连接池（类级别变量，所有实例共享）
     active_connections: Set[WebSocket] = set()

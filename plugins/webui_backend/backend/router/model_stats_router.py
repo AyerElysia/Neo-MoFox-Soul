@@ -104,7 +104,7 @@ class ModelStatsRouter(BaseRouter):
     router_name = "WebUI_ModelStats"
     router_description = "WebUI 模型统计接口"
     custom_route_path = "/webui/api/model_stats"
-    cors_origins = ["*"]
+    cors_origins = []
 
     def register_endpoints(self) -> None:
         """Register HTTP endpoints."""

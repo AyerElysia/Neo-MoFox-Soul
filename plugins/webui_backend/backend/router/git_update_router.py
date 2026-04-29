@@ -74,7 +74,7 @@ class GitUpdateRouter(BaseRouter):
     router_description = "主程序 Git 更新、回滚与分支管理接口"
 
     custom_route_path = "/webui/api/git_update"
-    cors_origins = ["*"]
+    cors_origins = []
 
     def register_endpoints(self) -> None:
         """注册所有端点"""

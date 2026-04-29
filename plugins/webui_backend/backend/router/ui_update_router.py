@@ -60,7 +60,7 @@ class UIUpdateRouter(BaseRouter):
     router_description = "WebUI 静态文件更新、版本管理与回滚接口"
 
     custom_route_path = "/webui/api/ui_update"
-    cors_origins = ["*"]
+    cors_origins = []
 
     def register_endpoints(self) -> None:
         """注册所有端点"""

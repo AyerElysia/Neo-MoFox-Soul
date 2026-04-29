@@ -6,13 +6,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import math
 import sqlite3
-import time
-
-from src.app.plugin_system.api.log_api import get_logger
-
-logger = get_logger("life_engine.memory.decay")
 import time
 import uuid
 from typing import Any, Dict, List, Optional
@@ -86,43 +82,47 @@ async def apply_decay(db: sqlite3.Connection) -> int:
     logger.info("Starting memory decay process")
     start_time = time.time()
 
-    cursor = db.cursor()
-    cursor.execute("SELECT * FROM memory_nodes")
-    rows = cursor.fetchall()
+    def _do_db_work() -> int:
+        cursor = db.cursor()
+        cursor.execute("SELECT * FROM memory_nodes")
+        rows = cursor.fetchall()
 
-    updated = 0
-    for row in rows:
-        node = row_to_node(row)
-        new_strength = compute_memory_strength(node)
+        updated = 0
+        for row in rows:
+            node = row_to_node(row)
+            new_strength = compute_memory_strength(node)
 
-        if abs(new_strength - node.activation_strength) > 0.01:
-            cursor.execute(
-                "UPDATE memory_nodes SET activation_strength = ? WHERE node_id = ?",
-                (new_strength, node.node_id),
-            )
-            updated += 1
-
-    # 边衰减
-    cursor.execute(
-        "SELECT * FROM memory_edges WHERE edge_type = ?",
-        (EdgeType.ASSOCIATES.value,),
-    )
-    for row in cursor.fetchall():
-        edge = row_to_edge(row)
-        if edge.last_activated_at:
-            days_since = (time.time() - edge.last_activated_at) / 86400
-            decay_factor = math.exp(-DECAY_LAMBDA * days_since)
-            new_weight = edge.base_strength + edge.reinforcement * decay_factor
-
-            if new_weight < PRUNE_THRESHOLD:
-                cursor.execute("DELETE FROM memory_edges WHERE edge_id = ?", (edge.edge_id,))
-            elif abs(new_weight - edge.weight) > 0.01:
+            if abs(new_strength - node.activation_strength) > 0.01:
                 cursor.execute(
-                    "UPDATE memory_edges SET weight = ? WHERE edge_id = ?",
-                    (new_weight, edge.edge_id),
+                    "UPDATE memory_nodes SET activation_strength = ? WHERE node_id = ?",
+                    (new_strength, node.node_id),
                 )
+                updated += 1
 
-    db.commit()
+        # 边衰减
+        cursor.execute(
+            "SELECT * FROM memory_edges WHERE edge_type = ?",
+            (EdgeType.ASSOCIATES.value,),
+        )
+        for row in cursor.fetchall():
+            edge = row_to_edge(row)
+            if edge.last_activated_at:
+                days_since = (time.time() - edge.last_activated_at) / 86400
+                decay_factor = math.exp(-DECAY_LAMBDA * days_since)
+                new_weight = edge.base_strength + edge.reinforcement * decay_factor
+
+                if new_weight < PRUNE_THRESHOLD:
+                    cursor.execute("DELETE FROM memory_edges WHERE edge_id = ?", (edge.edge_id,))
+                elif abs(new_weight - edge.weight) > 0.01:
+                    cursor.execute(
+                        "UPDATE memory_edges SET weight = ? WHERE edge_id = ?",
+                        (new_weight, edge.edge_id),
+                    )
+
+        db.commit()
+        return updated
+
+    updated = await asyncio.to_thread(_do_db_work)
 
     elapsed = time.time() - start_time
     logger.info(
@@ -168,21 +168,23 @@ async def dream_walk(
     if not db:
         return {"nodes_activated": 0, "new_edges_created": 0, "seed_ids": []}
 
-    cursor = db.cursor()
+    # Step 1: Load all nodes (sync DB)
+    def _load_nodes() -> List[tuple]:
+        cursor = db.cursor()
+        cursor.execute(
+            """
+            SELECT node_id, activation_strength FROM memory_nodes
+            WHERE activation_strength > 0.05 ORDER BY activation_strength DESC
+            """
+        )
+        return [(r["node_id"], r["activation_strength"]) for r in cursor.fetchall()]
 
-    # 按 activation_strength 加权随机选取种子节点
-    cursor.execute(
-        """
-        SELECT node_id, activation_strength FROM memory_nodes
-        WHERE activation_strength > 0.05 ORDER BY activation_strength DESC
-        """
-    )
-    rows = cursor.fetchall()
-    if not rows:
+    node_rows = await asyncio.to_thread(_load_nodes)
+    if not node_rows:
         return {"nodes_activated": 0, "new_edges_created": 0, "seed_ids": []}
 
-    node_ids = [r["node_id"] for r in rows]
-    strengths = np.array([r["activation_strength"] for r in rows], dtype=np.float64)
+    node_ids = [r[0] for r in node_rows]
+    strengths = np.array([r[1] for r in node_rows], dtype=np.float64)
     total_strength = float(strengths.sum())
     if total_strength <= 0:
         strengths = np.ones(len(node_ids), dtype=np.float64) / max(len(node_ids), 1)
@@ -261,21 +263,32 @@ async def dream_walk(
 
     all_activated = list(activation.keys())
 
-    # Hebbian 强化共激活节点
-    new_edges = 0
+    # Step 2: Hebbian 强化共激活节点 (mixed sync/async DB)
     now = time.time()
 
     top_activated = sorted(activation.items(), key=lambda x: -x[1])[:15]
     top_ids = [nid for nid, _ in top_activated]
 
-    existing_ids: List[str] = []
-    for nid in top_ids:
-        cursor.execute("SELECT node_id FROM memory_nodes WHERE node_id = ?", (nid,))
-        if cursor.fetchone():
-            existing_ids.append(nid)
+    # Check which nodes exist (sync DB)
+    def _check_existing(ids: List[str]) -> List[str]:
+        cursor = db.cursor()
+        existing: List[str] = []
+        for nid in ids:
+            cursor.execute("SELECT node_id FROM memory_nodes WHERE node_id = ?", (nid,))
+            if cursor.fetchone():
+                existing.append(nid)
+        return existing
+
+    existing_ids = await asyncio.to_thread(_check_existing, top_ids)
+
+    # Build edge operations data in Python
+    edge_ops: List[tuple] = []  # (op_type, params...)
+    new_edges_count = 0
 
     for i, node_a in enumerate(existing_ids):
         for node_b in existing_ids[i + 1:]:
+            # Check if edge exists (sync DB)
+            cursor = db.cursor()
             cursor.execute(
                 """
                 SELECT edge_id, weight FROM memory_edges
@@ -289,16 +302,32 @@ async def dream_walk(
                 old_weight = row["weight"]
                 delta = learning_rate * (1 - old_weight)
                 new_weight = min(old_weight + delta, 1.0)
+                edge_ops.append(("update", new_weight, delta, now, row["edge_id"]))
+            else:
+                edge_id = str(uuid.uuid4())[:8]
+                edge_ops.append(("insert",
+                    edge_id, node_a, node_b, EdgeType.ASSOCIATES.value,
+                    0.15, 0.15, 0.0, 1, now, "REM 做梦联想", now, 1,
+                ))
+                new_edges_count += 1
+
+    # Execute all edge operations (sync DB, single transaction)
+    def _apply_edge_ops(ops: List[tuple]) -> None:
+        cursor = db.cursor()
+        for op in ops:
+            if op[0] == "update":
+                _, new_weight, delta, now_ts, edge_id = op
                 cursor.execute(
                     """
                     UPDATE memory_edges SET weight = ?, reinforcement = reinforcement + ?,
                     activation_count = activation_count + 1, last_activated_at = ?
                     WHERE edge_id = ?
                     """,
-                    (new_weight, delta, now, row["edge_id"]),
+                    (new_weight, delta, now_ts, edge_id),
                 )
-            else:
-                edge_id = str(uuid.uuid4())[:8]
+            elif op[0] == "insert":
+                (_, edge_id, source, target, etype, weight, base,
+                 reinforcement, act_count, last_activated, reason, created, bidirectional) = op
                 cursor.execute(
                     """
                     INSERT INTO memory_edges
@@ -306,33 +335,21 @@ async def dream_walk(
                      reinforcement, activation_count, last_activated_at, reason, created_at, bidirectional)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (
-                        edge_id,
-                        node_a,
-                        node_b,
-                        EdgeType.ASSOCIATES.value,
-                        0.15,
-                        0.15,
-                        0.0,
-                        1,
-                        now,
-                        "REM 做梦联想",
-                        now,
-                        1,
-                    ),
+                    (edge_id, source, target, etype, weight, base,
+                     reinforcement, act_count, last_activated, reason, created, bidirectional),
                 )
-                new_edges += 1
+        db.commit()
 
-    db.commit()
+    await asyncio.to_thread(_apply_edge_ops, edge_ops)
 
     logger.info(
         f"REM dream_walk 完成: seeds={len(actual_seed_ids)} "
-        f"activated={len(all_activated)} new_edges={new_edges}"
+        f"activated={len(all_activated)} new_edges={new_edges_count}"
     )
 
     return {
         "nodes_activated": len(all_activated),
-        "new_edges_created": new_edges,
+        "new_edges_created": new_edges_count,
         "seed_ids": actual_seed_ids,
     }
 
@@ -353,36 +370,39 @@ async def list_dream_candidate_nodes(
     if not db:
         return []
 
-    cursor = db.cursor()
-    cursor.execute(
-        """
-        SELECT node_id, file_path, title, activation_strength, access_count,
-               emotional_valence, emotional_arousal, importance, updated_at
-        FROM memory_nodes
-        WHERE node_type = ?
-        ORDER BY importance DESC,
-                 emotional_arousal DESC,
-                 access_count DESC,
-                 activation_strength DESC,
-                 updated_at DESC
-        LIMIT ?
-        """,
-        (NodeType.FILE.value, max(1, int(limit))),
-    )
-    results: List[Dict[str, Any]] = []
-    for row in cursor.fetchall():
-        results.append({
-            "node_id": row["node_id"],
-            "file_path": row["file_path"],
-            "title": row["title"] or "",
-            "activation_strength": float(row["activation_strength"] or 0.0),
-            "access_count": int(row["access_count"] or 0),
-            "emotional_valence": float(row["emotional_valence"] or 0.0),
-            "emotional_arousal": float(row["emotional_arousal"] or 0.0),
-            "importance": float(row["importance"] or 0.0),
-            "updated_at": float(row["updated_at"] or 0.0),
-        })
-    return results
+    def _do_db_work() -> List[Dict[str, Any]]:
+        cursor = db.cursor()
+        cursor.execute(
+            """
+            SELECT node_id, file_path, title, activation_strength, access_count,
+                   emotional_valence, emotional_arousal, importance, updated_at
+            FROM memory_nodes
+            WHERE node_type = ?
+            ORDER BY importance DESC,
+                     emotional_arousal DESC,
+                     access_count DESC,
+                     activation_strength DESC,
+                     updated_at DESC
+            LIMIT ?
+            """,
+            (NodeType.FILE.value, max(1, int(limit))),
+        )
+        results: List[Dict[str, Any]] = []
+        for row in cursor.fetchall():
+            results.append({
+                "node_id": row["node_id"],
+                "file_path": row["file_path"],
+                "title": row["title"] or "",
+                "activation_strength": float(row["activation_strength"] or 0.0),
+                "access_count": int(row["access_count"] or 0),
+                "emotional_valence": float(row["emotional_valence"] or 0.0),
+                "emotional_arousal": float(row["emotional_arousal"] or 0.0),
+                "importance": float(row["importance"] or 0.0),
+                "updated_at": float(row["updated_at"] or 0.0),
+            })
+        return results
+
+    return await asyncio.to_thread(_do_db_work)
 
 
 async def list_random_file_nodes(
@@ -404,32 +424,35 @@ async def list_random_file_nodes(
     if not db:
         return []
 
-    cursor = db.cursor()
-    cursor.execute(
-        """
-        SELECT node_id, file_path, title, activation_strength, access_count,
-               emotional_valence, emotional_arousal, importance, updated_at
-        FROM memory_nodes
-        WHERE node_type = ?
-        ORDER BY RANDOM()
-        LIMIT ?
-        """,
-        (NodeType.FILE.value, max(1, int(limit))),
-    )
-    results: List[Dict[str, Any]] = []
-    for row in cursor.fetchall():
-        results.append({
-            "node_id": row["node_id"],
-            "file_path": row["file_path"],
-            "title": row["title"] or "",
-            "activation_strength": float(row["activation_strength"] or 0.0),
-            "access_count": int(row["access_count"] or 0),
-            "emotional_valence": float(row["emotional_valence"] or 0.0),
-            "emotional_arousal": float(row["emotional_arousal"] or 0.0),
-            "importance": float(row["importance"] or 0.0),
-            "updated_at": float(row["updated_at"] or 0.0),
-        })
-    return results
+    def _do_db_work() -> List[Dict[str, Any]]:
+        cursor = db.cursor()
+        cursor.execute(
+            """
+            SELECT node_id, file_path, title, activation_strength, access_count,
+                   emotional_valence, emotional_arousal, importance, updated_at
+            FROM memory_nodes
+            WHERE node_type = ?
+            ORDER BY RANDOM()
+            LIMIT ?
+            """,
+            (NodeType.FILE.value, max(1, int(limit))),
+        )
+        results: List[Dict[str, Any]] = []
+        for row in cursor.fetchall():
+            results.append({
+                "node_id": row["node_id"],
+                "file_path": row["file_path"],
+                "title": row["title"] or "",
+                "activation_strength": float(row["activation_strength"] or 0.0),
+                "access_count": int(row["access_count"] or 0),
+                "emotional_valence": float(row["emotional_valence"] or 0.0),
+                "emotional_arousal": float(row["emotional_arousal"] or 0.0),
+                "importance": float(row["importance"] or 0.0),
+                "updated_at": float(row["updated_at"] or 0.0),
+            })
+        return results
+
+    return await asyncio.to_thread(_do_db_work)
 
 
 async def prune_weak_edges(
@@ -448,29 +471,33 @@ async def prune_weak_edges(
     if not db:
         return 0
 
-    cursor = db.cursor()
-    cursor.execute(
-        """
-        SELECT edge_id, weight FROM memory_edges
-        WHERE edge_type = ? AND weight < ?
-        """,
-        (EdgeType.ASSOCIATES.value, threshold),
-    )
-    rows = cursor.fetchall()
+    def _do_db_work() -> int:
+        cursor = db.cursor()
+        cursor.execute(
+            """
+            SELECT edge_id, weight FROM memory_edges
+            WHERE edge_type = ? AND weight < ?
+            """,
+            (EdgeType.ASSOCIATES.value, threshold),
+        )
+        rows = cursor.fetchall()
 
-    if not rows:
-        return 0
+        if not rows:
+            return 0
 
-    edge_ids = [r["edge_id"] for r in rows]
-    placeholders = ",".join("?" for _ in edge_ids)
-    cursor.execute(
-        f"DELETE FROM memory_edges WHERE edge_id IN ({placeholders})",
-        edge_ids,
-    )
-    db.commit()
+        edge_ids = [r["edge_id"] for r in rows]
+        placeholders = ",".join("?" for _ in edge_ids)
+        cursor.execute(
+            f"DELETE FROM memory_edges WHERE edge_id IN ({placeholders})",
+            edge_ids,
+        )
+        db.commit()
+        return len(edge_ids)
 
-    logger.info(f"REM 弱边修剪完成: pruned={len(edge_ids)} threshold={threshold}")
-    return len(edge_ids)
+    count = await asyncio.to_thread(_do_db_work)
+    if count > 0:
+        logger.info(f"REM 弱边修剪完成: pruned={count} threshold={threshold}")
+    return count
 
 
 # ============================================================
@@ -570,29 +597,32 @@ async def get_stats(db: sqlite3.Connection) -> Dict[str, Any]:
     Returns:
         统计信息字典
     """
-    cursor = db.cursor()
+    def _do_db_work() -> Dict[str, Any]:
+        cursor = db.cursor()
 
-    cursor.execute(
-        "SELECT COUNT(*) as cnt FROM memory_nodes WHERE node_type = ?",
-        (NodeType.FILE.value,),
-    )
-    file_count = cursor.fetchone()["cnt"]
+        cursor.execute(
+            "SELECT COUNT(*) as cnt FROM memory_nodes WHERE node_type = ?",
+            (NodeType.FILE.value,),
+        )
+        file_count = cursor.fetchone()["cnt"]
 
-    cursor.execute(
-        "SELECT COUNT(*) as cnt FROM memory_nodes WHERE node_type = ?",
-        (NodeType.CONCEPT.value,),
-    )
-    concept_count = cursor.fetchone()["cnt"]
+        cursor.execute(
+            "SELECT COUNT(*) as cnt FROM memory_nodes WHERE node_type = ?",
+            (NodeType.CONCEPT.value,),
+        )
+        concept_count = cursor.fetchone()["cnt"]
 
-    cursor.execute("SELECT COUNT(*) as cnt FROM memory_edges")
-    edge_count = cursor.fetchone()["cnt"]
+        cursor.execute("SELECT COUNT(*) as cnt FROM memory_edges")
+        edge_count = cursor.fetchone()["cnt"]
 
-    cursor.execute("SELECT AVG(activation_strength) as avg FROM memory_nodes")
-    avg_activation = cursor.fetchone()["avg"] or 0
+        cursor.execute("SELECT AVG(activation_strength) as avg FROM memory_nodes")
+        avg_activation = cursor.fetchone()["avg"] or 0
 
-    return {
-        "file_nodes": file_count,
-        "concept_nodes": concept_count,
-        "total_edges": edge_count,
-        "avg_activation": round(avg_activation, 3),
-    }
+        return {
+            "file_nodes": file_count,
+            "concept_nodes": concept_count,
+            "total_edges": edge_count,
+            "avg_activation": round(avg_activation, 3),
+        }
+
+    return await asyncio.to_thread(_do_db_work)

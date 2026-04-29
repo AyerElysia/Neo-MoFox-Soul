@@ -59,7 +59,7 @@ class SettingRouter(BaseRouter):
     router_description = "WebUI设置管理接口"
 
     custom_route_path = "/webui/api/setting"
-    cors_origins = ["*"]
+    cors_origins = []
 
     def register_endpoints(self) -> None:
         """注册所有HTTP端点"""

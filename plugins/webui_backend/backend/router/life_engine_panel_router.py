@@ -120,7 +120,7 @@ class LifeEnginePanelRouter(BaseRouter):
     router_name = "LifeEnginePanel"
     router_description = "生命中枢事件流与待办可视化接口"
     custom_route_path = "/webui/api/life_panel"
-    cors_origins = ["*"]
+    cors_origins = []
 
     def register_endpoints(self) -> None:
         @self.app.get("/snapshot")

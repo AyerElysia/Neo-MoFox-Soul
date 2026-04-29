@@ -31,8 +31,8 @@ class ApiRouter(BaseRouter):
     # 使用与前端 SPA 相同的路由路径
     custom_route_path = "/webui/api/auth"
 
-    # 允许所有来源访问
-    cors_origins = ["*"]
+    # 空列表表示仅允许同源请求
+    cors_origins = []
 
     def register_endpoints(self) -> None:
         """注册 API 端点"""

@@ -189,7 +189,7 @@ class StatsRouter(BaseRouter):
     router_description = "WebUI统计数据接口"
 
     custom_route_path = "/webui/api/stats"
-    cors_origins = ["*"]
+    cors_origins = []
 
     def register_endpoints(self) -> None:
         """注册所有HTTP端点"""

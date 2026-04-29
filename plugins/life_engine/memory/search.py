@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 import time
 from dataclasses import dataclass, field
@@ -139,12 +140,15 @@ async def sync_embedding(
             ],
         )
 
-        cursor = db.cursor()
-        cursor.execute(
-            "UPDATE memory_nodes SET embedding_synced = 1 WHERE node_id = ?",
-            (node.node_id,),
-        )
-        db.commit()
+        def _do_db_work() -> None:
+            cursor = db.cursor()
+            cursor.execute(
+                "UPDATE memory_nodes SET embedding_synced = 1 WHERE node_id = ?",
+                (node.node_id,),
+            )
+            db.commit()
+
+        await asyncio.to_thread(_do_db_work)
         logger.debug(f"已同步 embedding: {file_path}")
     except Exception as e:
         logger.error(f"同步 embedding 失败 ({file_path}): {e}")
@@ -232,28 +236,31 @@ async def fts_search(db: sqlite3.Connection, query: str, top_k: int = 10) -> Lis
     Returns:
         (node_id, score) 列表
     """
-    cursor = db.cursor()
-
     safe_query = _sanitize_fts_query(query)
-    # 使用 FTS5 的 BM25 排序
-    cursor.execute(
-        """
-        SELECT node_id, bm25(memory_fts) as score
-        FROM memory_fts
-        WHERE memory_fts MATCH ?
-        ORDER BY score
-        LIMIT ?
-        """,
-        (safe_query, top_k),
-    )
 
-    results: List[Tuple[str, float]] = []
-    for row in cursor.fetchall():
-        # BM25 返回负数，绝对值越大越相关
-        score = abs(row["score"]) / 10.0  # 归一化
-        results.append((row["node_id"], min(score, 1.0)))
+    def _do_db_work() -> List[Tuple[str, float]]:
+        cursor = db.cursor()
+        # 使用 FTS5 的 BM25 排序
+        cursor.execute(
+            """
+            SELECT node_id, bm25(memory_fts) as score
+            FROM memory_fts
+            WHERE memory_fts MATCH ?
+            ORDER BY score
+            LIMIT ?
+            """,
+            (safe_query, top_k),
+        )
 
-    return results
+        results: List[Tuple[str, float]] = []
+        for row in cursor.fetchall():
+            # BM25 返回负数，绝对值越大越相关
+            score = abs(row["score"]) / 10.0  # 归一化
+            results.append((row["node_id"], min(score, 1.0)))
+
+        return results
+
+    return await asyncio.to_thread(_do_db_work)
 
 
 # ============================================================
@@ -391,12 +398,16 @@ async def filter_existing_scores(
             seen.add(node_id)
 
     placeholders = ",".join("?" for _ in ordered_ids)
-    cursor = db.cursor()
-    cursor.execute(
-        f"SELECT node_id FROM memory_nodes WHERE node_id IN ({placeholders})",
-        ordered_ids,
-    )
-    existing_ids = {row["node_id"] for row in cursor.fetchall()}
+
+    def _do_db_work() -> set:
+        cursor = db.cursor()
+        cursor.execute(
+            f"SELECT node_id FROM memory_nodes WHERE node_id IN ({placeholders})",
+            ordered_ids,
+        )
+        return {row["node_id"] for row in cursor.fetchall()}
+
+    existing_ids = await asyncio.to_thread(_do_db_work)
     stale_ids = [node_id for node_id in ordered_ids if node_id not in existing_ids]
     filtered_scores = [(node_id, score) for node_id, score in scores if node_id in existing_ids]
     return filtered_scores, stale_ids
@@ -412,10 +423,13 @@ async def get_node_by_id(db: sqlite3.Connection, node_id: str) -> Optional[Memor
     Returns:
         MemoryNode 或 None
     """
-    cursor = db.cursor()
-    cursor.execute("SELECT * FROM memory_nodes WHERE node_id = ?", (node_id,))
-    row = cursor.fetchone()
-    return row_to_node(row) if row else None
+    def _do_db_work() -> Optional[MemoryNode]:
+        cursor = db.cursor()
+        cursor.execute("SELECT * FROM memory_nodes WHERE node_id = ?", (node_id,))
+        row = cursor.fetchone()
+        return row_to_node(row) if row else None
+
+    return await asyncio.to_thread(_do_db_work)
 
 
 async def get_snippet(db: sqlite3.Connection, node_id: str) -> str:
@@ -428,13 +442,16 @@ async def get_snippet(db: sqlite3.Connection, node_id: str) -> str:
     Returns:
         内容摘要
     """
-    cursor = db.cursor()
-    cursor.execute("SELECT content FROM memory_fts WHERE node_id = ?", (node_id,))
-    row = cursor.fetchone()
-    if row:
-        content = row["content"]
-        return content[:150] + "..." if len(content) > 150 else content
-    return ""
+    def _do_db_work() -> str:
+        cursor = db.cursor()
+        cursor.execute("SELECT content FROM memory_fts WHERE node_id = ?", (node_id,))
+        row = cursor.fetchone()
+        if row:
+            content = row["content"]
+            return content[:150] + "..." if len(content) > 150 else content
+        return ""
+
+    return await asyncio.to_thread(_do_db_work)
 
 
 async def filter_results(

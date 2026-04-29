@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 import time
 import uuid
@@ -116,100 +117,61 @@ async def create_or_update_edge(
     Returns:
         MemoryEdge 实例
     """
-    cursor = db.cursor()
-
-    cursor.execute(
-        """
-        SELECT * FROM memory_edges
-        WHERE source_id = ? AND target_id = ? AND edge_type = ?
-        """,
-        (source_id, target_id, edge_type.value),
-    )
-    row = cursor.fetchone()
-
     now = time.time()
 
-    if row:
-        edge = row_to_edge(row)
+    def _do_db_work() -> tuple[MemoryEdge, bool]:
+        """Sync DB work. Returns (edge, is_update)."""
+        cursor = db.cursor()
+
         cursor.execute(
             """
-            UPDATE memory_edges
-            SET weight = ?, reason = ?, last_activated_at = ?
-            WHERE edge_id = ?
+            SELECT * FROM memory_edges
+            WHERE source_id = ? AND target_id = ? AND edge_type = ?
             """,
-            (strength, reason or edge.reason, now, edge.edge_id),
+            (source_id, target_id, edge_type.value),
         )
-        db.commit()
-        edge.weight = strength
-        edge.reason = reason or edge.reason
-        edge.last_activated_at = now
-        if emit_visual_event:
-            emit_visual_event(
-                "memory.edges.updated",
-                {
-                    "edge": {
-                        "id": edge.edge_id,
-                        "source": edge.source_id,
-                        "target": edge.target_id,
-                        "type": edge.edge_type.value,
-                        "weight": edge.weight,
-                        "reason": edge.reason,
-                        "last_activated_at": edge.last_activated_at,
-                    }
-                },
+        row = cursor.fetchone()
+
+        if row:
+            edge = row_to_edge(row)
+            cursor.execute(
+                """
+                UPDATE memory_edges
+                SET weight = ?, reason = ?, last_activated_at = ?
+                WHERE edge_id = ?
+                """,
+                (strength, reason or edge.reason, now, edge.edge_id),
             )
-        return edge
+            db.commit()
+            edge.weight = strength
+            edge.reason = reason or edge.reason
+            edge.last_activated_at = now
+            return edge, True
 
-    edge_id = str(uuid.uuid4())[:8]
-    edge = MemoryEdge(
-        edge_id=edge_id,
-        source_id=source_id,
-        target_id=target_id,
-        edge_type=edge_type,
-        weight=strength,
-        base_strength=strength,
-        reason=reason,
-        created_at=now,
-        bidirectional=bidirectional,
-    )
+        edge_id = str(uuid.uuid4())[:8]
+        edge = MemoryEdge(
+            edge_id=edge_id,
+            source_id=source_id,
+            target_id=target_id,
+            edge_type=edge_type,
+            weight=strength,
+            base_strength=strength,
+            reason=reason,
+            created_at=now,
+            bidirectional=bidirectional,
+        )
 
-    cursor.execute(
-        """
-        INSERT INTO memory_edges
-        (edge_id, source_id, target_id, edge_type, weight, base_strength,
-         reinforcement, activation_count, last_activated_at, reason, created_at, bidirectional)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            edge.edge_id,
-            edge.source_id,
-            edge.target_id,
-            edge.edge_type.value,
-            edge.weight,
-            edge.base_strength,
-            edge.reinforcement,
-            edge.activation_count,
-            edge.last_activated_at,
-            edge.reason,
-            edge.created_at,
-            1 if edge.bidirectional else 0,
-        ),
-    )
-
-    # 如果是双向边，也创建反向边
-    if bidirectional and edge_type not in (EdgeType.CAUSES, EdgeType.CONTINUES, EdgeType.MENTIONS):
-        reverse_edge_id = str(uuid.uuid4())[:8]
         cursor.execute(
             """
-            INSERT OR IGNORE INTO memory_edges
+            INSERT INTO memory_edges
             (edge_id, source_id, target_id, edge_type, weight, base_strength,
              reinforcement, activation_count, last_activated_at, reason, created_at, bidirectional)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                reverse_edge_id,
-                target_id,
-                source_id,
+                edge.edge_id,
+                edge.source_id,
+                edge.target_id,
                 edge.edge_type.value,
                 edge.weight,
                 edge.base_strength,
@@ -218,14 +180,45 @@ async def create_or_update_edge(
                 edge.last_activated_at,
                 edge.reason,
                 edge.created_at,
-                1,
+                1 if edge.bidirectional else 0,
             ),
         )
 
-    db.commit()
+        # 如果是双向边，也创建反向边
+        if bidirectional and edge_type not in (EdgeType.CAUSES, EdgeType.CONTINUES, EdgeType.MENTIONS):
+            reverse_edge_id = str(uuid.uuid4())[:8]
+            cursor.execute(
+                """
+                INSERT OR IGNORE INTO memory_edges
+                (edge_id, source_id, target_id, edge_type, weight, base_strength,
+                 reinforcement, activation_count, last_activated_at, reason, created_at, bidirectional)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    reverse_edge_id,
+                    target_id,
+                    source_id,
+                    edge.edge_type.value,
+                    edge.weight,
+                    edge.base_strength,
+                    edge.reinforcement,
+                    edge.activation_count,
+                    edge.last_activated_at,
+                    edge.reason,
+                    edge.created_at,
+                    1,
+                ),
+            )
+
+        db.commit()
+        return edge, False
+
+    edge, is_update = await asyncio.to_thread(_do_db_work)
+
     if emit_visual_event:
+        event_type = "memory.edges.updated" if is_update else "memory.edges.created"
         emit_visual_event(
-            "memory.edges.created",
+            event_type,
             {
                 "edge": {
                     "id": edge.edge_id,
@@ -257,16 +250,19 @@ async def get_edges_from(
     Returns:
         边列表
     """
-    cursor = db.cursor()
-    cursor.execute(
-        """
-        SELECT * FROM memory_edges
-        WHERE source_id = ? AND weight >= ?
-        ORDER BY weight DESC
-        """,
-        (node_id, min_weight),
-    )
-    return [row_to_edge(row) for row in cursor.fetchall()]
+    def _do_db_work() -> List[MemoryEdge]:
+        cursor = db.cursor()
+        cursor.execute(
+            """
+            SELECT * FROM memory_edges
+            WHERE source_id = ? AND weight >= ?
+            ORDER BY weight DESC
+            """,
+            (node_id, min_weight),
+        )
+        return [row_to_edge(row) for row in cursor.fetchall()]
+
+    return await asyncio.to_thread(_do_db_work)
 
 
 async def get_edges_to(
@@ -284,16 +280,19 @@ async def get_edges_to(
     Returns:
         边列表
     """
-    cursor = db.cursor()
-    cursor.execute(
-        """
-        SELECT * FROM memory_edges
-        WHERE target_id = ? AND weight >= ?
-        ORDER BY weight DESC
-        """,
-        (node_id, min_weight),
-    )
-    return [row_to_edge(row) for row in cursor.fetchall()]
+    def _do_db_work() -> List[MemoryEdge]:
+        cursor = db.cursor()
+        cursor.execute(
+            """
+            SELECT * FROM memory_edges
+            WHERE target_id = ? AND weight >= ?
+            ORDER BY weight DESC
+            """,
+            (node_id, min_weight),
+        )
+        return [row_to_edge(row) for row in cursor.fetchall()]
+
+    return await asyncio.to_thread(_do_db_work)
 
 
 async def delete_edge(
@@ -321,34 +320,37 @@ async def delete_edge(
     source_id = gen_func(source_path)
     target_id = gen_func(target_path)
 
-    cursor = db.cursor()
-    if edge_type:
-        cursor.execute(
-            """
-            DELETE FROM memory_edges
-            WHERE source_id = ? AND target_id = ? AND edge_type = ?
-            """,
-            (source_id, target_id, edge_type.value),
-        )
-        cursor.execute(
-            """
-            DELETE FROM memory_edges
-            WHERE source_id = ? AND target_id = ? AND edge_type = ?
-            """,
-            (target_id, source_id, edge_type.value),
-        )
-    else:
-        cursor.execute(
-            """
-            DELETE FROM memory_edges
-            WHERE (source_id = ? AND target_id = ?) OR (source_id = ? AND target_id = ?)
-            """,
-            (source_id, target_id, target_id, source_id),
-        )
+    def _do_db_work() -> bool:
+        cursor = db.cursor()
+        if edge_type:
+            cursor.execute(
+                """
+                DELETE FROM memory_edges
+                WHERE source_id = ? AND target_id = ? AND edge_type = ?
+                """,
+                (source_id, target_id, edge_type.value),
+            )
+            cursor.execute(
+                """
+                DELETE FROM memory_edges
+                WHERE source_id = ? AND target_id = ? AND edge_type = ?
+                """,
+                (target_id, source_id, edge_type.value),
+            )
+        else:
+            cursor.execute(
+                """
+                DELETE FROM memory_edges
+                WHERE (source_id = ? AND target_id = ?) OR (source_id = ? AND target_id = ?)
+                """,
+                (source_id, target_id, target_id, source_id),
+            )
 
-    deleted = cursor.rowcount > 0
-    db.commit()
-    return deleted
+        deleted = cursor.rowcount > 0
+        db.commit()
+        return deleted
+
+    return await asyncio.to_thread(_do_db_work)
 
 
 # ============================================================
@@ -394,79 +396,84 @@ async def reinforce_coactivated(
     if len(existing_ids) < 2:
         return
 
-    cursor = db.cursor()
     now = time.time()
-    reinforced_edges: List[Dict[str, Any]] = []
 
-    for i, node_a in enumerate(existing_ids):
-        for node_b in existing_ids[i + 1:]:
-            # 查找或创建 ASSOCIATES 边
-            cursor.execute(
-                """
-                SELECT * FROM memory_edges
-                WHERE source_id = ? AND target_id = ? AND edge_type = ?
-                """,
-                (node_a, node_b, EdgeType.ASSOCIATES.value),
-            )
-            row = cursor.fetchone()
+    def _do_db_work() -> List[Dict[str, Any]]:
+        cursor = db.cursor()
+        reinforced_edges: List[Dict[str, Any]] = []
 
-            if row:
-                old_weight = row["weight"]
-                # Hebbian: Δw = α * (1 - w)
-                delta = learning_rate * (1 - old_weight)
-                new_weight = min(old_weight + delta, 1.0)
-
+        for i, node_a in enumerate(existing_ids):
+            for node_b in existing_ids[i + 1:]:
+                # 查找或创建 ASSOCIATES 边
                 cursor.execute(
                     """
-                    UPDATE memory_edges
-                    SET weight = ?, reinforcement = reinforcement + ?,
-                        activation_count = activation_count + 1, last_activated_at = ?
-                    WHERE edge_id = ?
+                    SELECT * FROM memory_edges
+                    WHERE source_id = ? AND target_id = ? AND edge_type = ?
                     """,
-                    (new_weight, delta, now, row["edge_id"]),
+                    (node_a, node_b, EdgeType.ASSOCIATES.value),
                 )
-                reinforced_edges.append({
-                    "id": row["edge_id"],
-                    "source": node_a,
-                    "target": node_b,
-                    "type": EdgeType.ASSOCIATES.value,
-                    "weight": new_weight,
-                    "delta": delta,
-                })
-            else:
-                edge_id = str(uuid.uuid4())[:8]
-                cursor.execute(
-                    """
-                    INSERT INTO memory_edges
-                    (edge_id, source_id, target_id, edge_type, weight, base_strength,
-                     reinforcement, activation_count, last_activated_at, reason, created_at, bidirectional)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        edge_id,
-                        node_a,
-                        node_b,
-                        EdgeType.ASSOCIATES.value,
-                        0.2,
-                        0.2,
-                        0.0,
-                        1,
-                        now,
-                        "共同检索激活",
-                        now,
-                        1,
-                    ),
-                )
-                reinforced_edges.append({
-                    "id": edge_id,
-                    "source": node_a,
-                    "target": node_b,
-                    "type": EdgeType.ASSOCIATES.value,
-                    "weight": 0.2,
-                    "delta": learning_rate,
-                })
+                row = cursor.fetchone()
 
-    db.commit()
+                if row:
+                    old_weight = row["weight"]
+                    # Hebbian: Δw = α * (1 - w)
+                    delta = learning_rate * (1 - old_weight)
+                    new_weight = min(old_weight + delta, 1.0)
+
+                    cursor.execute(
+                        """
+                        UPDATE memory_edges
+                        SET weight = ?, reinforcement = reinforcement + ?,
+                            activation_count = activation_count + 1, last_activated_at = ?
+                        WHERE edge_id = ?
+                        """,
+                        (new_weight, delta, now, row["edge_id"]),
+                    )
+                    reinforced_edges.append({
+                        "id": row["edge_id"],
+                        "source": node_a,
+                        "target": node_b,
+                        "type": EdgeType.ASSOCIATES.value,
+                        "weight": new_weight,
+                        "delta": delta,
+                    })
+                else:
+                    edge_id = str(uuid.uuid4())[:8]
+                    cursor.execute(
+                        """
+                        INSERT INTO memory_edges
+                        (edge_id, source_id, target_id, edge_type, weight, base_strength,
+                         reinforcement, activation_count, last_activated_at, reason, created_at, bidirectional)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            edge_id,
+                            node_a,
+                            node_b,
+                            EdgeType.ASSOCIATES.value,
+                            0.2,
+                            0.2,
+                            0.0,
+                            1,
+                            now,
+                            "共同检索激活",
+                            now,
+                            1,
+                        ),
+                    )
+                    reinforced_edges.append({
+                        "id": edge_id,
+                        "source": node_a,
+                        "target": node_b,
+                        "type": EdgeType.ASSOCIATES.value,
+                        "weight": 0.2,
+                        "delta": learning_rate,
+                    })
+
+        db.commit()
+        return reinforced_edges
+
+    reinforced_edges = await asyncio.to_thread(_do_db_work)
     if reinforced_edges and emit_visual_event:
         emit_visual_event(
             "memory.edges.reinforced",

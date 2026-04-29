@@ -249,7 +249,7 @@ class InitializationRouter(BaseRouter):
     router_description = "系统初始化向导接口"
 
     custom_route_path = "/webui/api/initialization"
-    cors_origins = ["*"]
+    cors_origins = []
 
     def register_endpoints(self) -> None:
         """注册所有端点"""

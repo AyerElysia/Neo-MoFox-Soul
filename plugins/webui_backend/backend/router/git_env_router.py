@@ -94,7 +94,7 @@ class GitEnvRouter(BaseRouter):
     router_description = "Git 环境检测与配置管理接口"
 
     custom_route_path = "/webui/api/git_env"
-    cors_origins = ["*"]
+    cors_origins = []
 
     def register_endpoints(self) -> None:
         """注册所有端点"""

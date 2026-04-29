@@ -48,7 +48,7 @@ class FrontendRouter(BaseRouter):
     custom_route_path = "/webui/frontend"
 
     # 允许所有来源访问
-    cors_origins = ["*"]
+    cors_origins = []
 
     def register_endpoints(self) -> None:
         """注册HTTP端点。"""
