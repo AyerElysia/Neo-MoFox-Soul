@@ -190,8 +190,12 @@ class LifeEngineGrepEventsTool(BaseTool):
 
     tool_name: str = "nucleus_grep_events"
     tool_description: str = (
-        "搜索你的完整事件流，包括外部消息、心跳、工具调用和工具结果。"
-        "适合回忆“我之前看见/做过/想过什么”。这是事件流检索，不是聊天数据库全文检索。"
+        "搜索你的完整事件流，包括外部消息、心跳、工具调用和工具结果。\n\n"
+        "何时用：回忆“我之前看见/做过/想过什么”；查找某段对话或某次工具调用的上下文；"
+        "追溯某件事的来龙去脉。\n"
+        "何时不用：查找文件内容用 nucleus_grep_file；查询 TODO 用 nucleus_todo；"
+        "这里是事件流检索，不是聊天数据库全文检索。\n"
+        "支持正则、按 stream_id 或事件类型过滤，可携带前后相邻事件作为上下文。"
     )
     chatter_allow: list[str] = ["life_engine_internal"]
 

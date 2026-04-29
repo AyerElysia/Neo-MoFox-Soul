@@ -14,7 +14,7 @@ from typing import Annotated, Any, Literal
 from src.core.components import BaseTool
 from src.app.plugin_system.api import log_api
 
-from ..core.config import LifeEngineConfig
+from ._utils import _get_workspace
 
 logger = log_api.get_logger("life_engine.grep")
 
@@ -25,18 +25,6 @@ _IGNORE_DIRS = {".memory", "__pycache__", ".git", ".svn", "node_modules"}
 _IGNORE_EXTENSIONS = {".db", ".sqlite", ".sqlite3", ".pyc", ".pyo", ".tmp"}
 # 单文件最大扫描字节（跳过过大的二进制文件）
 _MAX_FILE_SIZE = 1024 * 1024  # 1MB
-
-
-def _get_workspace(plugin: Any) -> Path:
-    """获取工作空间路径。"""
-    config = getattr(plugin, "config", None)
-    if isinstance(config, LifeEngineConfig):
-        workspace = config.settings.workspace_path
-    else:
-        workspace = str(Path(__file__).parent.parent.parent / "data" / "life_engine_workspace")
-    path = Path(workspace).resolve()
-    path.mkdir(parents=True, exist_ok=True)
-    return path
 
 
 def _should_skip_path(path: Path) -> bool:

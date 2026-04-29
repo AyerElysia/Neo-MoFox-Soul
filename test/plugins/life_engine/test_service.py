@@ -2,19 +2,30 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from plugins.life_engine.core.config import LifeEngineConfig
 from plugins.life_engine.service import LifeEngineService
+from src.kernel.llm import ROLE, ToolRegistry
 
 
 @dataclass
 class _DummyPlugin:
     config: object
+
+
+class _FakeResponse:
+    def __init__(self) -> None:
+        self.payloads: list[object] = []
+
+    def add_payload(self, payload: object) -> None:
+        self.payloads.append(payload)
 
 
 def _make_service(tmp_path: Path) -> LifeEngineService:
@@ -169,6 +180,134 @@ async def test_enqueue_dfc_message_rejects_empty_message(tmp_path: Path) -> None
 
     with pytest.raises(ValueError, match="message 不能为空"):
         await service.enqueue_dfc_message("   ")
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_tool_batch_executes_parallel_and_preserves_payload_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """心跳安全工具批次应并行执行，但 TOOL_RESULT 按模型调用顺序写回。"""
+    service = _make_service(tmp_path)
+    completion_order: list[str] = []
+    tool_calls: list[str] = []
+    tool_results: list[str] = []
+
+    async def _record_tool_call(tool_name: str, _tool_args: dict) -> None:
+        tool_calls.append(tool_name)
+
+    async def _record_tool_result(tool_name: str, _result: str, _success: bool) -> None:
+        tool_results.append(tool_name)
+
+    monkeypatch.setattr(service, "record_tool_call", _record_tool_call)
+    monkeypatch.setattr(service, "record_tool_result", _record_tool_result)
+
+    class SlowReadTool:
+        def __init__(self, plugin: object) -> None:
+            self.plugin = plugin
+
+        async def execute(self, **_kwargs: object) -> tuple[bool, str]:
+            await asyncio.sleep(0.03)
+            completion_order.append("slow")
+            return True, "slow-result"
+
+    class FastListTool:
+        def __init__(self, plugin: object) -> None:
+            self.plugin = plugin
+
+        async def execute(self, **_kwargs: object) -> tuple[bool, str]:
+            await asyncio.sleep(0)
+            completion_order.append("fast")
+            return True, "fast-result"
+
+    registry = ToolRegistry()
+    registry.register(SlowReadTool, name="nucleus_read_file")
+    registry.register(FastListTool, name="nucleus_list_files")
+    response = _FakeResponse()
+    calls = [
+        SimpleNamespace(id="slow-id", name="nucleus_read_file", args={"path": "a.md"}),
+        SimpleNamespace(id="fast-id", name="nucleus_list_files", args={"path": ""}),
+    ]
+
+    event_count = await service._execute_heartbeat_tool_call_batch(
+        calls,
+        response,
+        registry,
+    )
+
+    assert event_count == 4
+    assert completion_order == ["fast", "slow"]
+    assert tool_calls == ["nucleus_read_file", "nucleus_list_files"]
+    assert tool_results == ["nucleus_read_file", "nucleus_list_files"]
+    assert [payload.role for payload in response.payloads] == [ROLE.TOOL_RESULT, ROLE.TOOL_RESULT]
+    assert [payload.content[0].name for payload in response.payloads] == [
+        "nucleus_read_file",
+        "nucleus_list_files",
+    ]
+    assert [payload.content[0].value for payload in response.payloads] == [
+        "slow-result",
+        "fast-result",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_tool_execution_strips_auto_reason_when_signature_rejects_it(
+    tmp_path: Path,
+) -> None:
+    """心跳工具执行应剥离模型自动 reason，避免不接受该参数的工具报错。"""
+    service = _make_service(tmp_path)
+    seen_args: list[str] = []
+
+    class NoReasonTool:
+        def __init__(self, plugin: object) -> None:
+            self.plugin = plugin
+
+        async def execute(self, path: str) -> tuple[bool, str]:
+            seen_args.append(path)
+            return True, f"read:{path}"
+
+    registry = ToolRegistry()
+    registry.register(NoReasonTool, name="nucleus_read_file")
+
+    result_text, success = await service._run_heartbeat_tool_call_execution(
+        "nucleus_read_file",
+        {"path": "diaries/2026-04-29.md", "reason": "模型解释"},
+        registry,
+    )
+
+    assert success is True
+    assert result_text == "read:diaries/2026-04-29.md"
+    assert seen_args == ["diaries/2026-04-29.md"]
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_tool_execution_keeps_declared_reason_parameter(
+    tmp_path: Path,
+) -> None:
+    """工具显式声明 reason 时仍应保留该参数。"""
+    service = _make_service(tmp_path)
+    seen_reason: list[str] = []
+
+    class ReasonTool:
+        def __init__(self, plugin: object) -> None:
+            self.plugin = plugin
+
+        async def execute(self, content: str, reason: str = "") -> tuple[bool, str]:
+            seen_reason.append(reason)
+            return True, content
+
+    registry = ToolRegistry()
+    registry.register(ReasonTool, name="nucleus_initiate_topic")
+
+    result_text, success = await service._run_heartbeat_tool_call_execution(
+        "nucleus_initiate_topic",
+        {"content": "hello", "reason": "主动表达"},
+        registry,
+    )
+
+    assert success is True
+    assert result_text == "hello"
+    assert seen_reason == ["主动表达"]
 
 
 @pytest.mark.asyncio

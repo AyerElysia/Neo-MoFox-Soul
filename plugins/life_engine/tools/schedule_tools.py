@@ -35,7 +35,14 @@ ScheduleAction = Literal["create", "update", "delete"]
 
 _REGISTRY_FILE = "life_engine_schedules.json"
 _REGISTRY_VERSION = 1
-_REGISTRY_LOCK = asyncio.Lock()
+_REGISTRY_LOCK: asyncio.Lock | None = None
+
+
+def _get_registry_lock() -> asyncio.Lock:
+    global _REGISTRY_LOCK
+    if _REGISTRY_LOCK is None:
+        _REGISTRY_LOCK = asyncio.Lock()
+    return _REGISTRY_LOCK
 
 
 def _now_iso() -> str:
@@ -441,7 +448,7 @@ async def restore_life_schedules_when_ready(plugin: Any) -> dict[str, str]:
         return {}
 
     restored: dict[str, str] = {}
-    async with _REGISTRY_LOCK:
+    async with _get_registry_lock():
         current_records = store.list_records()
         for record in current_records:
             live_info = await _resolve_live_task_info(record)
@@ -590,7 +597,7 @@ class LifeEngineManageScheduleTool(BaseTool):
         record.task_name = _normalize_task_name(record.record_id)
 
         store = _get_store(self.plugin)
-        async with _REGISTRY_LOCK:
+        async with _get_registry_lock():
             if replace_existing:
                 for existed in _find_records_by_title(store.list_records(), title_text):
                     await _remove_scheduler_task_by_record(self.plugin, existed)

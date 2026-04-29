@@ -467,6 +467,66 @@ class LifeEngineConfig(BaseConfig):
             ),
         )
 
+    @config_section("multimodal")
+    class MultimodalSection(SectionBase):
+        """life_chatter 原生全模态输入配置（MiMo-V2-Omni 等模型）。
+
+        启用后会把 unread_msgs 中的图像/视频/语音转为 LLM 原生
+        Image/Video/Audio Content，让模型直接消费媒体而不是 ASR/描述文本。
+        """
+
+        enabled: bool = Field(
+            default=False,
+            description="启用 life_chatter 原生多模态输入（图像 + 视频 + 语音/音频）。",
+        )
+        native_image: bool = Field(
+            default=True,
+            description="是否把 image / emoji 媒体作为原生 Image Content 注入。",
+        )
+        native_video: bool = Field(
+            default=True,
+            description="是否把 video 媒体作为原生 Video Content 注入。",
+        )
+        native_audio: bool = Field(
+            default=True,
+            description="是否把 voice / record / audio 媒体作为原生 Audio Content 注入。",
+        )
+        max_images_per_payload: int = Field(
+            default=4,
+            ge=0,
+            description="单次 USER payload 中最多注入的 image+emoji 数量。",
+        )
+        max_videos_per_payload: int = Field(
+            default=1,
+            ge=0,
+            description="单次 USER payload 中最多注入的 video 数量。",
+        )
+        max_audios_per_payload: int = Field(
+            default=2,
+            ge=0,
+            description="单次 USER payload 中最多注入的 voice/audio 数量。",
+        )
+        include_history_media: bool = Field(
+            default=False,
+            description="是否对 history（非 unread）消息也提取媒体（默认 False，仅 unread 注入）。",
+        )
+        audio_max_seconds: int = Field(
+            default=60,
+            ge=1,
+            description="单段语音/音频最大时长（秒）；超过则降级为 [语音消息] 文本占位。",
+        )
+        prune_old_media_after_send: bool = Field(
+            default=True,
+            description=(
+                "回复成功后，把已发送的 USER payload 中的 Image/Audio/Video 替换为文本占位"
+                "（如 [已发送语音:#mid]），避免后续轮次重复携带 base64 体积。"
+            ),
+        )
+        unsupported_audio_placeholder: str = Field(
+            default="[语音消息]",
+            description="未知/不支持的音频格式（如 silk/amr）降级为该文本占位。",
+        )
+
     @config_section("drives")
     class DrivesSection(SectionBase):
         """冲动引擎配置。"""
@@ -530,6 +590,80 @@ class LifeEngineConfig(BaseConfig):
             description="是否将思考流状态注入心跳 prompt。",
         )
 
+        sync_to_chatter: bool = Field(
+            default=True,
+            description="是否将思考流作为注意力脑区同步给 life_chatter。关闭后 chatter transient 中不再注入思考流块。",
+        )
+
+        focus_window_minutes: int = Field(
+            default=30,
+            ge=1,
+            le=720,
+            description="思考流焦点窗口（分钟）。last_focused_at 在此窗口内的活跃思考流被视为'当前焦点'，否则归入'背景在意'。",
+        )
+
+        curiosity_decay_half_life_hours: float = Field(
+            default=12.0,
+            ge=0.5,
+            le=240.0,
+            description="思考流 curiosity_score 的指数衰减半衰期（小时）。lazy 衰减：每次访问时按距 last_decay_at 的小时数衰减。",
+        )
+
+        curiosity_floor: float = Field(
+            default=0.15,
+            ge=0.0,
+            le=0.9,
+            description="思考流 curiosity_score 衰减下限。低于此值不再继续衰减。",
+        )
+
+        delta_marking: bool = Field(
+            default=True,
+            description="是否在 chatter 同步中给自上次以来 revision 增长的思考流加 🔄(刚推进) 标记。",
+        )
+
+    @config_section("runtime_sync")
+    class RuntimeSyncSection(SectionBase):
+        """life_chatter 同步层（注意力脑区）配置。"""
+
+        salient_tail_enabled: bool = Field(
+            default=True,
+            description="是否在 chatter transient 中追加'最近关键活动'尾巴。关闭后不再从事件流派生活动摘要。",
+        )
+
+        salient_tail_max_items: int = Field(
+            default=4,
+            ge=1,
+            le=20,
+            description="最近关键活动最多保留的条目数。",
+        )
+
+        salient_tail_max_chars: int = Field(
+            default=1000,
+            ge=200,
+            le=4000,
+            description="最近关键活动总字符上限（超过则按时间倒序截断）。",
+        )
+
+        salient_tail_include_tool_failures: bool = Field(
+            default=True,
+            description="是否包含失败的工具结果。",
+        )
+
+        salient_tail_include_agent_results: bool = Field(
+            default=True,
+            description="是否包含 AGENT_RESULT（最新 1 条优先）。",
+        )
+
+        salient_tail_include_direct_messages: bool = Field(
+            default=True,
+            description="是否包含 dfc_message / direct_message / proactive_opportunity 类消息。",
+        )
+
+        salient_tail_include_inner_monologue: bool = Field(
+            default=True,
+            description="是否包含最近的 chatter_inner_monologue（最多 2 条）。",
+        )
+
     settings: SettingsSection = Field(default_factory=SettingsSection)
     model: ModelSection = Field(default_factory=ModelSection)
     history_retrieval: HistoryRetrievalSection = Field(default_factory=HistoryRetrievalSection)
@@ -540,7 +674,9 @@ class LifeEngineConfig(BaseConfig):
     thresholds: ThresholdsSection = Field(default_factory=ThresholdsSection)
     memory_algorithm: MemoryAlgorithmSection = Field(default_factory=MemoryAlgorithmSection)
     chatter: ChatterSection = Field(default_factory=ChatterSection)
+    multimodal: MultimodalSection = Field(default_factory=MultimodalSection)
     streams: StreamsSection = Field(default_factory=StreamsSection)
+    runtime_sync: RuntimeSyncSection = Field(default_factory=RuntimeSyncSection)
     drives: DrivesSection = Field(default_factory=DrivesSection)
 
     @field_validator("settings")

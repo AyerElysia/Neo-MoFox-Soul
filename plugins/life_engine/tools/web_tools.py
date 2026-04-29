@@ -7,14 +7,6 @@
 
 from __future__ import annotations
 
-import asyncio
-import urllib.parse
-from pathlib import Path
-from typing import Any
-
-from src.app.plugin_system.api.log_api import get_logger
-
-logger = get_logger("life_engine.web_tools")
 import ipaddress
 import json
 import os
@@ -29,6 +21,7 @@ from src.app.plugin_system.api import log_api
 from src.core.components import BaseTool
 
 from ..core.config import LifeEngineConfig
+from ._utils import _get_workspace
 
 logger = log_api.get_logger("life_engine.web_tools")
 
@@ -201,17 +194,6 @@ def _truncate_text(text: str, max_chars: int) -> tuple[str, bool]:
     if max_chars <= 3:
         return text[:max_chars], True
     return text[: max_chars - 3] + "...", True
-
-
-def _get_workspace(plugin: Any) -> Path:
-    cfg = _get_life_config(plugin)
-    if cfg is not None:
-        workspace = cfg.settings.workspace_path
-    else:
-        workspace = str(Path(__file__).parent.parent.parent / "data" / "life_engine_workspace")
-    path = Path(workspace).resolve()
-    path.mkdir(parents=True, exist_ok=True)
-    return path
 
 
 def _resolve_local_path(plugin: Any, raw_path: str) -> tuple[bool, Path | str]:

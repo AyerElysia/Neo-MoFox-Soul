@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import string
 from typing import Annotated, Any
 from uuid import uuid4
 
@@ -14,6 +15,74 @@ from src.app.plugin_system.api import stream_api
 from src.core.models.message import Message, MessageType
 
 logger = log_api.get_logger("life_engine.social_tools")
+
+
+def _looks_like_stream_hash(value: str) -> bool:
+    """判断是否像内部生成的 stream_id（SHA-256 十六进制串）。"""
+    text = str(value or "").strip().lower()
+    return len(text) == 64 and all(ch in string.hexdigits for ch in text)
+
+
+def _apply_stream_info(chat_stream: Any, stream_info: dict[str, Any] | None) -> None:
+    """用数据库中的流信息补齐运行时 ChatStream。"""
+    if chat_stream is None or not stream_info:
+        return
+
+    platform = str(stream_info.get("platform") or "").strip()
+    chat_type = str(stream_info.get("chat_type") or "").strip()
+    stream_name = str(stream_info.get("group_name") or "").strip()
+
+    if platform and not str(getattr(chat_stream, "platform", "") or "").strip():
+        chat_stream.platform = platform
+    if chat_type and not str(getattr(chat_stream, "chat_type", "") or "").strip():
+        chat_stream.chat_type = chat_type
+    if stream_name and not str(getattr(chat_stream, "stream_name", "") or "").strip():
+        chat_stream.stream_name = stream_name
+
+
+async def _safe_get_stream_info(stream_id: str) -> dict[str, Any] | None:
+    """安全获取 stream_info。"""
+    if not stream_id:
+        return None
+
+    try:
+        from src.core.managers import get_stream_manager
+
+        return await get_stream_manager().get_stream_info(stream_id)
+    except Exception:
+        return None
+
+
+async def _find_stream_record_by_group_id(
+    group_id: str,
+    *,
+    preferred_platform: str = "",
+) -> dict[str, Any] | None:
+    """按原始群号查找最近活跃的聊天流记录。"""
+    target_group_id = str(group_id or "").strip()
+    if not target_group_id:
+        return None
+
+    from src.core.models.sql_alchemy import ChatStreams
+    from src.kernel.db import QueryBuilder
+
+    if preferred_platform:
+        preferred_record = await (
+            QueryBuilder(ChatStreams)
+            .filter(group_id=target_group_id, platform=preferred_platform)
+            .order_by("-last_active_time")
+            .first(as_dict=True)
+        )
+        if isinstance(preferred_record, dict):
+            return preferred_record
+
+    record = await (
+        QueryBuilder(ChatStreams)
+        .filter(group_id=target_group_id)
+        .order_by("-last_active_time")
+        .first(as_dict=True)
+    )
+    return record if isinstance(record, dict) else None
 
 
 class NucleusInitiateTopicTool(BaseTool):
@@ -46,6 +115,91 @@ class NucleusInitiateTopicTool(BaseTool):
     def __init__(self, plugin) -> None:
         super().__init__(plugin)
         self._recent_initiates: list[float] = []
+
+    async def _resolve_target_stream(
+        self,
+        target_ref: str,
+    ) -> tuple[Any | None, str, dict[str, Any] | None]:
+        """把目标引用解析成一个可发送的聊天流。"""
+        raw_target_ref = str(target_ref or "").strip()
+        if not raw_target_ref:
+            return None, "", None
+
+        current_stream = getattr(self, "chat_stream", None)
+        preferred_platform = str(getattr(current_stream, "platform", "") or "").strip()
+        preferred_chat_type = str(getattr(current_stream, "chat_type", "") or "").strip().lower()
+
+        chat_stream = await stream_api.get_stream(raw_target_ref)
+        if chat_stream is None:
+            chat_stream = await stream_api.build_stream_from_database(raw_target_ref)
+
+        resolved_stream_id = raw_target_ref
+        stream_info: dict[str, Any] | None = None
+        if chat_stream is not None:
+            resolved_stream_id = str(getattr(chat_stream, "stream_id", "") or raw_target_ref)
+            stream_info = await _safe_get_stream_info(resolved_stream_id)
+            _apply_stream_info(chat_stream, stream_info)
+            if str(getattr(chat_stream, "platform", "") or "").strip():
+                return chat_stream, resolved_stream_id, stream_info
+
+        if not _looks_like_stream_hash(raw_target_ref):
+            record = await _find_stream_record_by_group_id(
+                raw_target_ref,
+                preferred_platform=preferred_platform,
+            )
+            if isinstance(record, dict):
+                candidate_stream_id = str(record.get("stream_id") or "").strip()
+                if candidate_stream_id:
+                    candidate_stream = await stream_api.get_stream(candidate_stream_id)
+                    if candidate_stream is None:
+                        candidate_stream = await stream_api.build_stream_from_database(
+                            candidate_stream_id
+                        )
+                    candidate_info = await _safe_get_stream_info(candidate_stream_id)
+                    _apply_stream_info(candidate_stream, candidate_info)
+                    if (
+                        candidate_stream is not None
+                        and str(getattr(candidate_stream, "platform", "") or "").strip()
+                    ):
+                        return candidate_stream, candidate_stream_id, candidate_info
+
+            if preferred_platform:
+                inferred_chat_type = preferred_chat_type if preferred_chat_type in {
+                    "private",
+                    "group",
+                    "discuss",
+                } else "group"
+                try:
+                    if inferred_chat_type == "private":
+                        candidate_stream = await stream_api.get_or_create_stream(
+                            platform=preferred_platform,
+                            user_id=raw_target_ref,
+                            chat_type="private",
+                        )
+                    else:
+                        candidate_stream = await stream_api.get_or_create_stream(
+                            platform=preferred_platform,
+                            group_id=raw_target_ref,
+                            chat_type="group",
+                        )
+                except Exception as exc:
+                    logger.warning(
+                        "根据原始目标ID补建聊天流失败: "
+                        f"target={raw_target_ref} platform={preferred_platform} error={exc}"
+                    )
+                else:
+                    candidate_stream_id = str(
+                        getattr(candidate_stream, "stream_id", "") or raw_target_ref
+                    )
+                    candidate_info = await _safe_get_stream_info(candidate_stream_id)
+                    _apply_stream_info(candidate_stream, candidate_info)
+                    if (
+                        candidate_stream is not None
+                        and str(getattr(candidate_stream, "platform", "") or "").strip()
+                    ):
+                        return candidate_stream, candidate_stream_id, candidate_info
+
+        return chat_stream, resolved_stream_id, stream_info
 
     async def execute(
         self,
@@ -97,13 +251,42 @@ class NucleusInitiateTopicTool(BaseTool):
 
         # 发送消息
         try:
-            chat_stream = await stream_api.get_stream(target_stream_id)
+            original_target_ref = target_stream_id
+            chat_stream, target_stream_id, stream_info = await self._resolve_target_stream(
+                target_stream_id
+            )
             if chat_stream is None:
-                chat_stream = await stream_api.build_stream_from_database(
-                    target_stream_id
+                return False, f"聊天流 {original_target_ref} 不存在"
+
+            target_platform = str(getattr(chat_stream, "platform", "") or "").strip()
+            target_chat_type = (
+                str(getattr(chat_stream, "chat_type", "") or "").strip()
+                or str((stream_info or {}).get("chat_type") or "").strip()
+            )
+
+            if not target_platform:
+                return False, f"无法确定聊天流 {original_target_ref} 的平台信息"
+
+            if target_chat_type and not str(getattr(chat_stream, "chat_type", "") or "").strip():
+                chat_stream.chat_type = target_chat_type
+
+            target_extra: dict[str, Any] = {}
+            if target_chat_type == "group":
+                group_id = str((stream_info or {}).get("group_id") or "").strip()
+                group_name = str((stream_info or {}).get("group_name") or "").strip()
+                if not group_id and not _looks_like_stream_hash(original_target_ref):
+                    group_id = original_target_ref
+                if group_id:
+                    target_extra["target_group_id"] = group_id
+                if group_name:
+                    target_extra["target_group_name"] = group_name
+
+            if target_stream_id != original_target_ref:
+                logger.info(
+                    "主动话题目标流已解析: "
+                    f"input={original_target_ref} resolved={target_stream_id} "
+                    f"platform={target_platform} chat_type={target_chat_type or 'unknown'}"
                 )
-            if chat_stream is None:
-                return False, f"聊天流 {target_stream_id} 不存在"
 
             msg = Message(
                 message_id=f"life_engine_proactive_{uuid4().hex}",
@@ -111,11 +294,12 @@ class NucleusInitiateTopicTool(BaseTool):
                 processed_plain_text=text,
                 message_type=MessageType.TEXT,
                 sender_id="life_engine_proactive",
-                platform=str(getattr(chat_stream, "platform", "") or ""),
-                chat_type=str(getattr(chat_stream, "chat_type", "") or ""),
+                platform=target_platform,
+                chat_type=target_chat_type,
                 stream_id=target_stream_id,
                 source="nucleus_initiate_topic",
                 reason=reason,
+                **target_extra,
             )
 
             # 尝试通过消息发送器发送

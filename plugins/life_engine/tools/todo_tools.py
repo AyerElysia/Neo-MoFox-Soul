@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Annotated, Any, Literal
 from dataclasses import dataclass, asdict, field
 from enum import Enum
@@ -23,12 +22,12 @@ from enum import Enum
 from src.core.components import BaseTool
 from src.app.plugin_system.api import log_api
 
-from ..core.config import LifeEngineConfig
 from ..constants import (
     TODO_NO_DEADLINE_PRIORITY,
     TODO_OVERDUE_BASE_PRIORITY,
     TODO_URGENT_DAYS_THRESHOLD,
 )
+from ._utils import _get_workspace
 
 
 logger = log_api.get_logger("life_engine.todos")
@@ -36,19 +35,6 @@ logger = log_api.get_logger("life_engine.todos")
 
 # TODO 存储文件名
 _TODO_FILE = "todos.json"
-
-
-def _get_workspace(plugin: Any) -> Path:
-    """获取工作空间路径。"""
-    config = getattr(plugin, "config", None)
-    if isinstance(config, LifeEngineConfig):
-        workspace = config.settings.workspace_path
-    else:
-        workspace = str(Path(__file__).parent.parent.parent / "data" / "life_engine_workspace")
-
-    path = Path(workspace).resolve()
-    path.mkdir(parents=True, exist_ok=True)
-    return path
 
 
 def _now_iso() -> str:
@@ -287,8 +273,8 @@ class LifeEngineManageTodoTool(BaseTool):
         # create & edit 共用参数
         title: Annotated[str, "标题（create 必填，edit 可选）"] = "",
         description: Annotated[str, "详细说明"] = "",
-        desire: Annotated[DesireLiteral, "想做的程度: dreaming/curious/wanting/eager/passionate"] = "curious",
-        meaning: Annotated[MeaningLiteral, "对成长的意义: casual/enriching/growing/meaningful/transforming"] = "enriching",
+        desire: Annotated[DesireLiteral | None, "想做的程度: dreaming/curious/wanting/eager/passionate"] = None,
+        meaning: Annotated[MeaningLiteral | None, "对成长的意义: casual/enriching/growing/meaningful/transforming"] = None,
         tags: Annotated[list[str], "相关标签"] = None,
         notes: Annotated[str, "关于这件事的想法和感受"] = "",
         target_time: Annotated[str, "希望什么时候做（不是截止时间，只是期望）"] = None,
@@ -308,8 +294,8 @@ class LifeEngineManageTodoTool(BaseTool):
                     id=_generate_todo_id(),
                     title=title.strip(),
                     description=description,
-                    desire=desire,
-                    meaning=meaning,
+                    desire=desire or TodoDesire.CURIOUS.value,
+                    meaning=meaning or TodoMeaning.ENRICHING.value,
                     status=TodoStatus.IDEA.value,
                     tags=tags or [],
                     notes=notes,

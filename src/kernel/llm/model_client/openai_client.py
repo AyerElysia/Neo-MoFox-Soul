@@ -148,6 +148,35 @@ def _image_to_data_url(value: str) -> str:
     raise FileNotFoundError(f"Image file not found: {value}")
 
 
+_AUDIO_MIME_TO_FORMAT: dict[str, str] = {
+    "audio/mpeg": "mp3",
+    "audio/mp3": "mp3",
+    "audio/mpeg3": "mp3",
+    "audio/x-mpeg-3": "mp3",
+    "audio/wav": "wav",
+    "audio/x-wav": "wav",
+    "audio/wave": "wav",
+    "audio/vnd.wave": "wav",
+}
+
+
+def _audio_mime_to_format(mime_type: str) -> str:
+    """根据 Audio.mime_type 反推 OpenAI input_audio.format 字段值。
+
+    OpenAI Chat Completions API 仅接受 ``mp3`` / ``wav`` 两种 format 取值。
+    未识别的 MIME（如 silk/amr）会保守降级为 ``mp3``，避免 KeyError，
+    但调用方应在更上游就拦截不支持的格式（多模态预处理阶段降级为文本占位）。
+    """
+    if not mime_type:
+        return "mp3"
+    normalized = mime_type.lower().strip()
+    if normalized in _AUDIO_MIME_TO_FORMAT:
+        return _AUDIO_MIME_TO_FORMAT[normalized]
+    if "wav" in normalized:
+        return "wav"
+    return "mp3"
+
+
 def _video_to_data_url(value: str, mime: str = "video/mp4") -> str:
     """将各种视频表示转换为 data URL 字符串。"""
     if value.startswith("base64|"):
@@ -540,7 +569,7 @@ def _payloads_to_openai_messages(
                         "type": "input_audio",
                         "input_audio": {
                             "data": part.value,
-                            "format": "mp3",
+                            "format": _audio_mime_to_format(part.mime_type),
                         },
                     }
                 )

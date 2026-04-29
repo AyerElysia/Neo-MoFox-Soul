@@ -23,7 +23,6 @@ from src.core.components import BaseTool
 from src.app.plugin_system.api import log_api
 from src.core.models.message import Message, MessageType
 
-from ..core.config import LifeEngineConfig
 from ..constants import (
     EXTERNAL_MESSAGE_ACTIVE_WINDOW_MINUTES,
     PROACTIVE_WAKE_MIN_REASON_CHARS,
@@ -32,6 +31,12 @@ from ..constants import (
     PROACTIVE_WAKE_KEYWORDS,
 )
 from ..memory.prompting import build_memory_write_warning
+from ._utils import (
+    _get_workspace,
+    _resolve_path,
+    _load_life_context_events,
+    _pick_latest_target_stream_id,
+)
 
 
 logger = log_api.get_logger("life_engine.tools")
@@ -44,48 +49,6 @@ _DFC_GUIDANCE_PATTERNS = (
     r"[\"“][^\"”\n]{2,40}[\"”].{0,12}(问|说|回复|回|发|讲)",
 )
 
-
-def _get_workspace(plugin: Any) -> Path:
-    """获取工作空间路径。"""
-    config = getattr(plugin, "config", None)
-    if isinstance(config, LifeEngineConfig):
-        workspace = config.settings.workspace_path
-    else:
-        # 使用默认路径
-        workspace = str(Path(__file__).parent.parent.parent / "data" / "life_engine_workspace")
-
-    path = Path(workspace).resolve()
-    path.mkdir(parents=True, exist_ok=True)
-    return path
-
-
-def _resolve_path(plugin: Any, relative_path: str) -> tuple[bool, Path | str]:
-    """解析并验证路径在 workspace 内。
-
-    Returns:
-        (True, Path) 如果路径有效
-        (False, error_message) 如果路径无效或超出 workspace
-    """
-    workspace = _get_workspace(plugin)
-
-    # 清理输入路径
-    clean_path = relative_path.strip().lstrip("/\\")
-    if not clean_path:
-        clean_path = "."
-
-    # 解析绝对路径
-    try:
-        target = (workspace / clean_path).resolve()
-    except Exception as e:
-        return False, f"路径解析失败: {e}"
-
-    # 确保在 workspace 内
-    try:
-        target.relative_to(workspace)
-    except ValueError:
-        return False, f"路径超出工作空间范围。工作空间: {workspace}"
-
-    return True, target
 
 
 def _format_size(size: int) -> str:
@@ -102,67 +65,6 @@ def _format_time(timestamp: float) -> str:
     return datetime.fromtimestamp(timestamp, tz=timezone.utc).astimezone().isoformat()
 
 
-def _load_life_context_events(plugin: Any) -> list[dict[str, Any]]:
-    """加载 life_engine 持久化上下文中的事件列表。"""
-    workspace = _get_workspace(plugin)
-    context_file = workspace / "life_engine_context.json"
-    if not context_file.exists():
-        return []
-
-    try:
-        data = json.loads(context_file.read_text(encoding="utf-8"))
-    except Exception as e:  # noqa: BLE001
-        logger.warning(f"读取 life_engine_context.json 失败: {e}")
-        return []
-
-    if not isinstance(data, dict):
-        return []
-
-    history = data.get("event_history")
-    pending = data.get("pending_events")
-    if not isinstance(history, list):
-        history = []
-    if not isinstance(pending, list):
-        pending = []
-
-    events: list[dict[str, Any]] = []
-    for item in history + pending:
-        if isinstance(item, dict):
-            events.append(item)
-    events.sort(key=lambda e: int(e.get("sequence") or 0))
-    return events
-
-
-def _pick_latest_target_stream_id(plugin: Any) -> str | None:
-    """从事件流中挑选最近可用的目标 stream_id。"""
-    events = _load_life_context_events(plugin)
-    if not events:
-        return None
-
-    # 优先：最近一条外部入站消息
-    for event in reversed(events):
-        if str(event.get("event_type") or "") != "message":
-            continue
-        stream_id = str(event.get("stream_id") or "").strip()
-        if not stream_id:
-            continue
-        source = str(event.get("source") or "")
-        source_detail = str(event.get("source_detail") or "")
-        if source != "life_engine" and "入站" in source_detail:
-            return stream_id
-
-    # 退化：最近一条外部消息（不区分入站/出站）
-    for event in reversed(events):
-        if str(event.get("event_type") or "") != "message":
-            continue
-        stream_id = str(event.get("stream_id") or "").strip()
-        if not stream_id:
-            continue
-        source = str(event.get("source") or "")
-        if source != "life_engine":
-            return stream_id
-
-    return None
 
 
 def _get_life_engine_service(plugin: Any):
@@ -774,7 +676,11 @@ class LifeEngineMakeDirectoryTool(BaseTool):
     """创建目录工具。"""
 
     tool_name: str = "nucleus_mkdir"
-    tool_description: str = "创建新目录。已存在的目录不会报错。支持自动创建父目录。"
+    tool_description: str = (
+        "在工作空间内创建新目录（含所有父目录）。\n\n"
+        "何时用：保存文件前确保目录存在；按项目/主题组织文件时建立子目录。\n"
+        "何时不用：写文件时父目录不存在可先调用本工具；不要用于检查目录是否存在（用 nucleus_ls）。"
+    )
     chatter_allow: list[str] = ["life_engine_internal"]
 
     async def execute(

@@ -294,6 +294,7 @@ class StatePersistence:
                     "last_tell_dfc_at": state.last_tell_dfc_at,
                     "tell_dfc_count": state.tell_dfc_count,
                     "chatter_context_cursors": state.chatter_context_cursors or {},
+                    "chatter_thought_cursors": state.chatter_thought_cursors or {},
                 },
                 "pending_events": [event_to_dict(e) for e in pending_events],
                 "event_history": [event_to_dict(e) for e in event_history],
@@ -397,6 +398,19 @@ class StatePersistence:
                     except (TypeError, ValueError):
                         continue
                 state.chatter_context_cursors = cursors
+
+            raw_thought_cursors = state_raw.get("chatter_thought_cursors")
+            if isinstance(raw_thought_cursors, dict):
+                t_cursors: dict[str, int] = {}
+                for key, value in raw_thought_cursors.items():
+                    sid = str(key).strip()
+                    if not sid:
+                        continue
+                    try:
+                        t_cursors[sid] = int(value or 0)
+                    except (TypeError, ValueError):
+                        continue
+                state.chatter_thought_cursors = t_cursors
 
             if history_events:
                 max_seq = max(event.sequence for event in history_events)

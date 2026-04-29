@@ -625,6 +625,10 @@ class AnthropicChatClient:
         if isinstance(temperature, (int, float)) and "thinking" not in extra_params:
             params["temperature"] = float(temperature)
 
+        # 过滤掉 Anthropic SDK 不支持的非标参数（如 enable_thinking 等）
+        # 这些参数可能是为 OpenAI 格式准备的，在 Anthropic 模式下需要剔除或转换
+        extra_params.pop("enable_thinking", None)
+        
         params.update(extra_params)
 
         _log_anthropic_request_body(

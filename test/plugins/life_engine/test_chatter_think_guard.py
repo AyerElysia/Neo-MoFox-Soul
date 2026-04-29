@@ -5,7 +5,14 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
+import pytest
+
 from plugins.life_engine.core.chatter import LifeChatter, LifeSendTextAction
+from plugins.life_engine.core.tool_parallel import (
+    is_life_tool_call_parallel_safe,
+    iter_life_tool_call_batches,
+)
+from src.core.components.base.chatter import BaseChatter
 from src.kernel.llm import LLMPayload, ROLE, ToolResult
 
 
@@ -167,3 +174,121 @@ def test_compact_successful_tool_result_preserves_other_tool_results() -> None:
     send_result, memory_result = payload.content
     assert send_result.value == "ok"
     assert memory_result.value == "记忆检索结果正文"
+
+
+def test_life_tool_parallel_policy_only_allows_safe_reads() -> None:
+    assert is_life_tool_call_parallel_safe(
+        SimpleNamespace(name="nucleus_read_file", args={})
+    )
+    assert is_life_tool_call_parallel_safe(
+        SimpleNamespace(name="nucleus_manage_thought_stream", args={"action": "list"})
+    )
+    assert not is_life_tool_call_parallel_safe(
+        SimpleNamespace(name="nucleus_manage_thought_stream", args={"action": "advance"})
+    )
+    assert not is_life_tool_call_parallel_safe(
+        SimpleNamespace(name="nucleus_search_memory", args={"query": "x"})
+    )
+    assert not is_life_tool_call_parallel_safe(
+        SimpleNamespace(name="nucleus_write_file", args={})
+    )
+    assert not is_life_tool_call_parallel_safe(
+        SimpleNamespace(name="action-life_send_text", args={})
+    )
+
+
+def test_life_tool_parallel_batches_only_consecutive_safe_calls() -> None:
+    calls = [
+        SimpleNamespace(name="nucleus_read_file", args={}),
+        SimpleNamespace(name="nucleus_web_search", args={}),
+        SimpleNamespace(name="nucleus_write_file", args={}),
+        SimpleNamespace(name="nucleus_list_files", args={}),
+        SimpleNamespace(name="action-life_send_text", args={}),
+    ]
+
+    batches = [
+        ([call.name for call in batch], can_parallel)
+        for batch, can_parallel in iter_life_tool_call_batches(calls)
+    ]
+
+    assert batches == [
+        (["nucleus_read_file", "nucleus_web_search"], True),
+        (["nucleus_write_file"], False),
+        (["nucleus_list_files"], True),
+        (["action-life_send_text"], False),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_life_chatter_run_tool_call_accepts_single_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    chatter = LifeChatter.__new__(LifeChatter)
+    response = _FakeResponse()
+    response.add_payload(
+        LLMPayload(
+            ROLE.TOOL_RESULT,
+            [ToolResult(value="已发送", call_id="send-1", name="action-life_send_text")],
+        )
+    )
+    captured: dict[str, object] = {}
+    call = SimpleNamespace(id="send-1", name="action-life_send_text", args={})
+
+    async def _fake_base_run_tool_call(
+        self: BaseChatter,
+        calls: object,
+        _response: object,
+        _usable_map: object,
+        _trigger_msg: object,
+    ) -> list[tuple[bool, bool]]:
+        captured["calls"] = calls
+        return [(True, True)]
+
+    monkeypatch.setattr(BaseChatter, "run_tool_call", _fake_base_run_tool_call)
+
+    appended, success = await chatter.run_tool_call(
+        call,
+        response,
+        usable_map={},
+        trigger_msg=None,
+    )
+
+    assert (appended, success) == (True, True)
+    assert captured["calls"] == [call]
+    payload = response.payloads[0]
+    assert payload.content[0].value == "ok"
+
+
+@pytest.mark.asyncio
+async def test_life_chatter_run_tool_call_preserves_batch_shape(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    chatter = LifeChatter.__new__(LifeChatter)
+    response = _FakeResponse()
+    calls = [
+        SimpleNamespace(id="send-1", name="action-life_send_text", args={}),
+        SimpleNamespace(id="memory-1", name="search_life_memory", args={}),
+    ]
+    captured: dict[str, object] = {}
+
+    async def _fake_base_run_tool_call(
+        self: BaseChatter,
+        incoming_calls: object,
+        _response: object,
+        _usable_map: object,
+        _trigger_msg: object,
+    ) -> list[tuple[bool, bool]]:
+        captured["calls"] = incoming_calls
+        return [(True, True), (True, True)]
+
+    monkeypatch.setattr(BaseChatter, "run_tool_call", _fake_base_run_tool_call)
+
+    results = await chatter.run_tool_call(
+        calls,
+        response,
+        usable_map={},
+        trigger_msg=None,
+    )
+
+    assert results == [(True, True), (True, True)]
+    assert captured["calls"] == calls

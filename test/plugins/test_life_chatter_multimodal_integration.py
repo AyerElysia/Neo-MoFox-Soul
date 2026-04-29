@@ -1,0 +1,210 @@
+"""life_chatter 多模态接入集成测试。
+
+覆盖：
+- LifeChatter._compose_unread_user_content：启用/禁用、image/voice/video 注入
+- 跨轮 dedup（失败重试场景）：相同 unread 二次 compose 不重复 extend 媒体
+- _prune_sent_media：成功送达后 USER payload 媒体替换为占位 Text
+- _strip_transient_context 精确匹配：用户原文含 marker 不被误删
+- 协议级：构造好的 USER payload 经 openai_client._payloads_to_openai_messages
+  转换后，input_audio.format / image_url / video_url 字段正确
+"""
+
+from __future__ import annotations
+
+from types import SimpleNamespace
+from typing import Any
+
+from plugins.life_engine.core.chatter import LifeChatter, _Phase, _WorkflowRuntime
+from plugins.life_engine.core.config import LifeEngineConfig
+from src.kernel.llm import Audio, Image, LLMPayload, ROLE, Text, Video
+from src.kernel.llm.model_client.openai_client import _payloads_to_openai_messages
+
+import base64
+
+
+def _b64(s: str) -> str:
+    return base64.b64encode(s.encode()).decode()
+
+
+def _msg(message_id: str, **kwargs: Any) -> SimpleNamespace:
+    base = dict(message_id=message_id, content=None, extra={}, media=None, message_type=None)
+    base.update(kwargs)
+    return SimpleNamespace(**base)
+
+
+class _FakeResponse:
+    def __init__(self, payloads: list[LLMPayload] | None = None) -> None:
+        self.payloads = payloads or []
+
+    def add_payload(self, payload: LLMPayload) -> None:
+        self.payloads.append(payload)
+
+
+def _make_chatter(*, multimodal_enabled: bool = True, **mm_overrides: Any) -> LifeChatter:
+    config = LifeEngineConfig()
+    config.multimodal.enabled = multimodal_enabled
+    for k, v in mm_overrides.items():
+        setattr(config.multimodal, k, v)
+    chatter = LifeChatter.__new__(LifeChatter)
+    chatter.plugin = SimpleNamespace(config=config, _service=None)
+    return chatter
+
+
+def _new_runtime() -> _WorkflowRuntime:
+    return _WorkflowRuntime(
+        response=_FakeResponse(),
+        phase=_Phase.WAIT_USER,
+        history_merged=False,
+        unreads=[],
+        cross_round_seen_signatures=set(),
+        unread_msgs_to_flush=[],
+    )
+
+
+# ─── compose_unread_user_content ────────────────────────────────
+
+
+def test_compose_disabled_returns_text_only() -> None:
+    chatter = _make_chatter(multimodal_enabled=False)
+    rt = _new_runtime()
+    msgs = [_msg("m1", media=[{"type": "voice", "data": _b64("a")}])]
+    out = chatter._compose_unread_user_content(rt, msgs, "user prompt")
+    assert len(out) == 1 and isinstance(out[0], Text)
+
+
+def test_compose_injects_image_voice_video() -> None:
+    chatter = _make_chatter()
+    rt = _new_runtime()
+    msgs = [
+        _msg("m1", media=[{"type": "image", "data": _b64("img")}]),
+        _msg("m2", media=[{"type": "voice", "data": _b64("vo"), "format": "wav"}]),
+        _msg("m3", media=[{"type": "video", "data": _b64("vid"), "mime_type": "video/mp4"}]),
+    ]
+    out = chatter._compose_unread_user_content(rt, msgs, "hi")
+    assert any(isinstance(p, Image) for p in out)
+    assert any(isinstance(p, Audio) for p in out)
+    assert any(isinstance(p, Video) for p in out)
+
+
+def test_compose_dedup_across_retries() -> None:
+    """失败重试场景：相同 unread 二次 compose 不重复发出媒体。"""
+    chatter = _make_chatter()
+    rt = _new_runtime()
+    msgs = [_msg("m1", media=[{"type": "image", "data": _b64("img")}])]
+
+    first = chatter._compose_unread_user_content(rt, msgs, "p1")
+    second = chatter._compose_unread_user_content(rt, msgs, "p2")
+
+    assert sum(isinstance(p, Image) for p in first) == 1
+    assert sum(isinstance(p, Image) for p in second) == 0
+    # 第二次应只剩纯文本
+    assert all(isinstance(p, Text) for p in second)
+
+
+def test_compose_silk_audio_downgraded_to_text_placeholder() -> None:
+    chatter = _make_chatter()
+    rt = _new_runtime()
+    msgs = [_msg("m1", media=[{"type": "voice", "data": _b64("v"), "mime_type": "audio/silk"}])]
+    out = chatter._compose_unread_user_content(rt, msgs, "hi")
+    assert all(not isinstance(p, Audio) for p in out)
+    assert any(isinstance(p, Text) and p.text == "[语音消息]" for p in out)
+
+
+# ─── _prune_sent_media ─────────────────────────────────────────
+
+
+def test_prune_replaces_media_with_text_placeholders() -> None:
+    chatter = _make_chatter()
+    response = _FakeResponse([
+        LLMPayload(
+            ROLE.USER,
+            [
+                Text("hello"),
+                Image(_b64("img")),
+                Text("[语音]"),
+                Audio(_b64("vo"), mime_type="audio/wav"),
+                Video(_b64("vd")),
+            ],
+        )
+    ])
+    chatter._prune_sent_media(response)
+    content = response.payloads[0].content
+    assert all(not isinstance(p, (Image, Audio, Video)) for p in content)
+    assert any(isinstance(p, Text) and p.text == "[已发送图片]" for p in content)
+    assert any(isinstance(p, Text) and p.text == "[已发送语音]" for p in content)
+    assert any(isinstance(p, Text) and p.text == "[已发送视频]" for p in content)
+
+
+def test_prune_disabled_when_flag_off() -> None:
+    chatter = _make_chatter(prune_old_media_after_send=False)
+    img = Image(_b64("x"))
+    response = _FakeResponse([LLMPayload(ROLE.USER, [Text("hi"), img])])
+    chatter._prune_sent_media(response)
+    assert any(isinstance(p, Image) for p in response.payloads[0].content)
+
+
+def test_prune_skipped_when_multimodal_disabled() -> None:
+    chatter = _make_chatter(multimodal_enabled=False)
+    img = Image(_b64("x"))
+    response = _FakeResponse([LLMPayload(ROLE.USER, [img])])
+    chatter._prune_sent_media(response)
+    assert any(isinstance(p, Image) for p in response.payloads[0].content)
+
+
+# ─── _strip_transient_context 精确匹配 ─────────────────────────
+
+
+def test_strip_transient_context_does_not_remove_user_text_with_marker_inline() -> None:
+    """用户原文中嵌 <transient_life_context> 字样不应被误删。"""
+    chatter = LifeChatter.__new__(LifeChatter)
+    user_authored = Text("注意：模板里我引用了 <transient_life_context> 这种标签作为示例")
+    transient = Text("<transient_life_context>\nrt info\n</transient_life_context>")
+    response = _FakeResponse([LLMPayload(ROLE.USER, [user_authored, transient])])
+    chatter._strip_transient_context(response)
+    remaining = response.payloads[0].content
+    assert user_authored in remaining
+    assert transient not in remaining
+
+
+def test_strip_transient_context_removes_only_trailing_wrapper() -> None:
+    chatter = LifeChatter.__new__(LifeChatter)
+    transient_a = Text("<transient_life_context>\nA\n</transient_life_context>")
+    transient_b = Text("<transient_life_context>\nB\n</transient_life_context>")
+    response = _FakeResponse([LLMPayload(ROLE.USER, [Text("body"), transient_a, transient_b])])
+    chatter._strip_transient_context(response)
+    remaining = response.payloads[0].content
+    assert transient_a not in remaining and transient_b not in remaining
+    assert any(isinstance(p, Text) and p.text == "body" for p in remaining)
+
+
+# ─── 协议级序列化 ───────────────────────────────────────────────
+
+
+def test_user_payload_serializes_audio_with_correct_format() -> None:
+    chatter = _make_chatter()
+    rt = _new_runtime()
+    msgs = [_msg("m1", media=[{"type": "voice", "data": _b64("au"), "format": "wav"}])]
+    content = chatter._compose_unread_user_content(rt, msgs, "请听这条语音")
+    payload = LLMPayload(ROLE.USER, content)
+    messages, _ = _payloads_to_openai_messages([payload])
+    parts = messages[0]["content"]
+    audio_parts = [p for p in parts if isinstance(p, dict) and p.get("type") == "input_audio"]
+    assert audio_parts
+    assert audio_parts[0]["input_audio"]["format"] == "wav"
+
+
+def test_user_payload_serializes_image_and_video() -> None:
+    chatter = _make_chatter()
+    rt = _new_runtime()
+    msgs = [
+        _msg("m1", media=[{"type": "image", "data": _b64("im")}]),
+        _msg("m2", media=[{"type": "video", "data": _b64("vi"), "mime_type": "video/webm"}]),
+    ]
+    payload = LLMPayload(ROLE.USER, chatter._compose_unread_user_content(rt, msgs, "看看"))
+    messages, _ = _payloads_to_openai_messages([payload])
+    parts = [p for p in messages[0]["content"] if isinstance(p, dict)]
+    image_url_parts = [p for p in parts if p.get("type") == "image_url"]
+    urls = [p["image_url"]["url"] for p in image_url_parts]
+    # OpenAI 兼容协议下 Video 也通过 image_url 通道携带 data:video/... URL
+    assert any(u.startswith("data:image/") for u in urls)
+    assert any(u.startswith("data:video/") for u in urls)

@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any
 from src.app.plugin_system.api.llm_api import create_llm_request, get_model_set_by_task
 from src.app.plugin_system.api.log_api import get_logger
 from src.core.components.base import BaseService
+from src.core.components.utils import should_strip_auto_reason_argument
 from src.core.models.message import Message
 from src.kernel.concurrency import get_task_manager
 from src.kernel.llm import LLMPayload, ROLE, Text, ToolRegistry, ToolResult
@@ -38,6 +39,7 @@ from .audit import (
     log_wake_context_injected,
 )
 from ..core.config import LifeEngineConfig
+from ..core.tool_parallel import iter_life_tool_call_batches
 from ..streams.manager import ThoughtStreamManager
 from ..drives.impulse import ImpulseEngine
 from ..drives.rules import DEFAULT_RULES
@@ -1073,24 +1075,50 @@ class LifeEngineService(BaseService):
             return bool(not stream_id or stream_id == current_stream_id)
         return source == "life_engine" and not stream_id
 
-    def _chatter_context_cursor(self, stream_id: str) -> int:
+    def _chatter_event_cursor(self, stream_id: str) -> int:
         sid = str(stream_id or "").strip()
         if not sid:
             return 0
         return int((self._state.chatter_context_cursors or {}).get(sid, 0) or 0)
+
+    # 兼容旧接口名
+    def _chatter_context_cursor(self, stream_id: str) -> int:
+        return self._chatter_event_cursor(stream_id)
+
+    def _chatter_thought_cursor(self, stream_id: str) -> int:
+        sid = str(stream_id or "").strip()
+        if not sid:
+            return 0
+        return int((self._state.chatter_thought_cursors or {}).get(sid, 0) or 0)
 
     async def mark_chatter_runtime_context_seen(
         self,
         stream_id: str,
         sequence: int,
     ) -> None:
-        """标记某个聊天流已经看过的 life 事件流高水位。"""
+        """标记某个聊天流已经看过的 life 事件流高水位（event cursor）。
+
+        thought_revision cursor 在 build_chatter_runtime_context 渲染时已内部提交，
+        外部调用方仍只需要传 event 序列高水位。
+        """
         sid = str(stream_id or "").strip()
         if not sid or sequence <= 0:
             return
         async with self._get_lock():
             cursors = self._state.chatter_context_cursors
             cursors[sid] = max(int(cursors.get(sid, 0) or 0), int(sequence))
+
+    async def _commit_chatter_thought_cursor(
+        self,
+        stream_id: str,
+        revision: int,
+    ) -> None:
+        sid = str(stream_id or "").strip()
+        if not sid or revision <= 0:
+            return
+        async with self._get_lock():
+            cursors = self._state.chatter_thought_cursors
+            cursors[sid] = max(int(cursors.get(sid, 0) or 0), int(revision))
 
     def _format_chatter_inner_state(self) -> str:
         if self._inner_state is None:
@@ -1108,14 +1136,175 @@ class LifeEngineService(BaseService):
                 return ""
             return "\n".join(f"{key}: {value}" for key, value in state_dict.items())
 
-    def _format_chatter_thought_streams(self) -> str:
+    def _format_chatter_thought_streams(
+        self,
+        *,
+        revision_cursor: int = 0,
+        focus_window_minutes: int = 30,
+        delta_marking: bool = True,
+        max_items: int = 5,
+    ) -> tuple[str, int]:
+        """渲染思考流块（用于 chatter transient）。
+
+        Returns:
+            (body_text_without_top_heading, current_max_revision)
+        """
         if self._thought_manager is None:
-            return ""
+            return "", 0
         try:
-            return self._thought_manager.format_for_prompt(max_items=5)
+            body = self._thought_manager.format_for_prompt(
+                max_items=max_items,
+                focus_window_minutes=focus_window_minutes,
+                revision_cursor=revision_cursor,
+                mark_delta=delta_marking,
+                grouped=True,
+            )
+            return body, int(self._thought_manager.current_revision)
         except Exception as exc:  # noqa: BLE001
             logger.debug(f"构建 chatter 思考流快照失败: {exc}")
-            return ""
+            return "", 0
+
+    @staticmethod
+    def _is_salient_event(
+        event: LifeEngineEvent,
+        *,
+        current_stream_id: str,
+        cfg_runtime: Any,
+    ) -> bool:
+        """判定事件是否进入 chatter 的"最近关键活动"尾巴。
+
+        相对老的 `_event_belongs_to_life_runtime` 严格得多：默认丢弃 HEARTBEAT、
+        普通 TOOL_CALL，仅保留 agent 结果、工具失败、direct/dfc/proactive 消息以及
+        最近的 inner_monologue。
+        """
+        event_type = event.event_type
+        content_type = str(getattr(event, "content_type", "") or "").strip().lower()
+        stream_id = str(getattr(event, "stream_id", "") or "").strip()
+
+        if event_type == EventType.HEARTBEAT:
+            # 只保留 chatter 自己产生的 inner_monologue 心跳
+            if content_type == "chatter_inner_monologue" and getattr(cfg_runtime, "salient_tail_include_inner_monologue", True):
+                return bool(not stream_id or stream_id == current_stream_id)
+            return False
+
+        if event_type == EventType.AGENT_RESULT:
+            return bool(getattr(cfg_runtime, "salient_tail_include_agent_results", True))
+
+        if event_type == EventType.TOOL_RESULT:
+            if not getattr(cfg_runtime, "salient_tail_include_tool_failures", True):
+                return False
+            # 仅失败结果进入尾巴；成功结果默认丢弃
+            return not bool(getattr(event, "tool_success", True))
+
+        if event_type == EventType.TOOL_CALL:
+            return False
+
+        if event_type == EventType.MESSAGE:
+            if content_type in {"dfc_message", "direct_message", "proactive_opportunity"}:
+                if not getattr(cfg_runtime, "salient_tail_include_direct_messages", True):
+                    return False
+                return bool(not stream_id or stream_id == current_stream_id)
+            # 其它消息不进入 salient tail（chat history 已覆盖）
+            return False
+
+        return False
+
+    def _format_salient_event(self, event: LifeEngineEvent) -> str:
+        """把单条 salient event 渲染成一行摘要。"""
+        time_display = _format_time_display(event.timestamp)
+        event_type = event.event_type
+        content = str(getattr(event, "content", "") or "")
+        if event_type == EventType.HEARTBEAT:
+            return f"[{time_display}] 💭 内心独白: {_shorten_text(content, max_length=160)}"
+        if event_type == EventType.AGENT_RESULT:
+            status = "✅" if getattr(event, "tool_success", True) else "❌"
+            agent_name = str(getattr(event, "tool_name", "") or "agent")
+            return f"[{time_display}] {status} 🤖 {agent_name}: {_shorten_text(content, max_length=200)}"
+        if event_type == EventType.TOOL_RESULT:
+            tool_name = str(getattr(event, "tool_name", "") or "tool")
+            return f"[{time_display}] ❌ {tool_name}: {_shorten_text(content, max_length=160)}"
+        if event_type == EventType.MESSAGE:
+            content_type = str(getattr(event, "content_type", "") or "").strip().lower()
+            sender = str(getattr(event, "sender", "") or "")
+            label = {
+                "dfc_message": "📮 DFC",
+                "direct_message": "📨 私信",
+                "proactive_opportunity": "✨ 主动机会",
+            }.get(content_type, "📩")
+            return f"[{time_display}] {label} {sender}: {_shorten_text(content, max_length=160)}"
+        return f"[{time_display}] {_shorten_text(content, max_length=120)}"
+
+    def _build_salient_activity_tail(
+        self,
+        events: list[LifeEngineEvent],
+        cursor: int,
+        *,
+        current_stream_id: str,
+    ) -> tuple[str, int]:
+        """从事件流派生最近关键活动尾巴。
+
+        Returns:
+            (body_without_top_heading, new_event_high_water)
+        """
+        cfg_runtime = getattr(self._cfg(), "runtime_sync", None)
+        if cfg_runtime is None or not getattr(cfg_runtime, "salient_tail_enabled", True):
+            return "", cursor
+
+        max_items = max(1, int(getattr(cfg_runtime, "salient_tail_max_items", 4) or 4))
+        max_chars = max(200, int(getattr(cfg_runtime, "salient_tail_max_chars", 1000) or 1000))
+
+        # 先按 sequence 升序，过滤 cursor 之后的事件
+        candidates = [
+            e for e in events
+            if int(getattr(e, "sequence", 0) or 0) > cursor
+            and self._is_salient_event(
+                e, current_stream_id=current_stream_id, cfg_runtime=cfg_runtime
+            )
+        ]
+        if not candidates:
+            return "", cursor
+
+        # AGENT_RESULT 仅保留最新一条；inner_monologue 最多 2 条；其它按时间倒序取最新若干
+        kept_agent: LifeEngineEvent | None = None
+        kept_monologue: list[LifeEngineEvent] = []
+        kept_other: list[LifeEngineEvent] = []
+        for event in candidates:
+            event_type = event.event_type
+            content_type = str(getattr(event, "content_type", "") or "").strip().lower()
+            if event_type == EventType.AGENT_RESULT:
+                kept_agent = event  # 后写入即最新
+            elif event_type == EventType.HEARTBEAT and content_type == "chatter_inner_monologue":
+                kept_monologue.append(event)
+            else:
+                kept_other.append(event)
+
+        kept_monologue = kept_monologue[-2:]
+        # 其它按时间倒序后从尾部截到 max_items 减去已用配额
+        kept_other = kept_other[-max_items:]
+
+        merged: list[LifeEngineEvent] = []
+        if kept_agent is not None:
+            merged.append(kept_agent)
+        merged.extend(kept_monologue)
+        merged.extend(kept_other)
+        merged.sort(key=lambda e: int(getattr(e, "sequence", 0) or 0))
+        merged = merged[-max_items:]
+
+        # 渲染并裁字
+        rendered: list[str] = [self._format_salient_event(e) for e in merged]
+        body = "\n".join(rendered)
+        if len(body) > max_chars:
+            # 从前向后丢弃，保留最新尾部
+            while rendered and len("\n".join(rendered)) > max_chars:
+                rendered.pop(0)
+            body = "\n".join(rendered)
+            if not body:
+                # 极端情况下，单条仍超长 → 截断该单条
+                body = _shorten_text(self._format_salient_event(merged[-1]), max_length=max_chars)
+
+        new_high_water = max(int(getattr(e, "sequence", 0) or 0) for e in merged)
+        new_high_water = max(new_high_water, cursor)
+        return body, new_high_water
 
     async def build_chatter_runtime_context(
         self,
@@ -1128,61 +1317,69 @@ class LifeEngineService(BaseService):
 
         返回值为 (context_text, high_water_sequence)。context_text 只用于本轮
         transient 注入；high_water_sequence 在 LLM 请求成功后持久化，避免重复注入。
+
+        结构：
+          1. ### 当前内在状态  （neuromod）
+          2. ### 当前思考流    （注意力脑区，分焦点/背景，带 🔄 delta 标记）
+          3. ### 运行时内心独白（push_runtime_assistant_injection 队列）
+          4. ### 最近关键活动  （salient activity tail，强过滤的事件流）
         """
         stream_id = str(getattr(chat_stream, "stream_id", "") or "").strip()
-        cursor = self._chatter_context_cursor(stream_id)
-        limit = max(1, min(int(event_limit or 80), 160))
+        event_cursor = self._chatter_event_cursor(stream_id)
+        thought_cursor = self._chatter_thought_cursor(stream_id)
+        _ = event_limit  # 兼容老签名；新逻辑用配置项控制条数
+
+        cfg = self._cfg()
+        streams_cfg = getattr(cfg, "streams", None)
+        sync_streams = bool(streams_cfg is None or getattr(streams_cfg, "sync_to_chatter", True))
+        focus_window = int(getattr(streams_cfg, "focus_window_minutes", 30) or 30) if streams_cfg else 30
+        delta_marking = bool(streams_cfg is None or getattr(streams_cfg, "delta_marking", True))
 
         async with self._get_lock():
             events = list(self._event_history)
             events.extend(list(self._pending_events))
-
         events.sort(key=lambda event: int(event.sequence or 0))
-        relevant = [
-            event
-            for event in events
-            if int(event.sequence or 0) > cursor
-            and self._event_belongs_to_life_runtime(
-                event,
-                current_stream_id=stream_id,
-            )
-        ]
-
-        omitted = max(0, len(relevant) - limit)
-        selected = relevant[-limit:]
-        high_water = max((int(event.sequence or 0) for event in relevant), default=cursor)
 
         sections: list[str] = []
+
         inner_state_text = self._format_chatter_inner_state()
         if inner_state_text:
             sections.append(f"### 当前内在状态\n{inner_state_text}")
 
-        thought_streams_text = self._format_chatter_thought_streams()
-        if thought_streams_text:
-            sections.append(f"### 当前思考流\n{thought_streams_text}")
+        new_thought_revision = thought_cursor
+        if sync_streams:
+            thought_body, current_revision = self._format_chatter_thought_streams(
+                revision_cursor=thought_cursor,
+                focus_window_minutes=focus_window,
+                delta_marking=delta_marking,
+                max_items=5,
+            )
+            if thought_body:
+                sections.append(f"### 当前思考流\n{thought_body}".rstrip())
+            new_thought_revision = max(thought_cursor, current_revision)
 
         runtime_text = str(runtime_context_text or "").strip()
         if runtime_text:
             sections.append(f"### 运行时内心独白\n{runtime_text}")
 
-        if selected:
-            event_text = self._build_wake_context_text(selected)
-            if omitted:
-                event_text = (
-                    f"（还有 {omitted} 条更早的 life 事件未自动展开；"
-                    "需要时可先基于当前上下文继续对话。）\n"
-                    f"{event_text}"
-                )
-            sections.append(f"### 新增 life 事件流\n{event_text}")
+        salient_body, new_event_high_water = self._build_salient_activity_tail(
+            events, event_cursor, current_stream_id=stream_id
+        )
+        if salient_body:
+            sections.append(f"### 最近关键活动\n{salient_body}")
+
+        # thought delta cursor 在渲染阶段直接提交（不等待 LLM 调用成功）
+        if new_thought_revision > thought_cursor:
+            await self._commit_chatter_thought_cursor(stream_id, new_thought_revision)
 
         if not sections:
-            return "", high_water
+            return "", new_event_high_water
 
         header = (
             "这是同一主体 life_mode 自上次对话器读取后产生的运行态。"
             "它只在本轮临时可见，不会长期留在对话 payload。"
         )
-        return f"{header}\n\n" + "\n\n".join(sections), high_water
+        return f"{header}\n\n" + "\n\n".join(sections), new_event_high_water
 
     async def search_outer_memory(self, query: str, top_k: int = 5) -> str:
         """供对外运行模式深度检索 life memory。"""
@@ -1350,13 +1547,20 @@ class LifeEngineService(BaseService):
                 if neuromod_text:
                     lines.extend([neuromod_text, ""])
 
-        # 思考流注入
+        # 思考流注入（heartbeat 内不分组、不做 delta，因为这是 life 自身上下文）
         if self._thought_manager is not None:
             streams_cfg = getattr(cfg, "streams", None)
             if streams_cfg is None or getattr(streams_cfg, "inject_to_heartbeat", True):
-                streams_text = self._thought_manager.format_for_prompt(max_items=3)
-                if streams_text:
-                    lines.extend([streams_text, ""])
+                focus_window = int(getattr(streams_cfg, "focus_window_minutes", 30) or 30) if streams_cfg else 30
+                streams_body = self._thought_manager.format_for_prompt(
+                    max_items=3,
+                    focus_window_minutes=focus_window,
+                    grouped=False,
+                    mark_delta=False,
+                )
+                if streams_body:
+                    lines.append("### 当前思考流")
+                    lines.extend([streams_body, ""])
 
         # 冲动建议注入
         if self._impulse_engine is not None:
@@ -1571,8 +1775,54 @@ class LifeEngineService(BaseService):
         from ..tools import ALL_TOOLS, TODO_TOOLS, WEB_TOOLS, SOCIAL_TOOLS
         from ..memory.tools import MEMORY_TOOLS
         from ..streams.tools import STREAM_TOOLS
+        from ..tools.grep_tools import GREP_TOOLS
+        from ..tools.schedule_tools import SCHEDULE_TOOLS
+        from ..tools.event_grep_tools import EVENT_GREP_TOOLS
 
-        return ALL_TOOLS + TODO_TOOLS + MEMORY_TOOLS + WEB_TOOLS + STREAM_TOOLS + SOCIAL_TOOLS
+        return ALL_TOOLS + TODO_TOOLS + MEMORY_TOOLS + GREP_TOOLS + WEB_TOOLS + STREAM_TOOLS + SOCIAL_TOOLS + SCHEDULE_TOOLS + EVENT_GREP_TOOLS
+
+    @staticmethod
+    def _heartbeat_tool_call_metadata(call: Any) -> tuple[str, dict[str, Any]]:
+        tool_name = getattr(call, "name", "") or ""
+        raw_args = getattr(call, "args", {}) or {}
+        args = dict(raw_args) if isinstance(raw_args, dict) else {}
+        return str(tool_name or ""), args
+
+    async def _run_heartbeat_tool_call_execution(
+        self,
+        tool_name: str,
+        args: dict[str, Any],
+        registry: ToolRegistry,
+    ) -> tuple[str, bool]:
+        """只执行心跳工具，不写事件/上下文 payload。"""
+        usable_cls = registry.get(tool_name) if tool_name else None
+        if not usable_cls:
+            return f"未知工具: {tool_name}", False
+
+        try:
+            tool_instance = usable_cls(plugin=self.plugin)
+            call_args = dict(args)
+            if should_strip_auto_reason_argument(tool_instance.execute, call_args):
+                call_args.pop("reason", None)
+            success, result = await tool_instance.execute(**call_args)
+            return str(result) if success else f"执行失败: {result}", bool(success)
+        except Exception as exc:  # noqa: BLE001
+            return f"执行异常: {exc}", False
+
+    @staticmethod
+    def _append_heartbeat_tool_result_payload(
+        response: Any,
+        call: Any,
+        tool_name: str,
+        result_text: str,
+    ) -> None:
+        call_id = getattr(call, "id", None)
+        response.add_payload(
+            LLMPayload(
+                ROLE.TOOL_RESULT,
+                ToolResult(value=result_text, call_id=call_id, name=tool_name),
+            )
+        )
 
     async def _execute_heartbeat_tool_call(
         self,
@@ -1581,34 +1831,55 @@ class LifeEngineService(BaseService):
         registry: ToolRegistry,
     ) -> None:
         """执行一次心跳 tool call。"""
-        tool_name = getattr(call, "name", "") or ""
-        raw_args = getattr(call, "args", {}) or {}
-        args = dict(raw_args) if isinstance(raw_args, dict) else {}
-
+        tool_name, args = self._heartbeat_tool_call_metadata(call)
         log_args = {k: v for k, v in args.items() if k != "reason"}
         await self.record_tool_call(tool_name or "<unknown>", log_args)
 
-        usable_cls = registry.get(tool_name) if tool_name else None
-        if not usable_cls:
-            result_text = f"未知工具: {tool_name}"
-            success = False
-        else:
-            try:
-                tool_instance = usable_cls(plugin=self.plugin)
-                success, result = await tool_instance.execute(**args)
-                result_text = str(result) if success else f"执行失败: {result}"
-            except Exception as exc:  # noqa: BLE001
-                success = False
-                result_text = f"执行异常: {exc}"
-
-        call_id = getattr(call, "id", None)
-        response.add_payload(
-            LLMPayload(
-                ROLE.TOOL_RESULT,
-                ToolResult(value=result_text, call_id=call_id, name=tool_name),
-            )
+        result_text, success = await self._run_heartbeat_tool_call_execution(
+            tool_name,
+            args,
+            registry,
         )
+        self._append_heartbeat_tool_result_payload(response, call, tool_name, result_text)
         await self.record_tool_result(tool_name or "<unknown>", result_text, success)
+
+    async def _execute_heartbeat_tool_call_batch(
+        self,
+        calls: list[Any],
+        response: Any,
+        registry: ToolRegistry,
+    ) -> int:
+        """并行执行一组已判定安全的心跳 tool call，并按原顺序写回结果。"""
+        prepared: list[tuple[Any, str, dict[str, Any]]] = []
+        for call in calls:
+            tool_name, args = self._heartbeat_tool_call_metadata(call)
+            log_args = {k: v for k, v in args.items() if k != "reason"}
+            await self.record_tool_call(tool_name or "<unknown>", log_args)
+            prepared.append((call, tool_name, args))
+
+        if len(prepared) > 1:
+            logger.info(
+                "life_engine 心跳并行执行工具批次: "
+                f"{[tool_name or '<unknown>' for _, tool_name, _ in prepared]}"
+            )
+
+        outcomes = await asyncio.gather(
+            *(
+                self._run_heartbeat_tool_call_execution(tool_name, args, registry)
+                for _, tool_name, args in prepared
+            ),
+            return_exceptions=True,
+        )
+        for (call, tool_name, _args), outcome in zip(prepared, outcomes, strict=False):
+            if isinstance(outcome, Exception):
+                result_text = f"执行异常: {outcome}"
+                success = False
+            else:
+                result_text, success = outcome
+            self._append_heartbeat_tool_result_payload(response, call, tool_name, result_text)
+            await self.record_tool_result(tool_name or "<unknown>", result_text, success)
+
+        return len(prepared) * 2
 
     def _build_memory_maintenance_prompt_if_due(self) -> str:
         """在 MEMORY 需要整理时，周期性提醒本轮优先做维护。"""
@@ -1713,15 +1984,26 @@ class LifeEngineService(BaseService):
                 f"{[getattr(call, 'name', '<unknown>') for call in call_list]}"
             )
 
-            for call in call_list:
-                args = dict(call.args) if isinstance(getattr(call, "args", None), dict) else {}
-                reason = args.pop("reason", "未提供原因")
-                logger.info(
-                    f"life_engine 心跳#{self._state.heartbeat_count} "
-                    f"LLM 调用 {getattr(call, 'name', '<unknown>')}，原因: {reason}，参数: {args}"
-                )
-                await self._execute_heartbeat_tool_call(call, response, registry)
-                tool_event_count += 2
+            for batch, can_parallel in iter_life_tool_call_batches(call_list):
+                for call in batch:
+                    args = dict(call.args) if isinstance(getattr(call, "args", None), dict) else {}
+                    reason = args.pop("reason", "未提供原因")
+                    logger.info(
+                        f"life_engine 心跳#{self._state.heartbeat_count} "
+                        f"LLM 调用 {getattr(call, 'name', '<unknown>')}，原因: {reason}，参数: {args}"
+                    )
+
+                if can_parallel and len(batch) > 1:
+                    tool_event_count += await self._execute_heartbeat_tool_call_batch(
+                        batch,
+                        response,
+                        registry,
+                    )
+                    continue
+
+                for call in batch:
+                    await self._execute_heartbeat_tool_call(call, response, registry)
+                    tool_event_count += 2
 
             try:
                 response = await asyncio.wait_for(response.send(stream=False), timeout=timeout_seconds)
@@ -1823,12 +2105,19 @@ class LifeEngineService(BaseService):
         if streams_cfg is None or getattr(streams_cfg, "enabled", True):
             max_active = getattr(streams_cfg, "max_active_streams", 5) if streams_cfg else 5
             dormancy_hours = getattr(streams_cfg, "dormancy_threshold_hours", 24) if streams_cfg else 24
+            half_life = float(getattr(streams_cfg, "curiosity_decay_half_life_hours", 12.0)) if streams_cfg else 12.0
+            curiosity_floor = float(getattr(streams_cfg, "curiosity_floor", 0.15)) if streams_cfg else 0.15
             self._thought_manager = ThoughtStreamManager(
                 workspace_path=cfg.settings.workspace_path,
                 max_active=max_active,
                 dormancy_hours=dormancy_hours,
+                curiosity_decay_half_life_hours=half_life,
+                curiosity_floor=curiosity_floor,
             )
-            logger.info(f"思考流系统已初始化: max_active={max_active}")
+            logger.info(
+                f"思考流系统已初始化: max_active={max_active}, "
+                f"half_life={half_life}h, floor={curiosity_floor}"
+            )
 
         # 初始化冲动引擎
         drives_cfg = getattr(cfg, "drives", None)

@@ -12,7 +12,7 @@ import json
 import re
 import threading
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, AsyncGenerator
@@ -21,14 +21,20 @@ from src.core.components.types import ChatType
 from src.core.components.base.chatter import BaseChatter, Wait, Success, Failure, Stop
 from src.core.components.base.action import BaseAction
 from src.core.models.message import Message, MessageType
-from src.kernel.llm import LLMPayload, ROLE, Text, ToolResult
+from src.kernel.llm import Audio, Content, Image, LLMPayload, ROLE, Text, ToolResult, Video
 from src.kernel.logger import get_logger, COLOR
 from ..memory.prompting import load_memory_prompt_data, render_memory_prompt
+from .multimodal import (
+    MediaBudget,
+    MediaItem,
+    build_multimodal_content,
+    extract_media_from_messages,
+)
+from .tool_parallel import is_life_tool_call_parallel_safe
 
 if TYPE_CHECKING:
     from src.core.models.stream import ChatStream
     from ..service.core import LifeEngineService
-    from ..service.event_builder import LifeEngineEvent
 
 logger = get_logger("life_chatter", display="生命对话器", color=COLOR.MAGENTA)
 
@@ -166,6 +172,7 @@ class _WorkflowRuntime:
     inner_monologue_retry_count: int = 0
     pending_transient_context_text: str = ""
     pending_life_context_high_water: int = 0
+    media_seen: set[str] = field(default_factory=set)
 
 
 # ── Actions ───────────────────────────────────────────────────
@@ -471,7 +478,6 @@ class LifeChatter(BaseChatter):
 
     def _build_chat_system_prompt(
         self,
-        chat_stream: ChatStream,
         service: LifeEngineService | None,
     ) -> str:
         """构建 100% 静态可缓存系统提示词。"""
@@ -485,14 +491,7 @@ class LifeChatter(BaseChatter):
         memory_text = self._load_workspace_memory_prompt(service, mode="chat")
         if memory_text:
             parts.append(memory_text)
-
-        # 2) 固定对话框架
-        parts.append(self._build_fixed_chat_framework(chat_stream))
-
-        # 3) 场景引导
-        scene = self._build_scene_guide(chat_stream)
-        if scene:
-            parts.append(scene)
+        parts.append(self._build_primary_tool_guide())
 
         return "\n\n".join(parts)
 
@@ -546,112 +545,24 @@ class LifeChatter(BaseChatter):
         return render_memory_prompt(memory_data, mode=mode)
 
     @staticmethod
-    def _build_fixed_chat_framework(chat_stream: ChatStream) -> str:
-        """固定对话框架文本（人格、安全准则、工具规则）。"""
-        nickname = str(chat_stream.bot_nickname or "助手")
-
-        return f"""# 对话框架
-
-你正在以 **{nickname}** 的身份与用户对话。
-
-## 运行模式说明
-- 你不是两个意识体，而是同一个主体在不同运行模式下工作。
-- `life_mode` 负责内在整理、记忆沉淀、状态更新。
-- `chat_mode` 负责对外交流、回应用户、执行动作。
-- 模式切换不会改变你的身份，只改变当前职责与可见上下文。
-
-## 行为准则
-- 保持你的人设和表达风格，用符合你性格的方式回复。
-- 消息遵循标准化格式，请**不要模仿其格式与用户对话**。
-- 回复必须有理有据，禁止无根据地编造信息。
-- 不要刨根问底，保持对话的自然流畅。
-- 在群聊里，被明确点名/呼唤时优先回应，不要因为“过度克制”而连续跳过互动。
-
-## 工具使用
-- think: 发送回复前记录内心活动；如果你准备回复用户，优先先 think，再调用 `life_send_text`。
-  严禁单独调用 think，think 必须与至少一个可执行动作同轮出现。
-- record_inner_monologue: 把当前这一刻的内心独白写回同一主体的运行态。
-  尤其在主动机会、延迟续话、犹豫要不要开口时，优先先记录，再决定回复还是继续等待。
-- life_send_text: 发送文本消息。content 只能写纯文本正文，禁止塞入元信息。
-  长回复优先使用 `content: ["第一段", "第二段", ...]` 分段发送，不要把大段文字塞进一条。
-  禁止在单条 content 里写换行符；想换行就拆成数组里的下一条。
-- pass_and_wait: 不需要回复时使用，等待用户新消息。
-- schedule_followup_message: 觉得当前话题还想过一会儿再补一句时使用，只登记续话意图，不要当场连发。
-- 其他 tool/agent: 查询信息或执行功能。收到结果后，继续回复或进一步调用。
-- 可以一次调用多个工具组合使用。回复动作应当优先。
-
-### think 调用硬规则（必须遵守）
-1. 如果你打算回复用户：`action-think` 必须和至少一个可执行动作同轮出现（通常是 `action-life_send_text`）。
-2. `action-think` 不能单独调用；只调用 think 视为无效轮次，会被系统强制重试。
-3. 推荐顺序：先 `action-think`，再 `action-life_send_text`。
-4. 如果本轮决定不回复：不要调用 think，直接用 `action-life_pass_and_wait`。
-5. 禁止把最终给用户看的正文只写在 think 里，用户可见内容必须写进 `life_send_text.content`。
-6. 记住“二选一模板”：
-   - 回用户：`action-think` + `action-life_send_text`
-   - 不回用户：`action-life_pass_and_wait`（不要 think）
-
-### 主动机会 / 续话机会 规则
-1. 当你收到的是系统注入的主动机会或延迟续话机会，而不是用户新消息时，先调用 `action-record_inner_monologue`。
-2. 记录完内心独白后，再决定是自然开口，还是 `action-life_pass_and_wait`。
-3. 不要把主动机会当成“对方刚刚发了新消息”；这是一次交给你判断要不要说话的时机。
-
-### life_send_text 分段策略（强烈建议）
-1. 默认优先分段发送，尤其是解释型、安抚型、叙事型回复。
-2. 当回复超过两句话或明显较长时，拆成 2~4 段；每段只表达一个核心意图。
-3. 追问、补充、转折、情绪递进，尽量另起一段。
-4. 不要在一条消息里使用换行符；需要分隔时改成多次 `life_send_text` 或 `content` 数组。
-5. 除非回复非常短（如“嗯嗯”“收到啦”），否则不要只发单段长文本。
-
-## 安全准则
-- 保护用户隐私，不泄露个人信息。
-- 不生成有害、暴力、歧视性内容。
-- 遇到违规请求，以合适方式回应。
-
-## 运行态上下文说明
-- 同一主体的 life_mode 运行态会以 <life_runtime_context> 标签呈现在用户消息中。
-- 其中可能包含当前内在状态、活跃思考流、新增 life 事件流、运行时内心独白。
-- 这些上下文只在本轮临时可见，不会长期留在 payload；请自然地融入对话，而非机械地报告。
-- 聊天历史会以 <chat_history> 标签呈现；当用户说“刚刚/这个/那你觉得呢/感觉如何”等依赖前文的话时，
-  必须先结合 <chat_history> 和 <new_messages> 理解语境，不要只根据最后一句泛泛回应。
-- 如果 <chat_history> 仍不足以判断前文，可调用 fetch_chat_history 检索当前聊天流的历史。
-- 如果 life_runtime_context 中的事件不够，可优先基于现有上下文谨慎回应，避免臆断未给出的事件细节。"""
-
-    @staticmethod
-    def _build_scene_guide(chat_stream: ChatStream) -> str:
-        """构建场景引导。"""
-        platform = str(chat_stream.platform or "unknown")
-        chat_type_str = str(chat_stream.chat_type or "unknown")
-        nickname = str(chat_stream.bot_nickname or "unknown")
-        bot_id = str(chat_stream.bot_id or "unknown")
-
-        lines = [
-            "## 会话场景",
-            f"- 平台：{platform}",
-            f"- 聊天类型：{chat_type_str}",
-            f"- 当前机器人昵称：{nickname}",
-            f"- 当前机器人ID：{bot_id}",
-        ]
-
-        if chat_type_str == "group":
-            lines.append(
-                "- 群聊注意：避免刷屏，但不要过度克制。被明确提及/呼唤时应及时回应；"
-                "在话题相关时也可以主动接话，用简短自然的互动维持温度。"
-            )
-        else:
-            lines.append("- 私聊注意：自然亲近，可以更加放松。")
-
-        return "\n".join(lines)
+    def _build_primary_tool_guide() -> str:
+        """仅保留聊天态最核心的单个工具说明。"""
+        return (
+            "## 工具使用\n"
+            "- 如果你准备回复用户，`action-think` 必须和至少一个可执行动作同轮出现，通常是 `life_send_text`。\n"
+            "- 不要只调用 `action-think`；如果本轮决定不回复，就直接用 `action-life_pass_and_wait`，不要调用 think。\n"
+            "- 需要直接给用户发文字时，使用 `life_send_text`。\n"
+            "- `content` 只能写给用户看的纯文本正文；长内容可用 `content` 数组分段发送。\n"
+            "- 不要把 `reason`、`thought` 等元信息写进 `content`。"
+        )
 
     # ── user prompt ──────────────────────────────────────────
 
     def _build_chat_user_prompt(
         self,
         chat_stream: ChatStream,
-        service: LifeEngineService | None,
         unread_lines: str,
         history_text: str = "",
-        runtime_context_text: str = "",
-        include_dynamic_context: bool = False,
     ) -> str:
         """构建持久用户提示词。
 
@@ -663,10 +574,6 @@ class LifeChatter(BaseChatter):
         stream_name = str(getattr(chat_stream, "stream_name", "") or chat_stream.stream_id[:16])
         parts.append(f'你当前正在名为"{stream_name}"的对话中。')
         parts.append("消息格式说明：【时间】<群组角色> [平台ID] 昵称$群名片 [消息ID]： 消息内容\n")
-
-        # 兼容旧测试/调用方：动态 life 运行态现在由 execute() 在发送前
-        # transient 注入，不写入持久 USER prompt。
-        _ = include_dynamic_context, runtime_context_text, service
 
         # 1) 聊天历史
         if history_text:
@@ -710,87 +617,6 @@ class LifeChatter(BaseChatter):
             "</life_runtime_context>",
             high_water,
         )
-
-    @staticmethod
-    def _read_inner_state(service: LifeEngineService | None) -> str:
-        """直接读取 inner_state（neuromod）。"""
-        if service is None:
-            return ""
-        inner_state = getattr(service, "_inner_state", None)
-        if inner_state is None:
-            return ""
-        try:
-            from datetime import datetime
-            today_str = datetime.now().strftime("%Y-%m-%d")
-            return inner_state.format_full_state_for_prompt(today_str)
-        except Exception as e:
-            logger.debug(f"读取 inner_state 失败: {e}")
-            # Fallback: get_full_state dict
-            try:
-                state_dict = inner_state.get_full_state()
-                if isinstance(state_dict, dict):
-                    items = []
-                    for k, v in state_dict.items():
-                        items.append(f"{k}: {v}")
-                    return "\n".join(items)
-            except Exception:
-                pass
-        return ""
-
-    @staticmethod
-    def _read_recent_events(
-        service: LifeEngineService | None,
-        current_stream_id: str,
-        max_events: int = 15,
-    ) -> str:
-        """从 event_history 中提取近期事件摘要。"""
-        if service is None:
-            return ""
-
-        event_history: list[LifeEngineEvent] = getattr(service, "_event_history", [])
-        if not event_history:
-            return ""
-
-        recent = event_history[-max_events:]
-        lines: list[str] = []
-        for event in recent:
-            # Skip MESSAGE events from current stream (they'll be in chat_history)
-            if (
-                getattr(event, "stream_id", None) == current_stream_id
-                and str(getattr(event, "event_type", "")).lower() in ("message",)
-            ):
-                continue
-
-            event_type = str(getattr(event, "event_type", "")).upper()
-            if hasattr(event.event_type, "value"):
-                event_type = str(event.event_type.value).upper()
-
-            timestamp = str(getattr(event, "timestamp", ""))
-            # Extract just time portion
-            time_part = timestamp
-            if "T" in timestamp:
-                time_part = timestamp.split("T")[-1][:8]
-
-            content = str(getattr(event, "content", ""))
-            if len(content) > 100:
-                content = content[:97] + "..."
-
-            source = str(getattr(event, "source", ""))
-            sender = str(getattr(event, "sender", "") or "")
-
-            if event_type == "MESSAGE":
-                lines.append(f"[{time_part}] 消息({source}) {sender}: {content}")
-            elif event_type == "HEARTBEAT":
-                lines.append(f"[{time_part}] 内心独白: {content}")
-            elif event_type == "TOOL_CALL":
-                tool_name = str(getattr(event, "tool_name", "") or "")
-                lines.append(f"[{time_part}] 工具调用: {tool_name}")
-            elif event_type == "TOOL_RESULT":
-                lines.append(f"[{time_part}] 工具结果: {content}")
-            else:
-                lines.append(f"[{time_part}] {event_type}: {content}")
-
-        return "\n".join(lines)
 
     # ── sub-agent decision ───────────────────────────────────
 
@@ -947,19 +773,31 @@ class LifeChatter(BaseChatter):
 
     @staticmethod
     def _strip_transient_context(response: Any) -> None:
-        """从 payload 中移除发送前临时注入的动态上下文。"""
+        """从 payload 中移除发送前临时注入的动态上下文。
+
+        精确匹配：仅删除整段以 ``<transient_life_context>`` 开头、
+        以 ``</transient_life_context>`` 结尾的 Text part；并仅删除
+        各 USER payload 末尾的连续匹配项，避免误删用户原文中含相同
+        marker 的内容。
+        """
         payloads = getattr(response, "payloads", None)
         if not isinstance(payloads, list):
             return
         for payload in payloads:
             if getattr(payload, "role", None) != ROLE.USER:
                 continue
-            cleaned = []
-            for part in getattr(payload, "content", []) or []:
-                if isinstance(part, Text) and "<transient_life_context>" in part.text:
+            content = list(getattr(payload, "content", []) or [])
+            while content:
+                last = content[-1]
+                if (
+                    isinstance(last, Text)
+                    and last.text.startswith("<transient_life_context>")
+                    and last.text.rstrip().endswith("</transient_life_context>")
+                ):
+                    content.pop()
                     continue
-                cleaned.append(part)
-            payload.content = cleaned
+                break
+            payload.content = content
 
     # ── FSM helpers ──────────────────────────────────────────
 
@@ -991,6 +829,90 @@ class LifeChatter(BaseChatter):
 
         payload_content = new_content[0] if len(new_content) == 1 else new_content
         response.add_payload(LLMPayload(ROLE.USER, payload_content))
+
+    def _compose_unread_user_content(
+        self,
+        rt: "_WorkflowRuntime",
+        unread_msgs: list[Message],
+        user_prompt_text: str,
+    ) -> list[Content]:
+        """把 user_prompt_text 与 unread_msgs 中可注入的多模态媒体组合为 Content 列表。
+
+        - 多模态未启用 / 未提取到任何媒体 → 返回 ``[Text(user_prompt_text)]``
+        - 否则按预算 + dedup 提取媒体，构建 Text + Image/Audio/Video 混合列表
+        - 已被注入过（按 source_message_id+media_type 去重）的媒体不再重复
+        """
+        cfg = self._get_multimodal_cfg()
+        if cfg is None or not getattr(cfg, "enabled", False):
+            return [Text(user_prompt_text)]
+
+        budget = MediaBudget(
+            max_images=int(getattr(cfg, "max_images_per_payload", 4) or 0),
+            max_videos=int(getattr(cfg, "max_videos_per_payload", 1) or 0),
+            max_audios=int(getattr(cfg, "max_audios_per_payload", 2) or 0),
+        )
+        candidates = extract_media_from_messages(
+            unread_msgs,
+            budget,
+            enable_image=bool(getattr(cfg, "native_image", True)),
+            enable_video=bool(getattr(cfg, "native_video", True)),
+            enable_audio=bool(getattr(cfg, "native_audio", True)),
+            audio_max_seconds=int(getattr(cfg, "audio_max_seconds", 60) or 60),
+        )
+
+        # 跨轮 dedup：失败重试时，相同 unread 不重复 extend 媒体
+        fresh: list[MediaItem] = []
+        for item in candidates:
+            key = f"{item.source_message_id}|{item.media_type}|{hash(item.raw_data) & 0xFFFFFFFF:08x}"
+            if key in rt.media_seen:
+                continue
+            rt.media_seen.add(key)
+            fresh.append(item)
+
+        if not fresh:
+            return [Text(user_prompt_text)]
+
+        placeholder = str(getattr(cfg, "unsupported_audio_placeholder", "[语音消息]") or "[语音消息]")
+        return build_multimodal_content(
+            user_prompt_text,
+            fresh,
+            unsupported_audio_placeholder=placeholder,
+        )
+
+    def _get_multimodal_cfg(self) -> Any:
+        """获取 life_engine.multimodal 配置 section（不存在时返回 None）。"""
+        cfg = self._get_config()
+        return getattr(cfg, "multimodal", None) if cfg is not None else None
+
+    def _prune_sent_media(self, response: Any) -> None:
+        """成功发送后，把 USER payload 中的 Image/Audio/Video 替换为占位 Text。
+
+        避免后续轮次重复携带 base64 体积；占位文本保留语义信息。
+        受 multimodal.prune_old_media_after_send 控制。
+        """
+        cfg = self._get_multimodal_cfg()
+        if cfg is None or not getattr(cfg, "enabled", False):
+            return
+        if not bool(getattr(cfg, "prune_old_media_after_send", True)):
+            return
+
+        payloads = getattr(response, "payloads", None)
+        if not isinstance(payloads, list):
+            return
+        for payload in payloads:
+            if getattr(payload, "role", None) != ROLE.USER:
+                continue
+            new_content: list[Content] = []
+            for part in getattr(payload, "content", []) or []:
+                if isinstance(part, Image):
+                    new_content.append(Text("[已发送图片]"))
+                elif isinstance(part, Video):
+                    new_content.append(Text("[已发送视频]"))
+                elif isinstance(part, Audio):
+                    new_content.append(Text("[已发送语音]"))
+                else:
+                    new_content.append(part)
+            payload.content = new_content
 
     @staticmethod
     def _format_runtime_context_text(texts: list[str]) -> str:
@@ -1107,6 +1029,9 @@ class LifeChatter(BaseChatter):
         return normalized in {
             _SEND_TEXT,
             _SEND_EMOJI_MEME,
+            "action-draw_image",
+            "action-generate_selfie",
+            "action-tts_voice_action",
         }
 
     @staticmethod
@@ -1147,22 +1072,48 @@ class LifeChatter(BaseChatter):
                     object.__setattr__(part, "value", "ok")
                     return
 
+    @staticmethod
+    def _normalize_tool_execution_results(
+        raw_results: object,
+        expected_count: int,
+    ) -> list[tuple[bool, bool]]:
+        """兼容单调用 tuple 返回和批量 list 返回。"""
+        if (
+            expected_count == 1
+            and isinstance(raw_results, tuple)
+            and len(raw_results) >= 2
+            and isinstance(raw_results[0], bool)
+            and isinstance(raw_results[1], bool)
+        ):
+            return [(raw_results[0], raw_results[1])]
+        if isinstance(raw_results, list):
+            return raw_results
+        return []
+
     async def run_tool_call(
         self,
         call: Any,
         response: Any,
         usable_map: Any,
         trigger_msg: Message | None,
-    ) -> tuple[bool, bool]:
-        """执行工具；只压缩低信息动作回执，保留查询型 tool 结果。"""
-        appended, success = await super().run_tool_call(call, response, usable_map, trigger_msg)
-        call_name = str(getattr(call, "name", "") or "")
-        if appended and success and self._should_compact_successful_tool_result(call_name):
-            self._compact_successful_tool_result(
-                response,
-                str(getattr(call, "id", "") or ""),
-            )
-        return appended, success
+    ) -> list[tuple[bool, bool]] | tuple[bool, bool]:
+        """执行工具；兼容单调用和批量调用，并压缩低信息动作回执。"""
+        is_batch = isinstance(call, list)
+        call_list = list(call) if is_batch else [call]
+        raw_results = await super().run_tool_call(call_list, response, usable_map, trigger_msg)
+        results = list(raw_results or [])
+
+        for current_call, (appended, success) in zip(call_list, results, strict=False):
+            call_name = str(getattr(current_call, "name", "") or "")
+            if appended and success and self._should_compact_successful_tool_result(call_name):
+                self._compact_successful_tool_result(
+                    response,
+                    str(getattr(current_call, "id", "") or ""),
+                )
+
+        if is_batch:
+            return results
+        return results[0] if results else (False, False)
 
     # ── main execute ─────────────────────────────────────────
 
@@ -1189,7 +1140,7 @@ class LifeChatter(BaseChatter):
             return
 
         # System prompt: 100% 静态可缓存（内含场景引导）
-        system_text = self._build_chat_system_prompt(chat_stream, service)
+        system_text = self._build_chat_system_prompt(service)
         request.add_payload(LLMPayload(ROLE.SYSTEM, Text(system_text)))
 
         # 历史文本只在首轮合并一次；后续依赖长连接 payload 中的真实对话链。
@@ -1261,7 +1212,6 @@ class LifeChatter(BaseChatter):
                 # 构建 user prompt
                 user_prompt_text = self._build_chat_user_prompt(
                     chat_stream,
-                    service,
                     unread_lines=unread_lines,
                     history_text=history_text if not rt.history_merged else "",
                 )
@@ -1276,7 +1226,9 @@ class LifeChatter(BaseChatter):
 
                 self._upsert_pending_unread_payload(
                     response=rt.response,
-                    formatted_content=Text(user_prompt_text),
+                    formatted_content=self._compose_unread_user_content(
+                        rt, unread_msgs, user_prompt_text
+                    ),
                 )
                 rt.history_merged = True
                 rt.requires_inner_monologue = self._requires_inner_monologue_for_unread_batch(unread_msgs)
@@ -1312,6 +1264,9 @@ class LifeChatter(BaseChatter):
                             await service._save_runtime_context()
                         rt.pending_life_context_high_water = 0
                         rt.pending_transient_context_text = ""
+                        # 已成功送达：把先前 USER payload 中的多模态媒体替换为文本占位，
+                        # 避免后续轮次的 LLMRequest 重复携带 base64 体积。
+                        self._prune_sent_media(rt.response)
 
                 except Exception as error:
                     self._strip_transient_context(rt.response)
@@ -1348,6 +1303,67 @@ class LifeChatter(BaseChatter):
                 seen_sigs: set[str] = set()
                 sent_visible_reply_this_round = False
                 recorded_inner_monologue_this_round = False
+                pending_parallel_calls: list[Any] = []
+                trigger_msg = rt.unreads[-1] if rt.unreads else None
+
+                def handle_tool_execution_result(
+                    executed_call: Any,
+                    appended: bool,
+                    success: bool,
+                ) -> None:
+                    nonlocal has_pending_tool_results
+                    nonlocal sent_visible_reply_this_round
+                    nonlocal recorded_inner_monologue_this_round
+
+                    executed_name = str(getattr(executed_call, "name", "") or "")
+                    executed_args = getattr(executed_call, "args", None)
+                    if (
+                        success
+                        and isinstance(executed_args, dict)
+                        and self._should_encourage_segment_send(executed_name, executed_args)
+                    ):
+                        self._append_segment_send_retry_instruction(llm_response)
+
+                    if success and self._is_visible_reply_action(executed_name):
+                        sent_visible_reply_this_round = True
+                        rt.must_reply = False
+                        rt.must_reply_retry_count = 0
+
+                    if success and self._is_inner_monologue_record_action(executed_name):
+                        recorded_inner_monologue_this_round = True
+                        rt.requires_inner_monologue = False
+                        rt.inner_monologue_retry_count = 0
+
+                    if appended and not executed_name.startswith("action-"):
+                        has_pending_tool_results = True
+
+                async def flush_parallel_calls() -> None:
+                    if not pending_parallel_calls:
+                        return
+
+                    current_calls = list(pending_parallel_calls)
+                    pending_parallel_calls.clear()
+                    if len(current_calls) > 1:
+                        logger.info(
+                            "并行执行 life_chatter 工具批次: "
+                            f"{[getattr(c, 'name', '<unknown>') for c in current_calls]}"
+                        )
+                    raw_results = await self.run_tool_call(
+                        current_calls,
+                        llm_response,
+                        usable_map,
+                        trigger_msg,
+                    )
+                    results = self._normalize_tool_execution_results(
+                        raw_results,
+                        len(current_calls),
+                    )
+                    for executed_call, (appended, success) in zip(
+                        current_calls,
+                        results,
+                        strict=False,
+                    ):
+                        handle_tool_execution_result(executed_call, appended, success)
 
                 for call in call_list:
                     get_watchdog().feed_dog(self.stream_id)
@@ -1367,6 +1383,7 @@ class LifeChatter(BaseChatter):
                         dedupe_key = f"{call_name}:{dedupe_args}"
 
                     if dedupe_key in seen_sigs or dedupe_key in rt.cross_round_seen_signatures:
+                        await flush_parallel_calls()
                         llm_response.add_payload(
                             LLMPayload(
                                 ROLE.TOOL_RESULT,
@@ -1379,6 +1396,7 @@ class LifeChatter(BaseChatter):
 
                     # pass_and_wait
                     if call_name == _PASS_AND_WAIT:
+                        await flush_parallel_calls()
                         if rt.must_reply:
                             llm_response.add_payload(
                                 LLMPayload(
@@ -1401,30 +1419,22 @@ class LifeChatter(BaseChatter):
                         continue
 
                     # 执行工具
-                    appended, success = await self.run_tool_call(
-                        call, llm_response, usable_map,
-                        rt.unreads[-1] if rt.unreads else None,
+                    if is_life_tool_call_parallel_safe(call):
+                        pending_parallel_calls.append(call)
+                        continue
+
+                    await flush_parallel_calls()
+                    raw_results = await self.run_tool_call(
+                        call,
+                        llm_response,
+                        usable_map,
+                        trigger_msg,
                     )
+                    result_list = self._normalize_tool_execution_results(raw_results, 1)
+                    appended, success = result_list[0] if result_list else (False, False)
+                    handle_tool_execution_result(call, appended, success)
 
-                    if (
-                        success
-                        and isinstance(getattr(call, "args", None), dict)
-                        and self._should_encourage_segment_send(call_name, call.args)
-                    ):
-                        self._append_segment_send_retry_instruction(llm_response)
-
-                    if success and self._is_visible_reply_action(call_name):
-                        sent_visible_reply_this_round = True
-                        rt.must_reply = False
-                        rt.must_reply_retry_count = 0
-
-                    if success and self._is_inner_monologue_record_action(call_name):
-                        recorded_inner_monologue_this_round = True
-                        rt.requires_inner_monologue = False
-                        rt.inner_monologue_retry_count = 0
-
-                    if appended and not call_name.startswith("action-"):
-                        has_pending_tool_results = True
+                await flush_parallel_calls()
 
                 think_only_calls = self._is_think_only_calls(call_list)
                 if (

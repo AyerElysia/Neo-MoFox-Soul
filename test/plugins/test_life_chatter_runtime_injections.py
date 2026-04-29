@@ -103,9 +103,7 @@ def test_life_chatter_keeps_runtime_context_for_first_user_prompt() -> None:
 
     prompt = chatter._build_chat_user_prompt(
         SimpleNamespace(stream_id=stream.stream_id, stream_name="test"),
-        service=None,
         unread_lines="用户: hi",
-        runtime_context_text=runtime_context,
     )
 
     assert high_water == 0
@@ -157,18 +155,78 @@ def test_life_chatter_initial_history_limit_supports_legacy_field() -> None:
 
     assert chatter._get_initial_history_message_limit() == 6
 
+# ---- 新增：salient tail 过滤 + thought delta cursor 去重 -------------------
 
-def test_life_chatter_user_prompt_tells_model_to_use_chat_history_for_references() -> None:
-    chatter = LifeChatter.__new__(LifeChatter)
-    prompt = chatter._build_fixed_chat_framework(
-        SimpleNamespace(
-            bot_nickname="爱莉希雅",
-            platform="qq",
-            chat_type="private",
-            bot_id="bot",
-        )
+
+import pytest  # noqa: E402
+
+from plugins.life_engine.service.core import LifeEngineService  # noqa: E402
+from plugins.life_engine.service.event_builder import (  # noqa: E402
+    EventType,
+    LifeEngineEvent,
+)
+
+
+def _make_event(seq: int, **kwargs) -> LifeEngineEvent:
+    base = dict(
+        event_id=f"e{seq}",
+        event_type=EventType.HEARTBEAT,
+        timestamp="2026-04-25T22:00:00+08:00",
+        sequence=seq,
+        source="life_engine",
+        source_detail="hb",
+        content=f"content-{seq}",
     )
+    base.update(kwargs)
+    return LifeEngineEvent(**base)
 
-    assert "<chat_history>" in prompt
-    assert "必须先结合 <chat_history> 和 <new_messages>" in prompt
-    assert "fetch_chat_history" in prompt
+
+@pytest.mark.asyncio
+async def test_build_chatter_runtime_filters_plain_heartbeats() -> None:
+    """普通 HEARTBEAT 不应进入 salient tail。"""
+    service = LifeEngineService(SimpleNamespace(config=None))
+    chat = SimpleNamespace(stream_id="stream-x")
+    service._event_history = [
+        _make_event(1, content="HB_NOISE", heartbeat_index=1),
+        _make_event(
+            2,
+            event_type=EventType.AGENT_RESULT,
+            content="AGENT_DONE",
+            tool_name="planner",
+            tool_success=True,
+            source_detail="agent",
+        ),
+        _make_event(
+            3,
+            event_type=EventType.TOOL_CALL,
+            content="tool_args_blob",
+            tool_name="search",
+            source_detail="tool",
+        ),
+    ]
+    text, hw = await service.build_chatter_runtime_context(chat)
+    assert "HB_NOISE" not in text
+    assert "tool_args_blob" not in text
+    assert "AGENT_DONE" in text
+    assert "### 最近关键活动" in text
+    assert hw == 2
+
+
+@pytest.mark.asyncio
+async def test_build_chatter_runtime_thought_delta_cursor_dedup() -> None:
+    """同一 stream 第二次 build 不应再在 thought 块带 🔄 delta 标记。"""
+    service = LifeEngineService(SimpleNamespace(config=None))
+    chat = SimpleNamespace(stream_id="stream-d")
+    service._thought_manager = SimpleNamespace(
+        format_for_prompt=lambda **kw: (
+            "🔄 (刚推进) idea-1" if kw.get("revision_cursor", 0) < 5 else "idea-1"
+        ),
+        current_revision=5,
+    )
+    service._event_history = []
+
+    first, _ = await service.build_chatter_runtime_context(chat)
+    second, _ = await service.build_chatter_runtime_context(chat)
+
+    assert "🔄" in first
+    assert "🔄" not in second

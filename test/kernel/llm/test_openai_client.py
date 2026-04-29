@@ -240,6 +240,58 @@ class TestPayloadsToOpenAIMessages:
         assert content[1]["type"] == "input_audio"
         assert content[1]["input_audio"]["format"] == "mp3"
 
+    def test_audio_format_propagates_wav(self):
+        """Audio mime_type=audio/wav 应输出 format='wav'。"""
+        from src.kernel.llm.model_client.openai_client import _payloads_to_openai_messages
+
+        payloads = [
+            LLMPayload(
+                ROLE.USER,
+                [Audio("base64|aGVsbG8=", mime_type="audio/wav")],
+            )
+        ]
+        messages, _ = _payloads_to_openai_messages(payloads)
+        assert messages[0]["content"][0]["input_audio"]["format"] == "wav"
+
+    def test_audio_format_propagates_x_wav(self):
+        """audio/x-wav 也应映射为 wav。"""
+        from src.kernel.llm.model_client.openai_client import _payloads_to_openai_messages
+
+        payloads = [
+            LLMPayload(
+                ROLE.USER,
+                [Audio("base64|aGVsbG8=", mime_type="audio/x-wav")],
+            )
+        ]
+        messages, _ = _payloads_to_openai_messages(payloads)
+        assert messages[0]["content"][0]["input_audio"]["format"] == "wav"
+
+    def test_audio_format_unknown_falls_back_to_mp3(self):
+        """未知 mime_type 保守降级为 mp3。"""
+        from src.kernel.llm.model_client.openai_client import _payloads_to_openai_messages
+
+        payloads = [
+            LLMPayload(
+                ROLE.USER,
+                [Audio("base64|aGVsbG8=", mime_type="audio/silk")],
+            )
+        ]
+        messages, _ = _payloads_to_openai_messages(payloads)
+        assert messages[0]["content"][0]["input_audio"]["format"] == "mp3"
+
+    def test_audio_data_url_extracts_mime_type(self):
+        """data URL 应自动提取 mime_type，并体现在 OpenAI format 字段。"""
+        from src.kernel.llm.model_client.openai_client import _payloads_to_openai_messages
+
+        payloads = [
+            LLMPayload(
+                ROLE.USER,
+                [Audio("data:audio/wav;base64,aGVsbG8=")],
+            )
+        ]
+        messages, _ = _payloads_to_openai_messages(payloads)
+        assert messages[0]["content"][0]["input_audio"]["format"] == "wav"
+
     def test_tool_payload(self):
         """测试工具定义payload。"""
         from src.kernel.llm.model_client.openai_client import _payloads_to_openai_messages

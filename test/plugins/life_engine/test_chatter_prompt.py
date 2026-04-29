@@ -13,31 +13,8 @@ from src.core.models.message import Message
 from src.kernel.llm import LLMPayload, ROLE, Text
 import pytest
 
-
-def test_life_chatter_prompt_states_single_subject_runtime_modes() -> None:
-    """LifeChatter 提示词应明确只有一个主体、多个运行模式。"""
-    chat_stream = SimpleNamespace(
-        bot_nickname="Neo",
-        bot_id="bot-1",
-        platform="qq",
-        chat_type="private",
-        stream_id="stream-1",
-    )
-
-    prompt = LifeChatter._build_fixed_chat_framework(chat_stream)
-
-    assert "同一个主体" in prompt
-    assert "运行模式" in prompt
-    assert "不是两个意识体" in prompt
-    assert "分段策略" in prompt
-    assert "content: [\"第一段\", \"第二段\", ...]" in prompt
-    assert "被明确点名/呼唤时优先回应" in prompt
-    assert "record_inner_monologue" in prompt
-    assert "主动机会 / 续话机会" in prompt
-
-
 def test_life_chatter_system_prompt_includes_memory_not_tool(tmp_path) -> None:
-    """聊天态应共享 SOUL/MEMORY，但不注入 life 专属 TOOL 文档。"""
+    """聊天态应共享 SOUL/MEMORY，并仅追加一个核心工具说明。"""
     (tmp_path / "SOUL.md").write_text("SOUL_CONTENT", encoding="utf-8")
     (tmp_path / "MEMORY.md").write_text(
         "\n".join(
@@ -64,15 +41,7 @@ def test_life_chatter_system_prompt_includes_memory_not_tool(tmp_path) -> None:
     config.settings.workspace_path = str(tmp_path)
     chatter = LifeChatter.__new__(LifeChatter)
     chatter.plugin = SimpleNamespace(config=config)
-    chat_stream = SimpleNamespace(
-        bot_nickname="Neo",
-        bot_id="bot-1",
-        platform="qq",
-        chat_type="private",
-        stream_id="stream-1",
-    )
-
-    prompt = chatter._build_chat_system_prompt(chat_stream, service=None)
+    prompt = chatter._build_chat_system_prompt(service=None)
 
     assert "SOUL_CONTENT" in prompt
     assert "MEMORY_DURABLE" in prompt
@@ -80,6 +49,10 @@ def test_life_chatter_system_prompt_includes_memory_not_tool(tmp_path) -> None:
     assert "MEMORY_FADING" not in prompt
     assert "给编辑者看的说明" not in prompt
     assert "TOOL_CONTENT" not in prompt
+    assert "action-think" in prompt
+    assert "action-life_pass_and_wait" in prompt
+    assert "life_send_text" in prompt
+    assert "reason" in prompt
 
 
 def test_life_chatter_persistent_user_prompt_excludes_dynamic_context() -> None:
@@ -89,10 +62,8 @@ def test_life_chatter_persistent_user_prompt_excludes_dynamic_context() -> None:
 
     prompt = chatter._build_chat_user_prompt(
         chat_stream,
-        service=SimpleNamespace(),
         unread_lines="新消息",
         history_text="历史消息",
-        runtime_context_text="运行时上下文",
     )
 
     assert "<chat_history>" in prompt
@@ -112,18 +83,21 @@ async def test_life_chatter_dynamic_context_is_separate_snapshot() -> None:
         format_full_state_for_prompt=lambda _today: "STATE_NOW"
     )
     service._thought_manager = SimpleNamespace(
-        format_for_prompt=lambda max_items=5: "THOUGHT_STREAM_NOW"
+        format_for_prompt=lambda **kwargs: "THOUGHT_STREAM_NOW",
+        current_revision=1,
     )
     service._event_history = [
         LifeEngineEvent(
             event_id="evt-1",
-            event_type=EventType.HEARTBEAT,
+            event_type=EventType.MESSAGE,
             timestamp="2026-04-25T22:00:00+08:00",
             sequence=1,
             source="life_engine",
-            source_detail="heartbeat",
+            source_detail="dfc",
             content="RECENT_EVENT",
-            heartbeat_index=1,
+            content_type="dfc_message",
+            stream_id="stream-1",
+            sender="dfc",
         )
     ]
 
@@ -147,23 +121,27 @@ async def test_life_chatter_runtime_context_cursor_avoids_repeat_injection() -> 
     service._event_history = [
         LifeEngineEvent(
             event_id="evt-1",
-            event_type=EventType.HEARTBEAT,
+            event_type=EventType.MESSAGE,
             timestamp="2026-04-25T22:00:00+08:00",
             sequence=1,
             source="life_engine",
-            source_detail="heartbeat",
+            source_detail="dfc",
             content="OLD_LIFE_EVENT",
-            heartbeat_index=1,
+            content_type="dfc_message",
+            stream_id="stream-1",
+            sender="dfc",
         ),
         LifeEngineEvent(
             event_id="evt-2",
-            event_type=EventType.HEARTBEAT,
+            event_type=EventType.MESSAGE,
             timestamp="2026-04-25T22:01:00+08:00",
             sequence=2,
             source="life_engine",
-            source_detail="heartbeat",
+            source_detail="dfc",
             content="NEW_LIFE_EVENT",
-            heartbeat_index=2,
+            content_type="dfc_message",
+            stream_id="stream-1",
+            sender="dfc",
         ),
     ]
     chat_stream = SimpleNamespace(stream_id="stream-1")
@@ -209,13 +187,11 @@ def test_life_chatter_second_turn_prompt_does_not_repeat_history() -> None:
 
     first_turn = chatter._build_chat_user_prompt(
         chat_stream,
-        service=None,
         unread_lines="第一轮新消息",
         history_text="首轮历史",
     )
     second_turn = chatter._build_chat_user_prompt(
         chat_stream,
-        service=None,
         unread_lines="第二轮新消息",
         history_text="",
     )

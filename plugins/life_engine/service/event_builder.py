@@ -83,7 +83,11 @@ class LifeEngineState:
     # 空闲心跳追踪：连续没有工具调用的心跳数
     idle_heartbeat_count: int = 0
     # 每个聊天流已经给 life_chatter 注入过的事件序列高水位
+    # NOTE: 老字段，新代码实际上把它当作 chatter_event_cursors 使用。
+    # 加载老 state 时直接复用；写出时仍写入此字段以保持兼容。
     chatter_context_cursors: dict[str, int] = field(default_factory=dict)
+    # 每个聊天流已经看过的 thought_stream 全局 revision 高水位
+    chatter_thought_cursors: dict[str, int] = field(default_factory=dict)
 
 
 # 中枢内部消息的固定标识

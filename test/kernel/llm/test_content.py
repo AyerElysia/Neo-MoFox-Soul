@@ -208,6 +208,32 @@ class TestAudio:
         assert Audio(b64_a) == Audio(b64_a)
         assert Audio(b64_a) != Audio(b64_b)
 
+    def test_audio_default_mime_type(self) -> None:
+        """默认 mime_type 为 audio/mpeg。"""
+        b64 = base64.b64encode(b"x").decode("utf-8")
+        audio = Audio(b64)
+        assert audio.mime_type == "audio/mpeg"
+
+    def test_audio_explicit_mime_type(self) -> None:
+        """可显式指定 mime_type。"""
+        b64 = base64.b64encode(b"x").decode("utf-8")
+        audio = Audio(b64, mime_type="audio/wav")
+        assert audio.mime_type == "audio/wav"
+
+    def test_audio_data_url_extracts_mime_type(self) -> None:
+        """data URL 应自动提取 mime_type 并覆盖默认值。"""
+        b64 = base64.b64encode(b"x").decode("utf-8")
+        audio = Audio(f"data:audio/wav;base64,{b64}")
+        assert audio.mime_type == "audio/wav"
+        assert audio.value == b64
+
+    def test_audio_mime_type_is_immutable(self) -> None:
+        """mime_type 不可被修改。"""
+        b64 = base64.b64encode(b"x").decode("utf-8")
+        audio = Audio(b64, mime_type="audio/wav")
+        with pytest.raises(AttributeError):
+            audio.mime_type = "audio/mpeg"  # type: ignore[misc]
+
 
 class TestVideo:
     """Test cases for Video content."""

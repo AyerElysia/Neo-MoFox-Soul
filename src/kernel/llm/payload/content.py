@@ -193,6 +193,7 @@ class Audio(File):
     """音频内容。
 
     继承自 :class:`File`，在构造时将输入统一规范化为纯 base64 字符串。
+    同时记录 MIME 类型（默认 ``audio/mpeg``），可从 data URL 自动推断。
 
     支持与 :class:`File` 完全相同的三种输入形式：
 
@@ -202,17 +203,40 @@ class Audio(File):
 
     示例::
 
-        a1 = Audio("speech.mp3")                           # 文件路径
-        a2 = Audio(open("speech.mp3", "rb"))               # 文件对象
-        a3 = Audio("data:audio/mp3;base64,//uQR...")       # data URL
-        a4 = Audio("base64|//uQR...")                      # base64| 前缀
+        a1 = Audio("speech.mp3")                           # 默认 audio/mpeg
+        a2 = Audio("speech.wav", mime_type="audio/wav")    # 指定 MIME
+        a3 = Audio(open("speech.mp3", "rb"))               # 文件对象
+        a4 = Audio("data:audio/wav;base64,//uQR...")       # data URL，自动推断
         a5 = Audio("//uQR...")                             # 纯 base64 字符串
     """
+
+    __slots__ = ("value", "mime_type")
+
+    mime_type: str
+
+    def __init__(
+        self,
+        source: Union[str, "PathLike[str]", BinaryIO],
+        mime_type: str = "audio/mpeg",
+    ) -> None:
+        """构造 Audio 实例。
+
+        Args:
+            source: 文件路径（str/Path）、文件对象（BinaryIO）或 base64/data URL 字符串。
+            mime_type: 音频 MIME 类型，默认 ``audio/mpeg``（即 mp3）。
+                当 source 为 data URL 时，会自动从中提取 MIME 类型并忽略此参数。
+        """
+        if isinstance(source, str) and source.startswith("data:") and ";base64," in source:
+            extracted = source.split(";", 1)[0][len("data:"):]
+            if extracted:
+                mime_type = extracted
+        super().__init__(source)
+        object.__setattr__(self, "mime_type", mime_type)
 
     def __repr__(self) -> str:
         """返回对象的字符串表示。"""
         preview = self.value[:16] + "..." if len(self.value) > 16 else self.value
-        return f"Audio(value={preview!r})"
+        return f"Audio(mime_type={self.mime_type!r}, value={preview!r})"
 
 
 class Video(File):

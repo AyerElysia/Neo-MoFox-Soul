@@ -20,6 +20,8 @@ from ..tools.todo_tools import TODO_TOOLS
 from ..memory.tools import MEMORY_TOOLS
 from ..tools.grep_tools import GREP_TOOLS
 from ..tools.web_tools import WEB_TOOLS
+from ..tools.schedule_tools import SCHEDULE_TOOLS
+from ..tools.event_grep_tools import EVENT_GREP_TOOLS
 from .compat_tools import (
     LifeThinkAction,
     LifeRecordInnerMonologueAction,
@@ -88,6 +90,8 @@ class LifeEnginePlugin(BasePlugin):
             *MEMORY_TOOLS,
             *GREP_TOOLS,
             *WEB_TOOLS,
+            *SCHEDULE_TOOLS,
+            *EVENT_GREP_TOOLS,
         ]
 
         # 启用 LifeChatter 时注册对话器及其专用 Action

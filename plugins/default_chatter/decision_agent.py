@@ -127,14 +127,19 @@ async def decide_should_respond(
     request.add_payload(LLMPayload(ROLE.SYSTEM, Text(sub_prompt)))
 
     fitted_unreads = _fit_unreads_to_sub_agent_budget(request, unreads_text)
-    if len(fitted_unreads) < len(unreads_text):
-        logger.info(
-            "Sub-agent 输入已截断以控制上下文长度: "
-            f"{len(unreads_text)} -> {len(fitted_unreads)} 字符"
-        )
+    # 提取最近 10 条历史记录作为决策背景
+    history_context = ""
+    try:
+        # 使用 chatter 的内置方法构建历史文本，限制在 10 条以内以节省 token
+        history_context = chatter._build_history_text(chat_stream, max_messages=30)
+    except Exception as e:
+        logger.warning(f"决策代理提取历史记录失败: {e}")
 
     request.add_payload(
-        LLMPayload(ROLE.USER, Text(f"【新收到待判定消息】\n{fitted_unreads}"))
+        LLMPayload(ROLE.USER, Text(
+            f"【对话背景（历史记录）】\n{history_context}\n\n"
+            f"【新收到待判定消息】\n{fitted_unreads}"
+        ))
     )
 
     try:
