@@ -18,6 +18,7 @@ import io
 import json
 import math
 import random
+import re
 import shutil
 import time
 from dataclasses import dataclass
@@ -908,6 +909,9 @@ class EmojiSenderService(BaseService):
         适用场景：WebUI 修改了 SQLite 里的描述后，同步更新向量库 metadata，
         避免检索时仍使用旧描述。
 
+        如果该表情包尚未入库（例如因 max_memes 限制被跳过），会尝试
+        在磁盘上找到对应文件后自动入库。
+
         Args:
             meme_id: 表情包的 SHA256 hash（与 source_hash / meme_id 字段一致）
             new_description: 新的描述文本
@@ -932,10 +936,6 @@ class EmojiSenderService(BaseService):
         ids: list[str] = list(data.get("ids") or [])
         metadatas: list[dict] = list(data.get("metadatas") or [])
 
-        if not ids:
-            logger.debug(f"update_meme_description: 向量库中未找到 meme_id={meme_id[:8]}...")
-            return False
-
         # 重新生成 embedding
         try:
             embedding_model_set = get_model_set_by_task("embedding")
@@ -954,6 +954,10 @@ class EmojiSenderService(BaseService):
         except Exception as e:
             logger.warning(f"update_meme_description: 生成 embedding 失败: {e}")
             return False
+
+        if not ids:
+            # 向量库中无条目，尝试在磁盘上找到文件后自动入库
+            return await self._ingest_missing_meme(meme_id, new_desc, new_embedding)
 
         # 删除旧条目
         try:
@@ -982,3 +986,135 @@ class EmojiSenderService(BaseService):
 
         logger.info(f"update_meme_description: 已同步 meme_id={meme_id[:8]}... ({len(ids)} 条)")
         return True
+
+    async def _ingest_missing_meme(
+        self,
+        meme_id: str,
+        description: str,
+        embedding: list[float],
+    ) -> bool:
+        """当表情包在向量库中缺失时，尝试从磁盘找到文件并入库。
+
+        会在以下位置查找文件：
+        1. media_cache/emojis/
+        2. 手动表情包目录
+        3. emoji_sender data_dir（可能已存在但向量库记录丢失）
+
+        Args:
+            meme_id: 表情包的 SHA256 hash
+            description: 要写入向量库的描述文本
+            embedding: 预计算好的 embedding 向量
+
+        Returns:
+            True 表示成功入库；False 表示文件不存在或入库失败
+        """
+        data_dir = self._data_dir()
+        source_path: Path | None = None
+
+        # 在 media_cache 和手动目录中按文件名查找
+        search_dirs = [self._media_cache_dir(), self._manual_memes_dir()]
+        for search_dir in search_dirs:
+            if not search_dir.exists():
+                continue
+            for suffix in _ALLOWED_SUFFIXES:
+                candidate = search_dir / f"{meme_id}{suffix}"
+                if candidate.is_file():
+                    source_path = candidate
+                    break
+            if source_path:
+                break
+
+        # 如果在 data_dir 中找到了（向量库记录丢失但文件还在）
+        if source_path is None and data_dir.exists():
+            for suffix in _ALLOWED_SUFFIXES:
+                candidate = data_dir / f"{meme_id}{suffix}"
+                if candidate.is_file():
+                    source_path = candidate
+                    break
+
+        if source_path is None:
+            logger.debug(
+                f"update_meme_description: 向量库和磁盘均未找到 meme_id={meme_id[:8]}...，无法入库"
+            )
+            return False
+
+        # 确保文件在 data_dir 中
+        data_dir.mkdir(parents=True, exist_ok=True)
+        target_path = data_dir / f"{meme_id}{source_path.suffix.lower()}"
+        if not target_path.is_file():
+            try:
+                shutil.copy2(source_path, target_path)
+            except Exception as e:
+                logger.warning(f"update_meme_description: 复制表情包失败: {source_path} -> {target_path} - {e}")
+                return False
+
+        # 从新描述中提取 emotion_tags
+        tags = self._extract_tags_from_description(description)
+        if not tags:
+            tags = ["neutral"]
+
+        # 写入向量库
+        vdb = self._vector_db()
+        collection = self._collection_name()
+        stored_path = self._path_to_store_value(target_path)
+        now_ts = time.time()
+
+        new_ids: list[str] = []
+        new_embeddings: list[list[float]] = []
+        new_documents: list[str] = []
+        new_metadatas: list[dict[str, Any]] = []
+
+        for tag in tags:
+            new_ids.append(f"{meme_id}:{tag}")
+            new_embeddings.append(list(embedding))
+            new_documents.append(description)
+            new_metadatas.append({
+                "meme_id": meme_id,
+                "tag": tag,
+                "path": stored_path,
+                "description": description,
+                "source_hash": meme_id,
+                "source_cache_path": self._path_to_store_value(source_path),
+                "created_at": float(now_ts),
+            })
+
+        try:
+            await vdb.add(
+                collection_name=collection,
+                ids=new_ids,
+                embeddings=new_embeddings,
+                documents=new_documents,
+                metadatas=new_metadatas,
+            )
+            logger.info(f"update_meme_description: 自动入库 meme_id={meme_id[:8]}... tags={tags}")
+            return True
+        except Exception as e:
+            logger.warning(f"update_meme_description: 自动入库写入向量库失败: {e}")
+            return False
+
+    @staticmethod
+    def _extract_tags_from_description(description: str) -> list[str]:
+        """从描述文本中提取 emotion_tags。
+
+        尝试解析描述中的情感标签，支持以下格式：
+        - "Keywords: [tag1, tag2] Desc: ..."
+        - 描述文本中包含 EMOTION_TAG_PRESET 中的关键词
+
+        Returns:
+            匹配到的 emotion_tags 列表（已去重，保持在 EMOTION_TAG_PRESET 内）
+        """
+        tags: list[str] = []
+
+        # 尝试解析 "Keywords: [xxx, yyy]" 格式
+        kw_match = re.search(r"Keywords:\s*\[([^\]]*)\]", description, re.IGNORECASE)
+        if kw_match:
+            raw_tags = [t.strip().strip("'\"") for t in kw_match.group(1).split(",") if t.strip()]
+            tags.extend(t for t in raw_tags if t in EMOTION_TAG_PRESET)
+
+        # 从整个描述中扫描情感关键词
+        desc_lower = description.lower()
+        for tag in EMOTION_TAG_PRESET:
+            if tag not in tags and tag in desc_lower:
+                tags.append(tag)
+
+        return tags
