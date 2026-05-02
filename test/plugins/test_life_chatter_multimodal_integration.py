@@ -86,6 +86,23 @@ def test_compose_injects_image_voice_video() -> None:
     assert any(isinstance(p, Video) for p in out)
 
 
+def test_compose_skips_emoji_by_default() -> None:
+    chatter = _make_chatter()
+    rt = _new_runtime()
+    msgs = [_msg("m1", media=[{"type": "emoji", "data": _b64("emo")}])]
+    out = chatter._compose_unread_user_content(rt, msgs, "hi")
+    assert all(not isinstance(p, Image) for p in out)
+    assert len(out) == 1 and isinstance(out[0], Text)
+
+
+def test_compose_can_enable_emoji_explicitly() -> None:
+    chatter = _make_chatter(native_emoji=True)
+    rt = _new_runtime()
+    msgs = [_msg("m1", media=[{"type": "emoji", "data": _b64("emo")}])]
+    out = chatter._compose_unread_user_content(rt, msgs, "hi")
+    assert any(isinstance(p, Image) for p in out)
+
+
 def test_compose_dedup_across_retries() -> None:
     """失败重试场景：相同 unread 二次 compose 不重复发出媒体。"""
     chatter = _make_chatter()

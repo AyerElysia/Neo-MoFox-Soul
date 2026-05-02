@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 
 from .payload import LLMPayload, Text, ToolCall, ToolResult
+from .payload.content import Audio, File, Image, Video
 
 
 def _get_tiktoken_encoding(model_identifier: str):
@@ -51,6 +52,26 @@ def _serialize_payload(payload: LLMPayload) -> str:
                 chunks.append(json.dumps(part.args, ensure_ascii=False, sort_keys=True))
             else:
                 chunks.append(str(part.args))
+            continue
+
+        if isinstance(part, Image):
+            chunks.append(f"[image input; base64_chars={len(part.value)}]")
+            continue
+
+        if isinstance(part, Audio):
+            chunks.append(
+                f"[audio input; mime_type={part.mime_type}; base64_chars={len(part.value)}]"
+            )
+            continue
+
+        if isinstance(part, Video):
+            chunks.append(
+                f"[video input; mime_type={part.mime_type}; base64_chars={len(part.value)}]"
+            )
+            continue
+
+        if isinstance(part, File):
+            chunks.append(f"[file input; base64_chars={len(part.value)}]")
             continue
 
         to_schema = getattr(part, "to_schema", None)

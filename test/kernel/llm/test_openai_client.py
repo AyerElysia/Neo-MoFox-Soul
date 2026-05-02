@@ -218,7 +218,8 @@ class TestPayloadsToOpenAIMessages:
         content = messages[0]["content"]
         assert isinstance(content, list)
         assert len(content) == 2
-        assert content[1]["type"] == "video_url"
+        assert content[1]["type"] == "image_url"
+        assert content[1]["image_url"]["url"].startswith("data:video/")
 
     def test_multimodal_content_with_audio(self):
         """测试多模态内容（文本+音频）。"""
@@ -930,7 +931,7 @@ class TestOpenAIChatClient:
 
     @pytest.mark.asyncio
     async def test_create_retries_without_native_video_when_unsupported(self):
-        """测试上游不支持 video_url 时会自动降级并重试。"""
+        """测试上游不支持原生视频输入时会自动降级并重试。"""
         from src.kernel.llm.model_client.openai_client import OpenAIChatClient
 
         mock_completion = MagicMock()
@@ -963,7 +964,7 @@ class TestOpenAIChatClient:
             "extra_params": {},
         }
 
-        message, tool_calls, stream_iter = await client.create(
+        message, tool_calls, stream_iter, reasoning_content, request_record_id = await client.create(
             model_name="gpt-4o",
             payloads=payloads,
             tools=[],
@@ -975,14 +976,79 @@ class TestOpenAIChatClient:
         assert message == "fallback-ok"
         assert tool_calls == []
         assert stream_iter is None
+        assert reasoning_content is None
+        assert isinstance(request_record_id, int)
         assert mock_chat.completions.create.await_count == 2
 
         first_call_kwargs = mock_chat.completions.create.await_args_list[0].kwargs
         second_call_kwargs = mock_chat.completions.create.await_args_list[1].kwargs
         first_content = first_call_kwargs["messages"][0]["content"]
         second_content = second_call_kwargs["messages"][0]["content"]
-        assert any(item.get("type") == "video_url" for item in first_content if isinstance(item, dict))
-        assert all(item.get("type") != "video_url" for item in second_content if isinstance(item, dict))
+        assert any(
+            item.get("type") == "image_url"
+            and (item.get("image_url") or {}).get("url", "").startswith("data:video/")
+            for item in first_content
+            if isinstance(item, dict)
+        )
+        assert all(
+            not (
+                item.get("type") == "image_url"
+                and (item.get("image_url") or {}).get("url", "").startswith("data:video/")
+            )
+            for item in second_content
+            if isinstance(item, dict)
+        )
+
+    @pytest.mark.asyncio
+    async def test_create_retries_without_native_video_when_provider_reports_invalid_image_format(self):
+        """视频被 image_url 通道拒收时，也应自动去掉视频块并重试。"""
+        from src.kernel.llm.model_client.openai_client import OpenAIChatClient
+
+        mock_completion = MagicMock()
+        mock_completion.choices = [MagicMock()]
+        mock_completion.choices[0].message.content = "fallback-ok"
+        mock_completion.choices[0].message.tool_calls = None
+
+        mock_chat = AsyncMock()
+        mock_chat.completions.create = AsyncMock(
+            side_effect=[
+                Exception("param incorrect: invalid image format, only bmp/gif/png/jpeg/webp are supported"),
+                mock_completion,
+            ]
+        )
+
+        mock_openai_client = MagicMock()
+        mock_openai_client.chat.completions.create = mock_chat.completions.create
+
+        client = OpenAIChatClient()
+        client._clients = {}
+        client._get_client = MagicMock(return_value=mock_openai_client)
+
+        payloads = [LLMPayload(ROLE.USER, [Text("描述一下"), Video("base64|AAAAGGZ0eXBtcDQy")])]
+        model_set = {
+            "api_key": "test-key",
+            "base_url": None,
+            "timeout": None,
+            "max_tokens": None,
+            "temperature": None,
+            "extra_params": {},
+        }
+
+        message, tool_calls, stream_iter, reasoning_content, request_record_id = await client.create(
+            model_name="mimo-v2.5",
+            payloads=payloads,
+            tools=[],
+            request_name="test",
+            model_set=model_set,
+            stream=False,
+        )
+
+        assert message == "fallback-ok"
+        assert tool_calls == []
+        assert stream_iter is None
+        assert reasoning_content is None
+        assert isinstance(request_record_id, int)
+        assert mock_chat.completions.create.await_count == 2
 
     @pytest.mark.asyncio
     async def test_create_inject_reasoning_content_for_thinking_tool_calls(self):

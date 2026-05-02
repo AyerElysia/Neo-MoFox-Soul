@@ -220,9 +220,31 @@ def _messages_contain_native_video(messages: list[dict[str, Any]]) -> bool:
         if not isinstance(content, list):
             continue
         for item in content:
-            if isinstance(item, dict) and item.get("type") in {"video_url", "input_video"}:
+            if _is_native_video_message_item(item):
                 return True
     return False
+
+
+def _is_native_video_message_item(item: Any) -> bool:
+    """判断单个 content item 是否承载原生视频输入。"""
+    if not isinstance(item, dict):
+        return False
+
+    item_type = item.get("type")
+    if item_type in {"video_url", "input_video"}:
+        return True
+
+    if item_type != "image_url":
+        return False
+
+    image_url_obj = item.get("image_url")
+    url = ""
+    if isinstance(image_url_obj, dict):
+        url = str(image_url_obj.get("url") or "")
+    elif isinstance(item.get("url"), str):
+        url = str(item.get("url") or "")
+
+    return url.startswith("data:video/")
 
 
 def _strip_native_video_from_messages(
@@ -246,7 +268,7 @@ def _strip_native_video_from_messages(
         new_content: list[Any] = []
         local_removed = 0
         for item in content:
-            if isinstance(item, dict) and item.get("type") in {"video_url", "input_video"}:
+            if _is_native_video_message_item(item):
                 local_removed += 1
                 continue
             new_content.append(item)
@@ -280,6 +302,15 @@ def _is_native_video_unsupported_error(error: Exception) -> bool:
         "content type",
         "schema",
     )
+
+    image_format_markers = (
+        "invalid image format",
+        "only bmp/gif/png/jpeg/webp are supported",
+        "param incorrect",
+    )
+
+    if any(marker in haystack for marker in image_format_markers):
+        return True
 
     return any(marker in haystack for marker in video_markers) and any(
         marker in haystack for marker in unsupported_markers

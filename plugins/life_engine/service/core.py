@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any
 from src.app.plugin_system.api.llm_api import create_llm_request, get_model_set_by_task
 from src.app.plugin_system.api.log_api import get_logger
 from src.core.components.base import BaseService
+from src.core.components.base.chatter import BaseChatter
 from src.core.components.utils import should_strip_auto_reason_argument
 from src.core.models.message import Message
 from src.kernel.concurrency import get_task_manager
@@ -933,6 +934,50 @@ class LifeEngineService(BaseService):
             "channel": "chatter_inner_monologue",
         }
 
+    async def record_chatter_think_snapshot(
+        self,
+        *,
+        stream_id: str,
+        thought: str,
+        mood: str = "",
+        decision: str = "",
+        expected_response: str = "",
+    ) -> dict[str, Any]:
+        """记录当前聊天流最近一次 action-think 快照。"""
+        if not self._is_enabled():
+            raise RuntimeError("life_engine 未启用")
+
+        sid = str(stream_id or "").strip()
+        if not sid:
+            raise ValueError("stream_id 不能为空")
+
+        snapshot = {
+            "thought": _shorten_text(str(thought or "").strip(), max_length=500),
+            "mood": _shorten_text(str(mood or "").strip(), max_length=80),
+            "decision": _shorten_text(str(decision or "").strip(), max_length=160),
+            "expected_response": _shorten_text(
+                str(expected_response or "").strip(),
+                max_length=160,
+            ),
+            "recorded_at": _now_iso(),
+        }
+
+        async with self._get_lock():
+            latest = dict(self._state.last_chatter_think_by_stream or {})
+            latest[sid] = {
+                key: value
+                for key, value in snapshot.items()
+                if isinstance(value, str) and value.strip()
+            }
+            self._state.last_chatter_think_by_stream = latest
+        await self._save_runtime_context()
+
+        return {
+            "stream_id": sid,
+            "recorded_at": snapshot["recorded_at"],
+            "channel": "chatter_think_snapshot",
+        }
+
     async def record_tool_call(self, tool_name: str, tool_args: dict[str, Any]) -> None:
         """记录工具调用事件。"""
         event = self._event_builder.build_tool_call_event(tool_name, tool_args)
@@ -1032,6 +1077,9 @@ class LifeEngineService(BaseService):
                     args_short = self._simplify_tool_args(event.tool_args)
                     if args_short:
                         line += f"({args_short})"
+                content_short = _shorten_text(event.content or "", max_length=160)
+                if content_short:
+                    line += f"\n    └─ {content_short}"
             elif event.event_type == EventType.TOOL_RESULT:
                 status = "✅" if event.tool_success else "❌"
                 result_short = _shorten_text(event.content or "", max_length=100)
@@ -1163,6 +1211,74 @@ class LifeEngineService(BaseService):
         except Exception as exc:  # noqa: BLE001
             logger.debug(f"构建 chatter 思考流快照失败: {exc}")
             return "", 0
+
+    def _format_latest_chatter_think(self, stream_id: str) -> str:
+        sid = str(stream_id or "").strip()
+        if not sid:
+            return ""
+        snapshot = (self._state.last_chatter_think_by_stream or {}).get(sid)
+        if not isinstance(snapshot, dict):
+            return ""
+
+        thought = str(snapshot.get("thought") or "").strip()
+        mood = str(snapshot.get("mood") or "").strip()
+        decision = str(snapshot.get("decision") or "").strip()
+        expected = str(snapshot.get("expected_response") or "").strip()
+        recorded_at = str(snapshot.get("recorded_at") or "").strip()
+        if not any((thought, mood, decision, expected)):
+            return ""
+
+        lines: list[str] = []
+        if recorded_at:
+            lines.append(f"- 时间：{_format_time_display(recorded_at)}")
+        if mood:
+            lines.append(f"- 心情：{mood}")
+        if decision:
+            lines.append(f"- 决定：{decision}")
+        if expected:
+            lines.append(f"- 预期反应：{expected}")
+        if thought:
+            lines.append(f"- 思考：{thought}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _message_flag(message: Message, flag_name: str) -> bool:
+        if bool(getattr(message, flag_name, False)):
+            return True
+        extra = getattr(message, "extra", None)
+        if isinstance(extra, dict):
+            return bool(extra.get(flag_name, False))
+        return False
+
+    @classmethod
+    def _build_recent_chat_history_text(
+        cls,
+        chat_stream: Any,
+        *,
+        max_messages: int,
+    ) -> str:
+        if max_messages <= 0:
+            return ""
+
+        context = getattr(chat_stream, "context", None)
+        history_messages = list(getattr(context, "history_messages", []) or [])
+        if not history_messages:
+            return ""
+
+        filtered = [
+            message
+            for message in history_messages
+            if not (
+                cls._message_flag(message, "is_inner_monologue")
+                or cls._message_flag(message, "is_proactive_opportunity_trigger")
+                or cls._message_flag(message, "is_proactive_followup_trigger")
+            )
+        ]
+        if not filtered:
+            return ""
+
+        lines = [BaseChatter.format_message_line(msg) for msg in filtered[-max_messages:]]
+        return "\n".join(lines)
 
     @staticmethod
     def _is_salient_event(
@@ -1321,8 +1437,11 @@ class LifeEngineService(BaseService):
         结构：
           1. ### 当前内在状态  （neuromod）
           2. ### 当前思考流    （注意力脑区，分焦点/背景，带 🔄 delta 标记）
-          3. ### 运行时内心独白（push_runtime_assistant_injection 队列）
-          4. ### 最近关键活动  （salient activity tail，强过滤的事件流）
+          3. ### 最近一次 action-think
+          4. ### 运行时内心独白（push_runtime_assistant_injection 队列）
+          5. ### 最近聊天记录
+          6. ### 新增 life 事件流（完整可追溯事件窗口）
+          7. ### 最近关键活动  （仅在没有新增事件流时作为兜底摘要）
         """
         stream_id = str(getattr(chat_stream, "stream_id", "") or "").strip()
         event_cursor = self._chatter_event_cursor(stream_id)
@@ -1331,14 +1450,44 @@ class LifeEngineService(BaseService):
 
         cfg = self._cfg()
         streams_cfg = getattr(cfg, "streams", None)
+        runtime_cfg = getattr(cfg, "runtime_sync", None)
         sync_streams = bool(streams_cfg is None or getattr(streams_cfg, "sync_to_chatter", True))
         focus_window = int(getattr(streams_cfg, "focus_window_minutes", 30) or 30) if streams_cfg else 30
         delta_marking = bool(streams_cfg is None or getattr(streams_cfg, "delta_marking", True))
+        latest_think_enabled = bool(
+            runtime_cfg is None
+            or getattr(runtime_cfg, "latest_action_think_enabled", True)
+        )
+        recent_chat_enabled = bool(
+            runtime_cfg is None or getattr(runtime_cfg, "recent_chat_enabled", True)
+        )
+        recent_chat_messages = (
+            int(getattr(runtime_cfg, "recent_chat_messages", 10) or 10)
+            if runtime_cfg is not None
+            else 10
+        )
 
         async with self._get_lock():
             events = list(self._event_history)
             events.extend(list(self._pending_events))
         events.sort(key=lambda event: int(event.sequence or 0))
+
+        limit = max(1, min(int(event_limit or 80), 160))
+        relevant_events = [
+            event
+            for event in events
+            if int(event.sequence or 0) > event_cursor
+            and self._event_belongs_to_life_runtime(
+                event,
+                current_stream_id=stream_id,
+            )
+        ]
+        omitted_event_count = max(0, len(relevant_events) - limit)
+        selected_events = relevant_events[-limit:]
+        new_event_high_water = max(
+            (int(event.sequence or 0) for event in relevant_events),
+            default=event_cursor,
+        )
 
         sections: list[str] = []
 
@@ -1358,15 +1507,41 @@ class LifeEngineService(BaseService):
                 sections.append(f"### 当前思考流\n{thought_body}".rstrip())
             new_thought_revision = max(thought_cursor, current_revision)
 
+        if latest_think_enabled:
+            latest_think_text = self._format_latest_chatter_think(stream_id)
+            if latest_think_text:
+                sections.append(f"### 最近一次 action-think\n{latest_think_text}")
+
         runtime_text = str(runtime_context_text or "").strip()
         if runtime_text:
             sections.append(f"### 运行时内心独白\n{runtime_text}")
 
-        salient_body, new_event_high_water = self._build_salient_activity_tail(
+        if recent_chat_enabled and recent_chat_messages > 0:
+            recent_chat_text = self._build_recent_chat_history_text(
+                chat_stream,
+                max_messages=recent_chat_messages,
+            )
+            if recent_chat_text:
+                sections.append(
+                    f"### 最近 {recent_chat_messages} 条聊天记录\n{recent_chat_text}"
+                )
+
+        if selected_events:
+            event_text = self._build_wake_context_text(selected_events)
+            if omitted_event_count:
+                event_text = (
+                    f"（还有 {omitted_event_count} 条更早的 life 事件未自动展开；"
+                    "需要时用 grep_life_events 检索。）\n"
+                    f"{event_text}"
+                )
+            sections.append(f"### 新增 life 事件流\n{event_text}")
+
+        salient_body, salient_high_water = self._build_salient_activity_tail(
             events, event_cursor, current_stream_id=stream_id
         )
-        if salient_body:
+        if salient_body and not selected_events:
             sections.append(f"### 最近关键活动\n{salient_body}")
+            new_event_high_water = max(new_event_high_water, salient_high_water)
 
         # thought delta cursor 在渲染阶段直接提交（不等待 LLM 调用成功）
         if new_thought_revision > thought_cursor:

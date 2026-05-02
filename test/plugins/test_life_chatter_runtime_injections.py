@@ -155,7 +155,7 @@ def test_life_chatter_initial_history_limit_supports_legacy_field() -> None:
 
     assert chatter._get_initial_history_message_limit() == 6
 
-# ---- 新增：salient tail 过滤 + thought delta cursor 去重 -------------------
+# ---- 新增：runtime context 事件流 + thought delta cursor 去重 ---------------
 
 
 import pytest  # noqa: E402
@@ -182,8 +182,8 @@ def _make_event(seq: int, **kwargs) -> LifeEngineEvent:
 
 
 @pytest.mark.asyncio
-async def test_build_chatter_runtime_filters_plain_heartbeats() -> None:
-    """普通 HEARTBEAT 不应进入 salient tail。"""
+async def test_build_chatter_runtime_includes_full_new_event_stream() -> None:
+    """新增 life 事件流应完整进入 runtime context，而不是只剩 salient tail。"""
     service = LifeEngineService(SimpleNamespace(config=None))
     chat = SimpleNamespace(stream_id="stream-x")
     service._event_history = [
@@ -205,11 +205,11 @@ async def test_build_chatter_runtime_filters_plain_heartbeats() -> None:
         ),
     ]
     text, hw = await service.build_chatter_runtime_context(chat)
-    assert "HB_NOISE" not in text
-    assert "tool_args_blob" not in text
+    assert "### 新增 life 事件流" in text
+    assert "HB_NOISE" in text
+    assert "tool_args_blob" in text
     assert "AGENT_DONE" in text
-    assert "### 最近关键活动" in text
-    assert hw == 2
+    assert hw == 3
 
 
 @pytest.mark.asyncio
@@ -230,3 +230,34 @@ async def test_build_chatter_runtime_thought_delta_cursor_dedup() -> None:
 
     assert "🔄" in first
     assert "🔄" not in second
+
+
+@pytest.mark.asyncio
+async def test_build_chatter_runtime_includes_latest_think_and_recent_chat() -> None:
+    service = LifeEngineService(SimpleNamespace(config=LifeEngineConfig()))
+    chat = SimpleNamespace(
+        stream_id="stream-think",
+        context=SimpleNamespace(
+            history_messages=[
+                _message(1, "旧消息 1"),
+                _message(2, "旧消息 2"),
+                _message(3, "旧消息 3"),
+            ]
+        ),
+    )
+
+    await service.record_chatter_think_snapshot(
+        stream_id="stream-think",
+        thought="她白天喊我的名字，其实是在确认我还在。",
+        mood="小心地在意",
+        decision="先回应她的不安，再接住话题",
+        expected_response="她会放松一点",
+    )
+
+    text, _ = await service.build_chatter_runtime_context(chat)
+
+    assert "### 最近一次 action-think" in text
+    assert "她白天喊我的名字" in text
+    assert "### 最近 10 条聊天记录" in text
+    assert "旧消息 1" in text
+    assert "旧消息 3" in text

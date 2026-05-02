@@ -481,7 +481,11 @@ class LifeEngineConfig(BaseConfig):
         )
         native_image: bool = Field(
             default=True,
-            description="是否把 image / emoji 媒体作为原生 Image Content 注入。",
+            description="是否把 image 媒体作为原生 Image Content 注入。",
+        )
+        native_emoji: bool = Field(
+            default=False,
+            description="是否把 emoji / 表情包媒体作为原生 Image Content 注入。默认关闭，避免浪费多模态预算。",
         )
         native_video: bool = Field(
             default=True,
@@ -624,6 +628,23 @@ class LifeEngineConfig(BaseConfig):
     @config_section("runtime_sync")
     class RuntimeSyncSection(SectionBase):
         """life_chatter 同步层（注意力脑区）配置。"""
+
+        latest_action_think_enabled: bool = Field(
+            default=True,
+            description="是否在 chatter transient 中注入当前 stream 最近一次 action-think 快照。",
+        )
+
+        recent_chat_enabled: bool = Field(
+            default=True,
+            description="是否在 chatter transient 中注入最近聊天记录快照。",
+        )
+
+        recent_chat_messages: int = Field(
+            default=10,
+            ge=0,
+            le=50,
+            description="最近聊天记录快照最多保留多少条。设为 0 表示关闭该块。",
+        )
 
         salient_tail_enabled: bool = Field(
             default=True,

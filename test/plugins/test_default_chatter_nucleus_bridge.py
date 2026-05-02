@@ -262,14 +262,15 @@ async def test_life_memory_explorer_agent_runs_private_search_then_finish(
     """life_memory_explorer 应通过私有工具循环返回 finish 内容。"""
 
     class _FakeAgentResponse:
-        def __init__(self, calls: list[Any]) -> None:
+        def __init__(self, calls: list[Any], text: str = "") -> None:
             self.call_list = calls
+            self.text = text
             self.payloads: list[Any] = []
             self._next: "_FakeAgentResponse | None" = None
 
         def __await__(self):
             async def _done() -> str:
-                return ""
+                return self.text
 
             return _done().__await__()
 
@@ -298,6 +299,87 @@ async def test_life_memory_explorer_agent_runs_private_search_then_finish(
                     args={"content": "核心结论：找到计划A。"},
                 )
             ])
+            first._next = second
+            self._responses = [first]
+
+        def add_payload(self, payload: Any) -> None:
+            self.payloads.append(payload)
+
+        async def send(self, stream: bool = False) -> _FakeAgentResponse:
+            assert stream is False
+            return self._responses.pop(0)
+
+    monkeypatch.setattr(
+        "plugins.default_chatter.life_memory_explorer.get_model_set_by_task",
+        lambda task: SimpleNamespace(task=task),
+    )
+    monkeypatch.setattr(
+        LifeMemoryExplorerAgent,
+        "create_llm_request",
+        lambda self, **kwargs: _FakeRequest(),
+    )
+
+    captured: dict[str, Any] = {}
+
+    async def _fake_execute_local_usable(name: str, _message: Any, **kwargs: Any) -> tuple[bool, str]:
+        captured["name"] = name
+        captured["kwargs"] = kwargs
+        return True, "【直接命中的记忆】计划A"
+
+    agent = LifeMemoryExplorerAgent(
+        stream_id="stream-default",
+        plugin=DefaultChatterPlugin(config=DefaultChatterConfig()),
+    )
+    monkeypatch.setattr(agent, "execute_local_usable", _fake_execute_local_usable)
+
+    success, result = await agent.execute(query="旧计划", detail_level="normal", max_results=3)
+
+    assert success is True
+    assert result == "核心结论：找到计划A。"
+    assert captured == {
+        "name": "life_memory_search",
+        "kwargs": {"query": "旧计划", "top_k": 3},
+    }
+
+
+@pytest.mark.anyio
+async def test_life_memory_explorer_agent_falls_back_to_plain_text_when_finish_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """life_memory_explorer 在模型未调用 memory_finish_task 时应接受纯文本结束结果。"""
+
+    class _FakeAgentResponse:
+        def __init__(self, calls: list[Any], text: str = "") -> None:
+            self.call_list = calls
+            self.text = text
+            self.payloads: list[Any] = []
+            self._next: "_FakeAgentResponse | None" = None
+
+        def __await__(self):
+            async def _done() -> str:
+                return self.text
+
+            return _done().__await__()
+
+        def add_payload(self, payload: Any) -> None:
+            self.payloads.append(payload)
+
+        async def send(self, stream: bool = False) -> "_FakeAgentResponse":
+            assert stream is False
+            assert self._next is not None
+            return self._next
+
+    class _FakeRequest:
+        def __init__(self) -> None:
+            self.payloads: list[Any] = []
+            first = _FakeAgentResponse([
+                SimpleNamespace(
+                    id="search-1",
+                    name="tool-life_memory_search",
+                    args={"query": "旧计划", "top_k": 3},
+                )
+            ])
+            second = _FakeAgentResponse([], text="核心结论：找到计划A。")
             first._next = second
             self._responses = [first]
 

@@ -8,6 +8,7 @@
 - 扩展支持 audio / voice / record（default_chatter 无此分支）
 - MediaItem 携带 mime_type 与 source_message_id（用于 dedup 与失败重试）
 - 三类媒体（image+emoji / video / audio）使用独立预算，互不抢占
+- image 与 emoji 可分别开关，便于跳过表情包节省多模态预算
 - 不可识别的音频格式（如 silk/amr）降级为文本占位，避免 LLM 拒收
 
 输出形态：
@@ -104,6 +105,7 @@ def extract_media_from_messages(
     budget: MediaBudget,
     *,
     enable_image: bool = True,
+    enable_emoji: bool = True,
     enable_video: bool = True,
     enable_audio: bool = True,
     audio_max_seconds: int = 60,
@@ -131,7 +133,9 @@ def extract_media_from_messages(
             normalized_type, mime_type, duration = _classify_media(media_type_raw, media)
             if normalized_type is None:
                 continue
-            if normalized_type in _IMAGE_TYPES and not enable_image:
+            if normalized_type == "image" and not enable_image:
+                continue
+            if normalized_type == "emoji" and not enable_emoji:
                 continue
             if normalized_type == "video" and not enable_video:
                 continue

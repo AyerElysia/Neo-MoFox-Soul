@@ -13,6 +13,7 @@ from plugins.life_engine.tools.web_tools import (
     LifeEngineBrowserFetchTool,
     LifeEngineWebSearchTool,
     _pick_tavily_target,
+    _tavily_selector,
 )
 
 
@@ -110,7 +111,7 @@ def test_pick_tavily_target_supports_round_robin_lists(
         "https://api-2.example.com",
         "https://api-3.example.com",
     ]
-    monkeypatch.setattr("plugins.life_engine.tools.web_tools._TAVILY_TARGET_CURSOR", 0)
+    monkeypatch.setattr(_tavily_selector, "_cursor", 0)
 
     picks = [_pick_tavily_target(plugin) for _ in range(5)]
 
@@ -131,7 +132,7 @@ def test_pick_tavily_target_keeps_legacy_single_value_compatible(
     plugin = _make_plugin(tmp_path)
     plugin.config.web.tavily_api_key = "legacy-key"
     plugin.config.web.tavily_base_url = "https://legacy.example.com"
-    monkeypatch.setattr("plugins.life_engine.tools.web_tools._TAVILY_TARGET_CURSOR", 0)
+    monkeypatch.setattr(_tavily_selector, "_cursor", 0)
 
     first = _pick_tavily_target(plugin)
     second = _pick_tavily_target(plugin)
@@ -140,12 +141,14 @@ def test_pick_tavily_target_keeps_legacy_single_value_compatible(
     assert second == ("legacy-key", "https://legacy.example.com")
 
 
-def test_web_tools_allow_default_chatter() -> None:
-    """网络工具应同时允许 life_engine 与 DFC(default_chatter) 调用。"""
+def test_web_tools_allow_default_and_life_chatter() -> None:
+    """网络工具应允许 life_engine_internal、default_chatter、life_chatter 调用。"""
     assert "life_engine_internal" in LifeEngineWebSearchTool.chatter_allow
     assert "default_chatter" in LifeEngineWebSearchTool.chatter_allow
+    assert "life_chatter" in LifeEngineWebSearchTool.chatter_allow
     assert "life_engine_internal" in LifeEngineBrowserFetchTool.chatter_allow
     assert "default_chatter" in LifeEngineBrowserFetchTool.chatter_allow
+    assert "life_chatter" in LifeEngineBrowserFetchTool.chatter_allow
 
 
 def test_web_search_rejects_conflicting_domains(

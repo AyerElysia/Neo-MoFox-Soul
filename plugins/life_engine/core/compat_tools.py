@@ -67,7 +67,25 @@ class LifeThinkAction(BaseAction):
                 sorted(extra_kwargs.keys()),
             )
 
-        _ = (mood, decision, expected_response, normalized_thought)
+        chat_stream = getattr(self, "chat_stream", None)
+        stream_id = str(getattr(chat_stream, "stream_id", "") or "").strip()
+        service = getattr(getattr(self, "plugin", None), "service", None)
+        if service is None:
+            life_plugin = get_plugin_manager().get_plugin("life_engine")
+            service = getattr(life_plugin, "service", None) if life_plugin is not None else None
+
+        if service is not None and stream_id and hasattr(service, "record_chatter_think_snapshot"):
+            try:
+                await service.record_chatter_think_snapshot(
+                    stream_id=stream_id,
+                    thought=normalized_thought,
+                    mood=str(mood or "").strip(),
+                    decision=str(decision or "").strip(),
+                    expected_response=str(expected_response or "").strip(),
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(f"记录 action-think 快照失败: {exc}")
+
         return True, "思考动作已记录。请在同一轮内继续调用 life_send_text 发送最终回复。"
 
 

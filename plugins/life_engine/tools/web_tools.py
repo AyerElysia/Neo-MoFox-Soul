@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import json
 import os
@@ -340,7 +341,7 @@ class LifeEngineWebSearchTool(BaseTool):
         "- ✗ 想回忆自己写过的内容 → 用 nucleus_search_memory / nucleus_grep_file\n\n"
         "**注意：** 这是外部网络信息，可能有偏差，关键事实请交叉核验。"
     )
-    chatter_allow: list[str] = ["life_engine_internal", "default_chatter"]
+    chatter_allow: list[str] = ["life_engine_internal", "default_chatter", "life_chatter"]
 
     async def execute(
         self,
@@ -461,7 +462,7 @@ class LifeEngineBrowserFetchTool(BaseTool):
         "- ✗ 本地文件不是网页，但本工具也兼容 workspace 内的本地路径读取\n\n"
         "**安全约束：** 公开网页仅允许 http/https；本地路径仅允许 workspace 内文件。"
     )
-    chatter_allow: list[str] = ["life_engine_internal", "default_chatter"]
+    chatter_allow: list[str] = ["life_engine_internal", "default_chatter", "life_chatter"]
 
     async def execute(
         self,

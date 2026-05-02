@@ -351,7 +351,11 @@ class LLMRequest:
                     _stream=stream_iter,
                     _upper=self,
                     _auto_append_response=auto_append_response,
-                    payloads=list(trimmed_payloads),
+                    # trimmed_payloads 只代表“本次实际发给模型的窗口”。
+                    # 响应对象会作为后续轮次的长生命周期上下文继续传递，不能把
+                    # 本次临时裁剪结果写进去，否则一旦触发 token 裁剪，旧的
+                    # user/assistant/tool_result 链路会被永久丢弃。
+                    payloads=list(payloads),
                     model_set=model_set,
                     context_manager=self.context_manager,
                     tool_call_compat=bool(model.get("tool_call_compat", False)),

@@ -116,6 +116,15 @@ class TestExtract:
         assert all(it.media_type != "audio" for it in items)
         assert any(it.media_type == "image" for it in items)
 
+    def test_disabled_emoji_skips_but_keeps_image(self) -> None:
+        m = _msg("m1", media=[
+            {"type": "emoji", "data": _b64("e")},
+            {"type": "image", "data": _b64("i")},
+        ])
+        items = extract_media_from_messages([m], MediaBudget(), enable_emoji=False)
+        assert all(it.media_type != "emoji" for it in items)
+        assert any(it.media_type == "image" for it in items)
+
     def test_budget_caps_per_type(self) -> None:
         msgs = [
             _msg(f"m{i}", media=[{"type": "image", "data": _b64(str(i))}]) for i in range(5)

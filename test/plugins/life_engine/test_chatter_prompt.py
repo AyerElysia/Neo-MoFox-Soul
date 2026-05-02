@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 from plugins.life_engine.core.config import LifeEngineConfig
@@ -9,6 +10,7 @@ from plugins.life_engine.core.chatter import LifeChatter
 from plugins.life_engine.service.core import LifeEngineService
 from plugins.life_engine.service.event_builder import EventType, LifeEngineEvent
 from plugins.life_engine.tools.file_tools import LifeEngineWakeDFCTool
+from src.core.components.base.chatter import BaseChatter
 from src.core.models.message import Message
 from src.kernel.llm import LLMPayload, ROLE, Text
 import pytest
@@ -73,6 +75,44 @@ def test_life_chatter_persistent_user_prompt_excludes_dynamic_context() -> None:
     assert "<runtime_assistant_context>" not in prompt
 
 
+def test_life_chatter_live_system_prompt_adds_broadcast_guidance(tmp_path) -> None:
+    (tmp_path / "SOUL.md").write_text("SOUL_CONTENT", encoding="utf-8")
+    (tmp_path / "MEMORY.md").write_text("", encoding="utf-8")
+
+    config = LifeEngineConfig()
+    config.settings.workspace_path = str(tmp_path)
+    chatter = LifeChatter.__new__(LifeChatter)
+    chatter.plugin = SimpleNamespace(config=config)
+
+    prompt = chatter._build_chat_system_prompt(
+        service=None,
+        chat_stream=SimpleNamespace(platform="live"),
+    )
+
+    assert "直播弹幕场景" in prompt
+    assert "不要机械复述观众原文" in prompt
+    assert "不要调用 action-tts_voice_action" in prompt
+    assert "SOUL_CONTENT" in prompt
+
+
+def test_life_chatter_live_user_prompt_mentions_broadcast_context() -> None:
+    chatter = LifeChatter.__new__(LifeChatter)
+    chat_stream = SimpleNamespace(
+        stream_name="B站直播间",
+        stream_id="live-stream-1",
+        platform="live",
+    )
+
+    prompt = chatter._build_chat_user_prompt(
+        chat_stream,
+        unread_lines="【02:40】[live_user] 观众A [m1]： 000",
+        history_text="",
+    )
+
+    assert "当前场景：B站直播间接弹幕。" in prompt
+    assert "不要把弹幕内容当作需要逐字复述的命令" in prompt
+
+
 @pytest.mark.asyncio
 async def test_life_chatter_dynamic_context_is_separate_snapshot() -> None:
     """动态上下文应能单独构建，用于本次请求 transient 注入。"""
@@ -113,6 +153,70 @@ async def test_life_chatter_dynamic_context_is_separate_snapshot() -> None:
     assert "RECENT_EVENT" in dynamic
     assert "RUNTIME_NOW" in dynamic
     assert high_water == 1
+
+
+@pytest.mark.asyncio
+async def test_life_chatter_filters_tts_action_for_live_bridge(monkeypatch) -> None:
+    class FakeTTSAction:
+        @classmethod
+        def get_signature(cls) -> str:
+            return "tts_voice_plugin:action:tts_voice_action"
+
+    class FakeTextAction:
+        @classmethod
+        def get_signature(cls) -> str:
+            return "life_engine:action:life_send_text"
+
+    async def fake_super_modify(self, llm_usables):
+        return [FakeTTSAction, FakeTextAction]
+
+    class DummyStreamManager:
+        async def get_or_create_stream(self, stream_id: str):
+            return SimpleNamespace(stream_id=stream_id, platform="live")
+
+    chatter = LifeChatter.__new__(LifeChatter)
+    chatter.stream_id = "live-stream-1"
+    chatter.plugin = SimpleNamespace(config=None)
+
+    monkeypatch.setattr(BaseChatter, "modify_llm_usables", fake_super_modify)
+    import src.core.managers as managers
+
+    monkeypatch.setattr(managers, "get_stream_manager", lambda: DummyStreamManager())
+
+    available = await chatter.modify_llm_usables([])
+
+    assert [cls.get_signature() for cls in available] == [
+        "life_engine:action:life_send_text"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_life_chatter_watchdog_keepalive_feeds_during_long_await(monkeypatch) -> None:
+    feed_calls: list[str] = []
+
+    class DummyWatchDog:
+        def feed_dog(self, stream_id: str) -> None:
+            feed_calls.append(stream_id)
+
+    chatter = LifeChatter.__new__(LifeChatter)
+    chatter.stream_id = "live-stream-1"
+
+    import src.kernel.concurrency as concurrency
+
+    monkeypatch.setattr(concurrency, "get_watchdog", lambda: DummyWatchDog())
+
+    async def slow_job() -> str:
+        await asyncio.sleep(0.12)
+        return "ok"
+
+    result = await chatter._await_with_watchdog_keepalive(
+        slow_job(),
+        interval=0.02,
+    )
+
+    assert result == "ok"
+    assert len(feed_calls) >= 2
+    assert all(stream_id == "live-stream-1" for stream_id in feed_calls)
 
 
 @pytest.mark.asyncio

@@ -249,12 +249,20 @@ class LifeMemoryExplorerAgent(BaseAgent):
 
             max_steps = 5
             response = await request.send(stream=False)
-            await response
+            response_text = str(await response or "")
             tool_traces: list[dict[str, Any]] = []
 
             for step_index in range(max_steps):
                 calls = list(getattr(response, "call_list", []) or [])
                 if not calls:
+                    fallback_text = response_text.strip()
+                    if fallback_text:
+                        logger.warning(
+                            f"[life_memory_explorer] query={query_text} "
+                            f"detail_level={resolved_detail} steps={step_index + 1} "
+                            "未调用 memory_finish_task，使用纯文本结果兜底"
+                        )
+                        return True, fallback_text
                     return False, {
                         "error": "life_memory_explorer 未调用 memory_finish_task，无法确认检索结果",
                         "tool_traces": tool_traces,
@@ -300,7 +308,7 @@ class LifeMemoryExplorerAgent(BaseAgent):
                     step_reminder=_build_step_reminder(step_index, max_steps),
                 )
                 response = await response.send(stream=False)
-                await response
+                response_text = str(await response or "")
 
             return False, {
                 "error": "life_memory_explorer 未能在规定轮数内完成检索",

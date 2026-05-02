@@ -808,17 +808,16 @@ class LifeChatter(BaseChatter):
     # ── history builder ──────────────────────────────────────
 
     @staticmethod
-    def _select_history_messages(
+    def _build_history_text(
         chat_stream: ChatStream,
         *,
         max_messages: int | None = 30,
-        skip_recent_messages: int = 0,
-    ) -> list[Message]:
-        """从 chat_stream 选出要注入的持久历史消息。"""
+    ) -> str:
+        """从 chat_stream 构建历史消息文本。"""
         context = chat_stream.context
         history_msgs = list(context.history_messages) if context.history_messages else []
         if not history_msgs:
-            return []
+            return ""
 
         history_msgs = [
             msg
@@ -830,66 +829,15 @@ class LifeChatter(BaseChatter):
             )
         ]
         if not history_msgs:
-            return []
-
-        if skip_recent_messages > 0:
-            history_msgs = history_msgs[:-skip_recent_messages]
-            if not history_msgs:
-                return []
+            return ""
 
         if max_messages is not None:
             if max_messages <= 0:
-                return []
+                return ""
             history_msgs = history_msgs[-max_messages:]
-
-        return history_msgs
-
-    @staticmethod
-    def _build_history_text(
-        chat_stream: ChatStream,
-        *,
-        max_messages: int | None = 30,
-        skip_recent_messages: int = 0,
-    ) -> str:
-        """从 chat_stream 构建历史消息文本。"""
-        history_msgs = LifeChatter._select_history_messages(
-            chat_stream,
-            max_messages=max_messages,
-            skip_recent_messages=skip_recent_messages,
-        )
-        if not history_msgs:
-            return ""
 
         lines = [BaseChatter.format_message_line(msg) for msg in history_msgs]
         return "\n".join(lines)
-
-    @staticmethod
-    def _build_pinned_history_context(history_text: str) -> str:
-        """构建不会被对话组裁剪掉的持久历史上下文。"""
-        text = str(history_text or "").strip()
-        if not text:
-            return ""
-        return (
-            "以下是从持久聊天记录恢复的连续性上下文。"
-            "它用于维持重启后的对话连续感，不是用户刚刚发送的新消息。\n"
-            "<chat_history>\n"
-            f"{text}\n"
-            "</chat_history>"
-        )
-
-    def _get_transient_recent_chat_limit(self) -> int:
-        """读取 transient 最近聊天记录注入条数。"""
-        plugin_config = getattr(getattr(self, "plugin", None), "config", None)
-        runtime_cfg = getattr(plugin_config, "runtime_sync", None)
-        if runtime_cfg is None:
-            return 10
-        if not bool(getattr(runtime_cfg, "recent_chat_enabled", True)):
-            return 0
-        try:
-            limit = int(getattr(runtime_cfg, "recent_chat_messages", 10) or 10)
-        except (TypeError, ValueError):
-            limit = 10
-        return max(limit, 0)
 
     def _get_initial_history_message_limit(self) -> int | None:
         """读取首轮 chat_history 注入条数。
@@ -1319,29 +1267,10 @@ class LifeChatter(BaseChatter):
         system_text = self._build_chat_system_prompt(service, chat_stream)
         request.add_payload(LLMPayload(ROLE.SYSTEM, Text(system_text)))
 
-        # 重启恢复历史必须是 pinned 上下文。若放在首个 USER payload 里，
-        # 第二轮 token 裁剪会把整个最旧 USER 组裁掉，造成“首轮有历史、第二轮断片”。
-        recent_chat_limit = self._get_transient_recent_chat_limit() if service is not None else 0
-        history_limit = self._get_initial_history_message_limit()
-        selected_history_msgs = self._select_history_messages(
+        # 历史文本只在首轮合并一次；后续依赖长连接 payload 中的真实对话链。
+        history_text = self._build_history_text(
             chat_stream,
-            max_messages=history_limit,
-            skip_recent_messages=recent_chat_limit,
-        )
-        history_text = "\n".join(
-            BaseChatter.format_message_line(msg) for msg in selected_history_msgs
-        )
-        pinned_history_context = self._build_pinned_history_context(history_text)
-        if pinned_history_context:
-            request.add_payload(LLMPayload(ROLE.SYSTEM, Text(pinned_history_context)))
-        logger.info(
-            "life_chatter 历史上下文: "
-            f"stream={chat_stream.stream_id[:8]} "
-            f"loaded={len(getattr(chat_stream.context, 'history_messages', []) or [])} "
-            f"injected={len(selected_history_msgs)} "
-            f"initial_limit={history_limit} "
-            f"skip_recent={recent_chat_limit} "
-            f"pinned={bool(pinned_history_context)}"
+            max_messages=self._get_initial_history_message_limit(),
         )
 
         # 注入工具
@@ -1408,7 +1337,7 @@ class LifeChatter(BaseChatter):
                 user_prompt_text = self._build_chat_user_prompt(
                     chat_stream,
                     unread_lines=unread_lines,
-                    history_text="",
+                    history_text=history_text if not rt.history_merged else "",
                 )
                 (
                     rt.pending_transient_context_text,

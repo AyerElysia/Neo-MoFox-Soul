@@ -325,6 +325,30 @@ async def test_chatter_context_cursor_persists_across_restart(tmp_path: Path) ->
 
 
 @pytest.mark.asyncio
+async def test_chatter_think_snapshot_persists_across_restart(tmp_path: Path) -> None:
+    service = _make_service(tmp_path)
+
+    await service.record_chatter_think_snapshot(
+        stream_id="stream-1",
+        thought="先接住她的不安，再继续聊。",
+        mood="认真",
+        decision="先安抚",
+        expected_response="她会安心一点",
+    )
+    await service._save_runtime_context()
+
+    restored = _make_service(tmp_path)
+    await restored._load_runtime_context()
+
+    snapshot = restored._state.last_chatter_think_by_stream["stream-1"]
+    assert snapshot["thought"] == "先接住她的不安，再继续聊。"
+    assert snapshot["mood"] == "认真"
+    assert snapshot["decision"] == "先安抚"
+    assert snapshot["expected_response"] == "她会安心一点"
+    assert snapshot["recorded_at"]
+
+
+@pytest.mark.asyncio
 async def test_enqueue_dfc_message_rejects_when_disabled(tmp_path: Path) -> None:
     """life_engine 禁用时不应接受 DFC 留言。"""
     config = LifeEngineConfig()

@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from plugins.life_engine.core.compat_tools import (
+    LifeThinkAction,
     LifeRecordInnerMonologueAction,
 )
 from plugins.life_engine.core.config import LifeEngineConfig
@@ -75,4 +76,43 @@ async def test_record_inner_monologue_action_delegates_to_life_service(monkeypat
                 "topic": "沉默等待",
             },
         )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_think_action_delegates_snapshot_to_life_service(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = []
+
+    class _FakeService:
+        async def record_chatter_think_snapshot(self, **kwargs):
+            calls.append(kwargs)
+            return {"channel": "chatter_think_snapshot"}
+
+    fake_plugin = SimpleNamespace(service=_FakeService())
+    monkeypatch.setattr(
+        "plugins.life_engine.core.compat_tools.get_plugin_manager",
+        lambda: SimpleNamespace(get_plugin=lambda name: fake_plugin if name == "life_engine" else None),
+    )
+
+    action = LifeThinkAction.__new__(LifeThinkAction)
+    action.plugin = fake_plugin
+    action.chat_stream = SimpleNamespace(stream_id="stream-2")
+
+    ok, message = await action.execute(
+        mood="在意",
+        decision="先把语气放软再回她",
+        expected_response="她会觉得我还在认真听",
+        thought="刚刚那句其实是在确认我是不是还在。",
+    )
+
+    assert ok is True
+    assert "思考动作已记录" in message
+    assert calls == [
+        {
+            "stream_id": "stream-2",
+            "thought": "刚刚那句其实是在确认我是不是还在。",
+            "mood": "在意",
+            "decision": "先把语气放软再回她",
+            "expected_response": "她会觉得我还在认真听",
+        }
     ]

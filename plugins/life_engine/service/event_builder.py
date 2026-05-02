@@ -88,6 +88,8 @@ class LifeEngineState:
     chatter_context_cursors: dict[str, int] = field(default_factory=dict)
     # 每个聊天流已经看过的 thought_stream 全局 revision 高水位
     chatter_thought_cursors: dict[str, int] = field(default_factory=dict)
+    # 每个聊天流最近一次 action-think 的快照
+    last_chatter_think_by_stream: dict[str, dict[str, str]] = field(default_factory=dict)
 
 
 # 中枢内部消息的固定标识

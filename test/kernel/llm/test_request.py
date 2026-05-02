@@ -546,9 +546,10 @@ class TestLLMRequestSend:
         capture_client = CaptureClient()
         request.clients.openai = capture_client
 
-        await request.send(stream=False)
+        response = await request.send(stream=False)
 
         assert len(capture_client.last_payloads) < 12
+        assert len(response.payloads) == 12
 
     @pytest.mark.asyncio
     async def test_send_success_streaming(

@@ -295,6 +295,7 @@ class StatePersistence:
                     "tell_dfc_count": state.tell_dfc_count,
                     "chatter_context_cursors": state.chatter_context_cursors or {},
                     "chatter_thought_cursors": state.chatter_thought_cursors or {},
+                    "last_chatter_think_by_stream": state.last_chatter_think_by_stream or {},
                 },
                 "pending_events": [event_to_dict(e) for e in pending_events],
                 "event_history": [event_to_dict(e) for e in event_history],
@@ -411,6 +412,29 @@ class StatePersistence:
                     except (TypeError, ValueError):
                         continue
                 state.chatter_thought_cursors = t_cursors
+
+            raw_last_thinks = state_raw.get("last_chatter_think_by_stream")
+            if isinstance(raw_last_thinks, dict):
+                snapshots: dict[str, dict[str, str]] = {}
+                for key, value in raw_last_thinks.items():
+                    sid = str(key).strip()
+                    if not sid or not isinstance(value, dict):
+                        continue
+                    snapshot: dict[str, str] = {}
+                    for field in (
+                        "thought",
+                        "mood",
+                        "decision",
+                        "expected_response",
+                        "recorded_at",
+                    ):
+                        raw_field = value.get(field)
+                        text = str(raw_field or "").strip()
+                        if text:
+                            snapshot[field] = text
+                    if snapshot:
+                        snapshots[sid] = snapshot
+                state.last_chatter_think_by_stream = snapshots
 
             if history_events:
                 max_seq = max(event.sequence for event in history_events)
