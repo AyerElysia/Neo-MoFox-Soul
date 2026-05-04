@@ -119,10 +119,10 @@ def test_tell_dfc_default_is_queue_only(monkeypatch: pytest.MonkeyPatch) -> None
     assert "不是命令" in wake_message.content
 
 
-def test_tell_dfc_rejects_guidance_style_message(
+def test_tell_dfc_accepts_guidance_style_message(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """指导式台词应被拒绝，避免把 tell_dfc 当成遥控器。"""
+    """指导式内容不再硬拦截，交给表达层自行判断是否吸收。"""
     stream = _DummyStream()
     stream_manager = _DummyStreamManager(stream)
     loop_manager = _DummyLoopManager(start_ok=True)
@@ -147,13 +147,17 @@ def test_tell_dfc_rejects_guidance_style_message(
         )
     )
 
-    assert ok is False
-    assert isinstance(result, str)
-    assert "补充信息差" in result
-    assert "不用于指导表达层怎么回复" in result
-    assert len(stream.context.unread_messages) == 0
+    assert ok is True
+    assert isinstance(result, dict)
+    assert result["proactive_wake"] is False
+    assert result["wake_triggered"] is False
+    assert len(stream.context.unread_messages) == 1
     assert loop_manager.calls == []
-    assert life_service.tell_count == 0
+    assert life_service.tell_count == 1
+
+    wake_message = stream.context.unread_messages[0]
+    assert "如果他说委屈的事" in wake_message.content
+    assert "不是命令" in wake_message.content
 
 
 def test_tell_dfc_proactive_wake_requires_detailed_reason(

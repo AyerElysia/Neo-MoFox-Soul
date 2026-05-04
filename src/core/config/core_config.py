@@ -408,6 +408,36 @@ class CoreConfig(ConfigBase):
 
     plugin_deps: PluginDepsSection = Field(default_factory=PluginDepsSection)
 
+    @config_section("skills")
+    class SkillsSection(SectionBase):
+        """Skill 系统配置节
+
+        控制轻量级行为指引系统的行为。
+        """
+
+        enabled: bool = Field(
+            default=True,
+            description="是否启用 Skill 系统",
+        )
+        skills_dir: str = Field(
+            default="skills",
+            description="项目级 Skill 目录路径",
+        )
+        user_skills_dir: str = Field(
+            default="data/skills",
+            description="用户级 Skill 目录路径（运行时数据目录）",
+        )
+        max_catalog_chars: int = Field(
+            default=4096,
+            description="Skill catalog XML 最大字符数",
+        )
+        max_skill_body_chars: int = Field(
+            default=8192,
+            description="单个 Skill 正文最大字符数",
+        )
+
+    skills: SkillsSection = Field(default_factory=SkillsSection)
+
 # 全局配置实例（延迟初始化）
 _global_config: CoreConfig | None = None
 

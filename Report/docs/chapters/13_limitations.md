@@ -38,14 +38,15 @@ tau = self.tau if self.tau is not None else TAU_TABLE[self.name]
 
 修复需要把 `_last_decay_date` 写入持久化 JSON。这一改动小，但需要协调 Schema 兼容（旧文件无该字段时按文件 mtime 兜底）。
 
-### 13.1.4 Life Engine 对 default_chatter 的裸引用违反三层依赖
+### 13.1.4 旧 DFC 兼容路径仍有架构债
 
-`plugins/life_engine/service/integrations.py:266` 直接 `from default_chatter import plugin`，绕过了 `src/kernel` 提供的接口注册机制。后果：
+当前报告以 LifeChatter 作为主意识实现，但仓库中仍保留一部分早期 DFC/default_chatter 兼容路径。例如历史整合代码中曾出现 `from default_chatter import plugin` 这类裸引用，绕过了 `src/kernel` 提供的接口注册机制。后果：
 
+- 容易让读者误以为 DFC 仍是当前架构核心；
 - 单元测试对 life_engine 的隔离性变差；
-- 若 default_chatter 被替换为另一个对话内核，life_engine 不可移植。
+- 历史兼容代码与 LifeChatter 当前实现之间存在概念噪声。
 
-修复路径是把"通过插件名拉取另一个插件实例"封装进 kernel 接口（B 报告 §8 提出了候选签名）。我们把这一改动归类为**架构债务**，建议在下个大版本统一处理。
+修复路径不是继续强化 DFC 桥接，而是把旧兼容路径彻底收敛到 LifeChatter 原生接口，并在代码层删除不再使用的 default_chatter 依赖。我们把这一改动归类为**架构债务**，建议在下个大版本统一处理。
 
 ### 13.1.5 配置无热重载
 
@@ -129,7 +130,7 @@ Neo-MoFox 默认本地运行，所有持久化文件在 `data/life_engine_worksp
 
 1. 修复 §13.1.2 的 `Modulator.tau` 静默忽略；
 2. 持久化 §13.1.3 的衰减日期；
-3. 替换 §13.1.4 的裸引用为 kernel 接口；
+3. 清理 §13.1.4 的旧 DFC 兼容路径，统一到 LifeChatter 原生接口；
 4. 建立 30 天连续运行压测脚手架（崩溃恢复、状态发散监控）。
 
 ### 13.4.2 中期（科学化与可证伪化）

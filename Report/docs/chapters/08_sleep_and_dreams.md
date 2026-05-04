@@ -15,7 +15,7 @@ Neo-MoFox 的做梦模块将这一神经科学洞见工程化:
 
 2. **REM 阶段**实现关联整合:从当日高情绪、高重要性、未巩固的记忆中选择"种子(seed)",通过图谱激活扩散生成联想网络,并在共激活节点间施加 Hebbian 学习——"一起梦到的记忆会更紧密地连接"。
 
-3. **梦境生成**不是简单的日志回放,而是由 LLM 将种子与联想残影合成为叙事性的"梦报告(dream report)",回写到 DFC 的运行时上下文中,使"昨晚做的梦"成为今天对话的可引用经历。
+3. **梦境生成**不是简单的日志回放,而是由 LLM 将种子与联想残影合成为叙事性的"梦报告(dream report)",回写到 LifeChatter 的运行时上下文中,使"昨晚做的梦"成为今天对话的可引用经历。
 
 这一设计解决了传统 LLM Agent 的两个核心缺陷:**第一**,仅在被调用时学习,离线时完全静止——Neo-MoFox 的睡眠是主动的离线学习窗口;**第二**,记忆检索依赖语义相似度,无法捕捉情绪依赖的巩固——Neo-MoFox 通过调质状态加权种子选择,情感强度高的记忆更易入梦。
 
@@ -401,7 +401,7 @@ LLM 生成的梦境并非自由文本,而是结构化的 `DreamTrace` 对象,包
 
 ---
 
-## 8.8 巩固反馈:回写 SNN/调质/记忆/DFC
+## 8.8 巩固反馈:回写 SNN/调质/记忆/LifeChatter
 
 梦境生成后,需将其影响"回写"到各子系统,实现离线学习的闭环。
 
@@ -431,25 +431,24 @@ REM 阶段的 Hebbian 学习已直接修改记忆图的边权重,通过 `LifeMem
 
 这一机制使梦境的情感基调影响觉醒后的内在状态,对应人类"好梦醒来心情好"的现象。
 
-### 8.8.4 DFC 运行时注入:`push_runtime_assistant_injection`
+### 8.8.4 LifeChatter 运行时注入:`push_runtime_assistant_injection`
 
-最重要的巩固反馈是将梦境注入到 DFC 的下一轮对话 prompt 中。`inject_dream_report()` (`service/core.py:1400`) 调用:
+最重要的巩固反馈是将梦境残影注入 LifeChatter 的下一轮对话上下文中。当前 LifeChatter 维护独立的 runtime assistant injection 队列，梦报告不会直接显示给用户，而是作为主意识可读取的内在语境。
 
 ```python
-await default_chatter.push_runtime_assistant_injection(
-    session_id=target_session_id,
-    content=residue.dfc_payload,
-    prepend=True,
-    tag="dream_report"
+push_runtime_assistant_injection(
+    stream_id=target_stream_id,
+    content=residue.dfc_payload,  # 历史字段名，当前语义是 LifeChatter runtime payload
+    max_per_stream=24,
 )
 ```
 
 **机制解析**:
-- `push_runtime_assistant_injection` 是 DFC 提供的 API,允许外部系统向对话上下文注入"助手(assistant)角色的发言",但这条发言**不会显示给用户**,仅作为 LLM 的内在语境。
-- `prepend=True`:将注入内容置于下一轮 prompt 的**开头**,确保 LLM 首先"看到"这段语境。
-- `tag="dream_report"`:标记注入来源,便于调试与日志追溯。
+- `push_runtime_assistant_injection` 写入 LifeChatter 运行时队列,允许潜意识系统把梦境残影同步给主意识。
+- 注入内容作为 assistant 语境被 LifeChatter 消费,但不会直接显示给用户。
+- 队列按 `stream_id` 隔离并限制长度,避免长期无人消费导致上下文堆积。
 
-**注入内容示例**(来自 `residue.dfc_payload`):
+**注入内容示例**(来自梦境残影 payload):
 
 ```
 【内在语境·梦后余韵】(用户不可见)
@@ -540,7 +539,7 @@ Neo-MoFox 的做梦机制并非孤立创新,而是借鉴并扩展了两条平行
 
 3. **图结构关联学习**:REM 阶段的激活扩散 + Hebbian 边强化,使"一起梦到的记忆更紧密连接",实现记忆网络的自组织演化,而非依赖外部标注。
 
-4. **梦境的可引用性**:通过 LLM 生成结构化梦迹并注入到 DFC 运行时上下文,使"做梦"不仅是后台维护,更是对话系统可引用的**一等公民经历**——用户可以问"你昨晚梦到了什么",系统可以真实回答。
+4. **梦境的可引用性**:通过 LLM 生成结构化梦迹并注入到 LifeChatter 运行时上下文,使"做梦"不仅是后台维护,更是主意识可引用的**一等公民经历**——用户可以问"你昨晚梦到了什么",系统可以基于真实梦境残影回答。
 
 5. **持久化与连续性**:梦境存档、记忆图更新、SNN 状态持久化的三重保障,使离线学习的结果在重启后完整恢复,兑现"连续存在"原则。
 
@@ -580,7 +579,7 @@ Neo-MoFox 的做梦机制并非孤立创新,而是借鉴并扩展了两条平行
 - `plugins/life_engine/snn/core.py:446` — `homeostatic_scaling()` SHY 缩减
 - `plugins/life_engine/neuromod/engine.py:409` — `enter_sleep()` 调质调整
 - `plugins/life_engine/neuromod/engine.py:432` — `wake_up()` 调质恢复
-- `plugins/life_engine/service/core.py:1400` — `inject_dream_report()` DFC 注入
+- `plugins/life_engine/service/core.py:1400` — `inject_dream_report()` 梦境残影注入
 
 ---
 
@@ -599,6 +598,6 @@ Neo-MoFox 的做梦机制并非孤立创新,而是借鉴并扩展了两条平行
 *[章节完]*
 
 
-![Figure F11 · NREM→REM→叙事化做梦流水线](../figures/F11_sleep_pipeline.svg)
+![Figure F11 · NREM→REM→叙事化做梦流水线](/root/Elysia/Neo-MoFox/Report/04_figures/F11_sleep_pipeline.svg)
 
 *Figure F11 · NREM→REM→叙事化做梦流水线*

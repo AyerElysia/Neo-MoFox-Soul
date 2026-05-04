@@ -408,7 +408,7 @@ def spread_activation(
 
 > **Figure F10**（见 Figure F10 记忆图节点-边演化）：一张时序动画，展示记忆图在 7 天内的动态变化——新节点创建、边权重衰减、做梦时的 Hebbian 强化、弱边修剪。可视化参数：节点大小 ∝ 激活强度，边透明度 ∝ 权重，边颜色标识类型。
 
-![Figure F10 · 记忆图节点-边演化快照](../figures/F10_memory_graph.svg)
+![Figure F10 · 记忆图节点-边演化快照](/root/Elysia/Neo-MoFox/Report/04_figures/F10_memory_graph.svg)
 
 *Figure F10 · 记忆图节点-边演化快照*
 ---

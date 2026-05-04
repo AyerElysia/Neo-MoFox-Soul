@@ -665,6 +665,7 @@ class LifeChatter(BaseChatter):
             "- 不要只调用 `action-think`；如果本轮决定不回复，就直接用 `action-life_pass_and_wait`，不要调用 think。\n"
             "- 需要直接给用户发文字时，使用 `life_send_text`。\n"
             "- `content` 只能写给用户看的纯文本正文；长内容可用 `content` 数组分段发送。\n"
+            "- 需要了解 Ayer 当前电脑屏幕时，调用 `nucleus_view_screen`，不要凭空猜屏幕内容。\n"
             "- 不要把 `reason`、`thought` 等元信息写进 `content`。"
         )
 
@@ -956,11 +957,13 @@ class LifeChatter(BaseChatter):
         rt: "_WorkflowRuntime",
         unread_msgs: list[Message],
         user_prompt_text: str,
+        chat_stream: ChatStream | None = None,
     ) -> list[Content]:
         """把 user_prompt_text 与 unread_msgs 中可注入的多模态媒体组合为 Content 列表。
 
         - 多模态未启用 / 未提取到任何媒体 → 返回 ``[Text(user_prompt_text)]``
         - 否则按预算 + dedup 提取媒体，构建 Text + Image/Audio/Video 混合列表
+        - include_history_media=true 时，会从最近 history 中提取图片，便于模型看到自己刚发送/生成的图
         - 已被注入过（按 source_message_id+media_type 去重）的媒体不再重复
         """
         cfg = self._get_multimodal_cfg()
@@ -972,15 +975,41 @@ class LifeChatter(BaseChatter):
             max_videos=int(getattr(cfg, "max_videos_per_payload", 1) or 0),
             max_audios=int(getattr(cfg, "max_audios_per_payload", 2) or 0),
         )
+        enable_image = bool(getattr(cfg, "native_image", True))
+        enable_emoji = bool(getattr(cfg, "native_emoji", False))
+        enable_video = bool(getattr(cfg, "native_video", False))
+        enable_audio = bool(getattr(cfg, "native_audio", False))
+        audio_max_seconds = int(getattr(cfg, "audio_max_seconds", 60) or 60)
+
         candidates = extract_media_from_messages(
             unread_msgs,
             budget,
-            enable_image=bool(getattr(cfg, "native_image", True)),
-            enable_emoji=bool(getattr(cfg, "native_emoji", False)),
-            enable_video=bool(getattr(cfg, "native_video", True)),
-            enable_audio=bool(getattr(cfg, "native_audio", True)),
-            audio_max_seconds=int(getattr(cfg, "audio_max_seconds", 60) or 60),
+            enable_image=enable_image,
+            enable_emoji=enable_emoji,
+            enable_video=enable_video,
+            enable_audio=enable_audio,
+            audio_max_seconds=audio_max_seconds,
         )
+        if bool(getattr(cfg, "include_history_media", False)) and chat_stream is not None:
+            context = getattr(chat_stream, "context", None)
+            history_msgs = list(getattr(context, "history_messages", []) or [])
+            try:
+                history_tail = int(getattr(cfg, "history_media_tail_messages", 20) or 0)
+            except (TypeError, ValueError):
+                history_tail = 20
+            if history_tail > 0:
+                history_msgs = history_msgs[-history_tail:]
+                candidates.extend(
+                    extract_media_from_messages(
+                        history_msgs,
+                        budget,
+                        enable_image=enable_image,
+                        enable_emoji=enable_emoji,
+                        enable_video=False,
+                        enable_audio=False,
+                        audio_max_seconds=audio_max_seconds,
+                    )
+                )
 
         # 跨轮 dedup：失败重试时，相同 unread 不重复 extend 媒体
         fresh: list[MediaItem] = []
@@ -1351,7 +1380,7 @@ class LifeChatter(BaseChatter):
                 self._upsert_pending_unread_payload(
                     response=rt.response,
                     formatted_content=self._compose_unread_user_content(
-                        rt, unread_msgs, user_prompt_text
+                        rt, unread_msgs, user_prompt_text, chat_stream
                     ),
                 )
                 rt.history_merged = True
@@ -1397,6 +1426,9 @@ class LifeChatter(BaseChatter):
                         # 已成功送达：把先前 USER payload 中的多模态媒体替换为文本占位，
                         # 避免后续轮次的 LLMRequest 重复携带 base64 体积。
                         self._prune_sent_media(rt.response)
+                        # 媒体去重只用于失败重试时防止同一轮重复 append。
+                        # 成功进入下一轮后允许 history 中的图片重新作为原生视觉输入注入。
+                        rt.media_seen.clear()
 
                 except Exception as error:
                     self._strip_transient_context(rt.response)

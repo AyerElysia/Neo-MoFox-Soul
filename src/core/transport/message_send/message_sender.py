@@ -83,6 +83,9 @@ class MessageSender:
             if not adapter_signature:
                 adapter_signature = self._infer_adapter_signature(message)
 
+            if not adapter_signature and self._should_use_virtual_send(message):
+                return await self._send_virtual_message(message)
+
             if not adapter_signature:
                 logger.error(
                     f"无法确定目标 Adapter: platform={message.platform}, "
@@ -149,6 +152,48 @@ class MessageSender:
         except Exception as e:
             logger.error(
                 f"发送消息失败: message_id={message.message_id}, error={e}",
+                exc_info=True,
+            )
+            return False
+
+    @staticmethod
+    def _should_use_virtual_send(message: "Message") -> bool:
+        """判断当前消息是否应走虚拟发送分支。"""
+        return str(getattr(message, "platform", "") or "").strip().lower() == "live"
+
+    async def _send_virtual_message(self, message: "Message") -> bool:
+        """处理不依赖外部 Adapter 的虚拟平台发送。
+
+        live_bridge 会通过 ON_MESSAGE_SENT 事件回收回复，因此这里仍需构造
+        envelope 并触发发送事件，但不真正投递到外部平台。
+        """
+        adapter_signature = "live_bridge:adapter:virtual_live"
+
+        try:
+            envelope = await self._converter.message_to_envelope(message)
+
+            should_send = await self._emit_send_event(message, envelope, adapter_signature)
+            if not should_send:
+                logger.info(f"虚拟消息被事件处理器拦截: {message.message_id}")
+                return True
+
+            await self._persist_sent_message_to_history(message)
+
+            msg_text = (
+                message.processed_plain_text
+                or (message.content if isinstance(message.content, str) else "")
+                or "(无文本内容)"
+            )
+            if len(msg_text) > 100:
+                msg_text = msg_text[:100] + "..."
+
+            logger.debug(f"虚拟消息发送成功: {message.message_id} → {adapter_signature}")
+            logger.info(f'虚拟消息发送成功: [dim]{msg_text}[/dim]')
+            return True
+
+        except Exception as e:
+            logger.error(
+                f"虚拟消息发送失败: message_id={message.message_id}, error={e}",
                 exc_info=True,
             )
             return False

@@ -71,3 +71,39 @@ async def test_go_activate_returns_false_when_all_conditions_miss(monkeypatch) -
     monkeypatch.setattr(action, "_llm_judge_activation", _llm_false)
 
     assert await action.go_activate() is False
+
+
+@pytest.mark.asyncio
+async def test_execute_persists_tts_text_as_voice_plain_text(monkeypatch) -> None:
+    """TTS 语音消息应把合成文本写入 processed_plain_text。"""
+    action = _build_action(always_available=True)
+
+    class FakeTTSService:
+        async def generate_voice(self, *, text: str, style_hint: str, language_hint: str | None) -> str:
+            assert text == "今晚我想认真说一会儿。"
+            assert style_hint == "gentle"
+            assert language_hint == "zh"
+            return "VOICE_BASE64"
+
+    sent: dict[str, object] = {}
+
+    async def fake_send_voice(**kwargs):  # type: ignore[no-untyped-def]
+        sent.update(kwargs)
+        return True
+
+    action.tts_service = FakeTTSService()  # type: ignore[assignment]
+    monkeypatch.setattr("plugins.tts_voice_plugin.actions.tts_action.send_voice", fake_send_voice)
+
+    success, message = await action.execute(
+        tts_voice_text="  今晚我想认真说一会儿。  ",
+        voice_style="gentle",
+        text_language="zh",
+    )
+
+    assert success is True
+    assert "文本长度" in message
+    assert sent == {
+        "voice_data": "VOICE_BASE64",
+        "stream_id": "s1",
+        "processed_plain_text": "[语音:今晚我想认真说一会儿。]",
+    }

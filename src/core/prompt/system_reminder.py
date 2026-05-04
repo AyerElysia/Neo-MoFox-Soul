@@ -34,14 +34,12 @@ from enum import Enum
 from threading import RLock
 from typing import Sequence, TypeAlias
 
-from src.app.plugin_system.api._utils import _validate_non_empty
-
-
 class SystemReminderBucket(str, Enum):
     """预定义的系统提醒分类（bucket）。可以根据实际需求扩展更多分类。"""
 
     ACTOR = "actor"
     SUB_ACTOR = "sub_actor"
+    SKILL = "skill"
 
 
 class SystemReminderInsertType(str, Enum):
@@ -67,6 +65,13 @@ class SystemReminderItem:
         """渲染为注入 LLM 前使用的文本块。"""
 
         return f"[{self.name}]\n{self.content}"
+
+
+def _validate_non_empty(value: str, name: str) -> None:
+    """校验字符串参数非空。"""
+
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{name} 不能为空")
 
 
 def _normalize_bucket(bucket: BucketLike) -> str:

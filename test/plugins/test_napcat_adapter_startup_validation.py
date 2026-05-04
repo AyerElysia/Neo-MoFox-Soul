@@ -12,6 +12,39 @@ from plugins.napcat_adapter.config import NapcatAdapterConfig
 from plugins.napcat_adapter.plugin import NapcatAdapter, NapcatAdapterPlugin, _validate_bot_identity
 
 
+def _build_napcat_plugin() -> NapcatAdapterPlugin:
+    """构造测试用 Napcat 插件实例。"""
+    config = NapcatAdapterConfig.from_dict(
+        {
+            "plugin": {"enabled": True, "config_version": "2.0.0"},
+            "bot": {"qq_id": "123456789", "qq_nickname": "MoFoxBot"},
+            "napcat_server": {
+                "mode": "reverse",
+                "host": "localhost",
+                "port": 8095,
+                "access_token": "",
+            },
+            "features": {
+                "group_list_type": "blacklist",
+                "group_list": [],
+                "private_list_type": "blacklist",
+                "private_list": [],
+                "ban_user_id": [],
+                "enable_poke": True,
+                "ignore_non_self_poke": False,
+                "poke_debounce_seconds": 2.0,
+                "enable_emoji_like": True,
+                "enable_reply_at": True,
+                "reply_at_rate": 0.5,
+                "enable_video_processing": True,
+                "video_max_size_mb": 100,
+                "video_download_timeout": 60,
+            },
+        }
+    )
+    return NapcatAdapterPlugin(config=config)
+
+
 class _FakeCoreSink:
     """满足 BaseAdapter 初始化所需的最小 CoreSink 替身。"""
 
@@ -251,6 +284,71 @@ def test_send_platform_message_propagates_send_handler_error() -> None:
 
     with pytest.raises(ValueError, match="bad target"):
         asyncio.run(adapter._send_platform_message({"message_info": {}, "message_segment": {}}))
+
+
+def test_send_normal_message_splits_multiline_text_into_multiple_napcat_messages() -> None:
+    """NapCat 出站文本包含换行时，应拆成多条消息发送。"""
+    plugin = _build_napcat_plugin()
+    adapter = NapcatAdapter(core_sink=cast(Any, _FakeCoreSink()), plugin=plugin)
+    adapter.send_handler.send_message_to_napcat = AsyncMock(
+        return_value={"status": "ok"}
+    )
+
+    envelope = {
+        "message_info": {
+            "group_info": {"group_id": "123456"},
+            "user_info": {"user_id": "987654"},
+        },
+        "message_segment": [
+            {"type": "text", "data": "第一行\n第二行"},
+        ],
+    }
+
+    asyncio.run(adapter.send_handler.send_normal_message(envelope))
+
+    assert adapter.send_handler.send_message_to_napcat.await_count == 2
+    first_call = adapter.send_handler.send_message_to_napcat.await_args_list[0]
+    second_call = adapter.send_handler.send_message_to_napcat.await_args_list[1]
+
+    assert first_call.args[0] == "send_group_msg"
+    assert first_call.args[1]["group_id"] == 123456
+    assert first_call.args[1]["message"] == [
+        {"type": "text", "data": {"text": "第一行"}}
+    ]
+
+    assert second_call.args[0] == "send_group_msg"
+    assert second_call.args[1]["group_id"] == 123456
+    assert second_call.args[1]["message"] == [
+        {"type": "text", "data": {"text": "第二行"}}
+    ]
+
+
+def test_send_normal_message_keeps_single_line_text_as_one_napcat_message() -> None:
+    """普通单行文本应保持单条发送。"""
+    plugin = _build_napcat_plugin()
+    adapter = NapcatAdapter(core_sink=cast(Any, _FakeCoreSink()), plugin=plugin)
+    adapter.send_handler.send_message_to_napcat = AsyncMock(
+        return_value={"status": "ok"}
+    )
+
+    envelope = {
+        "message_info": {
+            "user_info": {"user_id": "987654"},
+        },
+        "message_segment": [
+            {"type": "text", "data": "只有一行"},
+        ],
+    }
+
+    asyncio.run(adapter.send_handler.send_normal_message(envelope))
+
+    assert adapter.send_handler.send_message_to_napcat.await_count == 1
+    only_call = adapter.send_handler.send_message_to_napcat.await_args_list[0]
+    assert only_call.args[0] == "send_private_msg"
+    assert only_call.args[1]["user_id"] == 987654
+    assert only_call.args[1]["message"] == [
+        {"type": "text", "data": {"text": "只有一行"}}
+    ]
 
 
 def test_handle_raw_message_ignores_bot_self_echo() -> None:

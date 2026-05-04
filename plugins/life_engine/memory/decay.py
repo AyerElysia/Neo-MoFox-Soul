@@ -281,35 +281,37 @@ async def dream_walk(
 
     existing_ids = await asyncio.to_thread(_check_existing, top_ids)
 
-    # Build edge operations data in Python
-    edge_ops: List[tuple] = []  # (op_type, params...)
-    new_edges_count = 0
+    # Build edge operations data in Python (sync DB, run in thread)
+    def _build_edge_ops(ids: List[str], lr: float, now_ts: float) -> tuple:
+        ops: List[tuple] = []
+        new_count = 0
+        cursor = db.cursor()
+        for i, node_a in enumerate(ids):
+            for node_b in ids[i + 1:]:
+                cursor.execute(
+                    """
+                    SELECT edge_id, weight FROM memory_edges
+                    WHERE source_id = ? AND target_id = ? AND edge_type = ?
+                    """,
+                    (node_a, node_b, EdgeType.ASSOCIATES.value),
+                )
+                row = cursor.fetchone()
 
-    for i, node_a in enumerate(existing_ids):
-        for node_b in existing_ids[i + 1:]:
-            # Check if edge exists (sync DB)
-            cursor = db.cursor()
-            cursor.execute(
-                """
-                SELECT edge_id, weight FROM memory_edges
-                WHERE source_id = ? AND target_id = ? AND edge_type = ?
-                """,
-                (node_a, node_b, EdgeType.ASSOCIATES.value),
-            )
-            row = cursor.fetchone()
+                if row:
+                    old_weight = row["weight"]
+                    delta = lr * (1 - old_weight)
+                    new_weight = min(old_weight + delta, 1.0)
+                    ops.append(("update", new_weight, delta, now_ts, row["edge_id"]))
+                else:
+                    edge_id = str(uuid.uuid4())[:8]
+                    ops.append(("insert",
+                        edge_id, node_a, node_b, EdgeType.ASSOCIATES.value,
+                        0.15, 0.15, 0.0, 1, now_ts, "REM 做梦联想", now_ts, 1,
+                    ))
+                    new_count += 1
+        return ops, new_count
 
-            if row:
-                old_weight = row["weight"]
-                delta = learning_rate * (1 - old_weight)
-                new_weight = min(old_weight + delta, 1.0)
-                edge_ops.append(("update", new_weight, delta, now, row["edge_id"]))
-            else:
-                edge_id = str(uuid.uuid4())[:8]
-                edge_ops.append(("insert",
-                    edge_id, node_a, node_b, EdgeType.ASSOCIATES.value,
-                    0.15, 0.15, 0.0, 1, now, "REM 做梦联想", now, 1,
-                ))
-                new_edges_count += 1
+    edge_ops, new_edges_count = await asyncio.to_thread(_build_edge_ops, existing_ids, learning_rate, now)
 
     # Execute all edge operations (sync DB, single transaction)
     def _apply_edge_ops(ops: List[tuple]) -> None:

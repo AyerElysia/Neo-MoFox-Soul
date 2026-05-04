@@ -469,15 +469,15 @@ class LifeEngineConfig(BaseConfig):
 
     @config_section("multimodal")
     class MultimodalSection(SectionBase):
-        """life_chatter 原生全模态输入配置（MiMo-V2-Omni 等模型）。
+        """life_chatter 原生多模态输入配置（MiMo-V2-Omni 等模型）。
 
-        启用后会把 unread_msgs 中的图像/视频/语音转为 LLM 原生
-        Image/Video/Audio Content，让模型直接消费媒体而不是 ASR/描述文本。
+        启用后会把 unread_msgs 中允许的媒体转为 LLM 原生 Content。
+        当前默认只开启图片；视频/音频保留降级路径，避免模型拒收导致上下文链路中断。
         """
 
         enabled: bool = Field(
             default=False,
-            description="启用 life_chatter 原生多模态输入（图像 + 视频 + 语音/音频）。",
+            description="启用 life_chatter 原生多模态输入。",
         )
         native_image: bool = Field(
             default=True,
@@ -488,11 +488,11 @@ class LifeEngineConfig(BaseConfig):
             description="是否把 emoji / 表情包媒体作为原生 Image Content 注入。默认关闭，避免浪费多模态预算。",
         )
         native_video: bool = Field(
-            default=True,
+            default=False,
             description="是否把 video 媒体作为原生 Video Content 注入。",
         )
         native_audio: bool = Field(
-            default=True,
+            default=False,
             description="是否把 voice / record / audio 媒体作为原生 Audio Content 注入。",
         )
         max_images_per_payload: int = Field(
@@ -512,7 +512,15 @@ class LifeEngineConfig(BaseConfig):
         )
         include_history_media: bool = Field(
             default=False,
-            description="是否对 history（非 unread）消息也提取媒体（默认 False，仅 unread 注入）。",
+            description=(
+                "是否对 history（非 unread）消息也提取媒体。开启后，爱莉能在后续轮次"
+                "重新看到自己刚发送/生成的图片。"
+            ),
+        )
+        history_media_tail_messages: int = Field(
+            default=20,
+            ge=0,
+            description="从最近多少条 history 消息里寻找可注入媒体。只影响 include_history_media=true 的情况。",
         )
         audio_max_seconds: int = Field(
             default=60,
@@ -529,6 +537,103 @@ class LifeEngineConfig(BaseConfig):
         unsupported_audio_placeholder: str = Field(
             default="[语音消息]",
             description="未知/不支持的音频格式（如 silk/amr）降级为该文本占位。",
+        )
+
+    @config_section("screen")
+    class ScreenSection(SectionBase):
+        """电脑屏幕观察工具配置。"""
+
+        enabled: bool = Field(
+            default=False,
+            description="是否启用 nucleus_view_screen，让 life_chatter / life heartbeat 可按需截取并观察当前电脑屏幕。",
+        )
+
+        capture_method: str = Field(
+            default="auto",
+            description="截屏方式：auto / ffmpeg / grim / pil。Linux X11 推荐 auto 或 ffmpeg。",
+        )
+
+        display: str = Field(
+            default="",
+            description="X11 DISPLAY。留空时读取环境变量 DISPLAY，仍为空则回退到 :0。",
+        )
+
+        screen_width: int = Field(
+            default=0,
+            ge=0,
+            description="截屏宽度。0 表示自动从 xdpyinfo 检测，检测失败时回退到 2560。",
+        )
+
+        screen_height: int = Field(
+            default=0,
+            ge=0,
+            description="截屏高度。0 表示自动从 xdpyinfo 检测，检测失败时回退到 1440。",
+        )
+
+        max_width: int = Field(
+            default=2560,
+            ge=0,
+            description="截图进入视觉模型前的最大宽度。0 表示不缩放。",
+        )
+
+        max_height: int = Field(
+            default=1600,
+            ge=0,
+            description="截图进入视觉模型前的最大高度。0 表示不缩放。2K/高分屏默认完整保留。",
+        )
+
+        output_format: str = Field(
+            default="png",
+            description="截图图片格式：png / jpeg / webp。默认 png，适合看代码和文字。",
+        )
+
+        jpeg_quality: int = Field(
+            default=92,
+            ge=1,
+            le=100,
+            description="jpeg/webp 输出质量。",
+        )
+
+        capture_cursor: bool = Field(
+            default=True,
+            description="ffmpeg x11grab 截图时是否包含鼠标指针。",
+        )
+
+        capture_timeout_seconds: int = Field(
+            default=20,
+            ge=1,
+            description="截屏命令超时时间。",
+        )
+
+        native_when_available: bool = Field(
+            default=True,
+            description="auto 模式下，如果 multimodal.enabled 且 native_image=true，优先用 life 模型任务原生看图。",
+        )
+
+        native_task_name: str = Field(
+            default="",
+            description="原生看屏幕使用的模型任务名。留空时使用 [model].task_name。",
+        )
+
+        fallback_task_name: str = Field(
+            default="vlm",
+            description="原生不可用或失败时使用的 VLM 降级模型任务名。",
+        )
+
+        save_latest: bool = Field(
+            default=False,
+            description="是否把最近一次截图保存到 workspace。默认 false，避免无意持久化屏幕隐私。",
+        )
+
+        latest_path: str = Field(
+            default="screenshots/latest_screen.png",
+            description="save_latest=true 时的 workspace 相对保存路径。",
+        )
+
+        max_observation_chars: int = Field(
+            default=2400,
+            ge=200,
+            description="工具返回给 LLM 的屏幕观察摘要最大字符数。",
         )
 
     @config_section("drives")
@@ -696,6 +801,7 @@ class LifeEngineConfig(BaseConfig):
     memory_algorithm: MemoryAlgorithmSection = Field(default_factory=MemoryAlgorithmSection)
     chatter: ChatterSection = Field(default_factory=ChatterSection)
     multimodal: MultimodalSection = Field(default_factory=MultimodalSection)
+    screen: ScreenSection = Field(default_factory=ScreenSection)
     streams: StreamsSection = Field(default_factory=StreamsSection)
     runtime_sync: RuntimeSyncSection = Field(default_factory=RuntimeSyncSection)
     drives: DrivesSection = Field(default_factory=DrivesSection)

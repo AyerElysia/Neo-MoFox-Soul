@@ -4,6 +4,7 @@
 """
 
 import asyncio
+import base64
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
@@ -69,6 +70,15 @@ class TestImageToDataUrl:
         result = _image_to_data_url(url)
 
         assert result == url
+
+    def test_detects_webp_base64(self):
+        """测试纯 base64 图片会按文件头推断 MIME。"""
+        from src.kernel.llm.model_client.openai_client import _image_to_data_url
+
+        webp_b64 = base64.b64encode(b"RIFF\x10\x00\x00\x00WEBPVP8 ").decode()
+        result = _image_to_data_url(webp_b64)
+
+        assert result.startswith("data:image/webp;base64,")
 
     def test_file_not_found(self):
         """测试文件不存在。"""

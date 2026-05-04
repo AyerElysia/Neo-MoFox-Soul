@@ -41,16 +41,6 @@ from ._utils import (
 
 logger = log_api.get_logger("life_engine.tools")
 
-_DFC_GUIDANCE_PATTERNS = (
-    r"(不要再|别再|务必|记得|立刻|马上|赶紧|直接).{0,18}(说|回复|回|问|讲|开始|继续|安慰|道歉|主持|接住|确认|听)",
-    r"先.{0,24}(说|回复|回|问|安慰|确认|听).{0,24}再.{0,24}(说|回复|回|问|讲|开始|继续|安慰|确认)",
-    r"如果.{0,24}(说|提到|问起|聊到|回应).{0,12}就.{0,24}(说|回复|回|问|安慰|确认|道歉|继续|开始|听)",
-    r"(温柔地|轻轻地|认真地).{0,12}(问|说|回复|回|安慰|确认|道歉|讲|听)",
-    r"[\"“][^\"”\n]{2,40}[\"”].{0,12}(问|说|回复|回|发|讲)",
-)
-
-
-
 def _format_size(size: int) -> str:
     """格式化文件大小。"""
     for unit in ["B", "KB", "MB", "GB"]:
@@ -95,14 +85,6 @@ def _is_detailed_proactive_wake_reason(reason: str) -> bool:
     if len(segments) < PROACTIVE_WAKE_MIN_SEGMENTS:
         return False
     return any(keyword in text for keyword in PROACTIVE_WAKE_KEYWORDS)
-
-
-def _looks_like_dfc_guidance(message: str) -> bool:
-    """检测 message 是否在指导表达层如何回复/行动。"""
-    text = " ".join(str(message or "").split())
-    if not text:
-        return False
-    return any(re.search(pattern, text) for pattern in _DFC_GUIDANCE_PATTERNS)
 
 
 class LifeEngineWakeDFCTool(BaseTool):
@@ -166,12 +148,6 @@ class LifeEngineWakeDFCTool(BaseTool):
         text = str(message or "").strip()
         if not text:
             return False, "message 不能为空"
-        if _looks_like_dfc_guidance(text):
-            return (
-                False,
-                "nucleus_tell_dfc 只用于补充信息差，不用于指导表达层怎么回复。"
-                "请改写成“你发现了什么 / 这说明什么 / 可能影响什么”，不要写“该怎么说/怎么做”的指令。",
-            )
 
         normalized_importance = str(importance or "normal").strip().lower() or "normal"
         if normalized_importance not in {"low", "normal", "high", "critical"}:

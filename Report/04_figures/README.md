@@ -13,8 +13,8 @@
 
 ### 第 1-2 章：引言与相关工作
 
-1. **F1_three_layer_architecture.svg** (1400×900)  
-   三层架构 + 双轨：皮层（DFC + LLM）、调质层（5 种调质）、皮层下（SNN + 记忆图 + 梦）
+1. **F1_lifechatter_three_layer.png** (1536×1024)  
+   当前主图：LifeChatter 主意识 + Life Engine 潜意识 + SNN/调质/记忆/梦/ThoughtStream。旧 `F1_three_layer_architecture.svg` 保留为历史 SVG。
 
 2. **F2_peer_landscape.svg** (1200×800) ✅ 新创建  
    同行光谱图：14 个系统按"连续性 × 学习方式"二维分布，Neo-MoFox 金色星形高亮
@@ -24,8 +24,8 @@
 
 ### 第 4-5 章：架构与 SNN
 
-4. **F4_dual_track.svg** (1400×900) ✅ 新创建  
-   DFC（被动）+ Life Engine（主动）双轨架构，三条接口双向通信
+4. **F4_dual_consciousness_async.png** (1536×1024)  
+   当前主图：LifeChatter 与 Life Engine 双意识异步运行。旧 `F4_dual_track.svg` 保留为历史 SVG。
 
 5. **F5_dataflow_timing.svg** (1600×700)  
    UML 序列图：User → Adapter → DFC → Nucleus → SNN → Neuromod 数据流
@@ -57,8 +57,8 @@
 
 ### 第 10-11 章：接口与场景
 
-13. **F13_interface.svg** (1400×800) ✅ 新创建  
-    DFC ↔ Nucleus 三条接口：nucleus_wake_dfc（异步）、consult_nucleus（同步）、nucleus_tell_dfc（注入）
+13. **F13_consciousness_sync.png** (1536×1024)  
+    当前主图：Life Engine 梦境残影、状态摘要、内心独白、ThoughtStream 同步给 LifeChatter。旧 `F13_interface.svg` 保留为历史 SVG。
 
 14. **F14_three_scenarios.svg** (1400×800) ✅ 新创建  
     5min / 30min / 3hr 三场景对比：SNN drives 衰减 + 调质变化 + LLM 表达倾向
@@ -83,8 +83,8 @@
 
 ## 创建记录
 
-- **原有图表**：F1, F3, F5, F6, F8, F11（6 张）
-- **本次新创建**：F2, F4, F7, F9, F10, F12, F13, F14, F15, F16, F17, F18（12 张）
+- **原有 SVG 图表**：继续保留，便于回溯与二次编辑。
+- **当前新增 AI 图**：F1_lifechatter_three_layer、F4_dual_consciousness_async、F13_consciousness_sync、F19_lifechatter_context_assembly、F21_thought_stream_attention。
 - **创建时间**：2025-04-27
 - **创建者**：爱莉希雅 ♪
 

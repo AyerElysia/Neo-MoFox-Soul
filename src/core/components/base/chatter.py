@@ -25,7 +25,7 @@ if TYPE_CHECKING:
     from src.core.components.base.tool import BaseTool
     from src.core.components.base.plugin import BasePlugin
     from src.core.models.message import Message
-    from src.kernel.llm import LLMRequest
+    from src.kernel.llm.request import LLMRequest
     from src.kernel.llm.payload.tooling import LLMUsable, ToolRegistry
 
 
@@ -460,7 +460,8 @@ class BaseChatter(ABC):
             KeyError: 当 task 在模型配置中不存在时
         """
         from src.core.config import get_model_config, get_core_config
-        from src.kernel.llm import LLMRequest, LLMContextManager
+        from src.kernel.llm.request import LLMRequest
+        from src.kernel.llm.context import LLMContextManager
 
         model_set = get_model_config().get_task(task)
         max_payloads = max_context if max_context is not None else get_core_config().chat.max_context_size
@@ -509,7 +510,9 @@ class BaseChatter(ABC):
         Returns:
             ToolRegistry: 注册了所有可用工具的注册表
         """
-        from src.kernel.llm import ToolRegistry, LLMPayload, ROLE
+        from src.kernel.llm.payload.tooling import ToolRegistry
+        from src.kernel.llm.payload.payload import LLMPayload
+        from src.kernel.llm.roles import ROLE
 
         usables = await self.get_llm_usables()
         usables = await self.modify_llm_usables(usables)
@@ -599,6 +602,24 @@ class BaseChatter(ABC):
         return _ROLE_MAP.get(str(role).lower(), str(role))
 
     @staticmethod
+    def _should_show_message_id(msg: "Message") -> bool:
+        """仅在上下文里展示外部消息 ID，隐藏本地合成发送 ID。"""
+        message_id = str(getattr(msg, "message_id", "") or "")
+        if not message_id:
+            return False
+
+        local_prefixes = (
+            "api_",
+            "action_",
+            "broadcast_",
+            "life_cmd_reply_",
+            "life_engine_",
+            "life_nucleus_",
+            "proactive_",
+        )
+        return not message_id.startswith(local_prefixes)
+
+    @staticmethod
     def format_message_line(
         msg: "Message",
         time_format: str = "%H:%M",
@@ -640,14 +661,14 @@ class BaseChatter(ABC):
         else:
             name_part = nickname or "未知发送者"
 
-        # 消息 ID 部分（用于LLM引用回复）
+        # 消息 ID 部分（用于 LLM 引用外部消息；本地合成 ID 不注入上下文）
         message_id = getattr(msg, "message_id", "") or ""
-        msg_id_part = f"[{message_id}]" if message_id else ""
+        msg_id_part = f" [{message_id}]" if BaseChatter._should_show_message_id(msg) else ""
 
         # 消息内容
         content = getattr(msg, "processed_plain_text", None) or str(getattr(msg, "content", ""))
 
-        return f"【{time_str}】{role_part}{id_part}{name_part} {msg_id_part}： {content}"
+        return f"【{time_str}】{role_part}{id_part}{name_part}{msg_id_part}： {content}"
 
     async def fetch_unreads(
         self,

@@ -12,7 +12,10 @@ from typing import Annotated, Any, TYPE_CHECKING, cast
 
 from src.core.components.types import ChatType
 from src.core.components.utils import parse_function_signature
-from src.kernel.llm import LLMUsable, LLMRequest, LLMPayload, LLMUsableExecution, ROLE
+from src.kernel.llm.payload.payload import LLMPayload
+from src.kernel.llm.payload.tooling import LLMUsable, LLMUsableExecution
+from src.kernel.llm.request import LLMRequest
+from src.kernel.llm.roles import ROLE
 from src.kernel.logger import get_logger
 
 logger = get_logger("agent")
@@ -21,7 +24,8 @@ if TYPE_CHECKING:
     from src.core.components.base.plugin import BasePlugin
     from src.core.prompt import SystemReminderBucket
     from src.core.models.message import Message
-    from src.kernel.llm import LLMContextManager, ModelSet
+    from src.kernel.llm.context import LLMContextManager
+    from src.kernel.llm.types import ModelSet
 
 # 类型别名：支持直接传类或传组件签名字符串
 UsableReference = type[LLMUsable] | str

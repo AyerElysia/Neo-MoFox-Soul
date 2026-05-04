@@ -22,9 +22,9 @@
 
 | 中文术语 | English | 工程定义 |
 |---------|---------|---------|
-| 中枢 / 生命中枢 | Nucleus / Life Engine | `plugins/life_engine` 插件，负责心跳、SNN/调质/做梦/记忆的统一调度 |
-| 对话流控制器 | DFC (Dialogue Flow Controller) | `default_chatter` 插件，负责被动应答消息的对话逻辑 |
-| 双轨架构 | Dual-Track Architecture | DFC（被动响应）+ Life Engine（主动推理）并行运行的架构设计 |
+| 潜意识 / 生命中枢 | Subconscious / Life Engine | `plugins/life_engine` 插件中的后台系统，负责心跳、SNN/调质/做梦/记忆/ThoughtStream 的统一调度 |
+| 社交主意识 | LifeChatter / Social Conscious Mind | `life_chatter` 对话器，负责对外表达、行动选择、上下文组装与内心独白回写 |
+| 主意识–潜意识架构 | Dual-Consciousness Architecture | LifeChatter（社交主意识）+ Life Engine（潜意识）异步协同运行的架构设计 |
 | 心跳 | Heartbeat | Life Engine 每 30 秒触发的内省+决策循环（`heartbeat_interval_seconds` 配置） |
 | 事件流 | Event Stream | `LifeEngineEvent` 的全局有序序列，记录所有消息/工具调用/心跳 |
 | 唤醒上下文 | Wake Context | 注入到心跳 LLM 的事件历史 + 状态摘要，通过 `build_wake_context()` 构建 |
@@ -98,14 +98,13 @@
 
 | 中文术语 | English | 工程定义 |
 |---------|---------|---------|
-| 唤醒 DFC | nucleus_wake_dfc | 中枢主动让 DFC 在某会话发起对话的工具（`tools/dfc_tools.py`） |
-| 咨询中枢 | consult_nucleus | DFC 同步拉取中枢状态摘要的工具（`tools/dfc_tools.py`） |
-| 告知 DFC | nucleus_tell_dfc | 中枢异步注入信息给 DFC 的工具，通过运行时注入实现 |
-| 运行时注入 | Runtime Injection | 把外部生成的内容写入 DFC 下一轮 prompt 的机制 |
+| 运行时内心独白 | Runtime Inner Monologue | LifeChatter 将当前想法回写给 Life Engine 的内部动作，用于闭环同步 |
+| 运行态快照 | Runtime Snapshot | Life Engine 输出给 LifeChatter 的状态摘要，包含调质、事件、思考流与梦境残影 |
+| 思考流 | ThoughtStream | `plugins/life_engine/streams/` 中维护的持久注意力线索，保存当前焦点与背景在意 |
+| 注意力同步 | Attention Sync | 将 ThoughtStream 与运行态摘要同步给 LifeChatter 的机制 |
 | 状态序列化 | State Serialization | 完整 SNN/调质/记忆/事件历史的 JSON 持久化，路径：`life_engine_context.json` |
 | 事件序列号 | Event Sequence | 全局单调递增的事件编号，保证事件全序（`state.event_sequence`） |
 | 流 | Stream | 对话流的抽象，由 `stream_id` 唯一标识（如 `group_12345`） |
-| 思考流 | Thinking Stream | 内部异步思考任务的抽象，与外部对话流并行存在 |
 | 活跃窗口 | Active Window | 判定外部消息是否"最近活跃"的时间窗口（`external_active_minutes=5`） |
 | 工具调用轮数 | Tool Call Rounds | 单次心跳内工具调用的嵌套深度上限（`max_rounds_per_heartbeat=3`） |
 | 冲动引擎 | Drive Engine | 将 SNN 驱动信号转化为决策的模块（`drives/impulse.py`） |

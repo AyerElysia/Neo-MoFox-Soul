@@ -293,6 +293,10 @@ class StatePersistence:
                     "last_external_message_at": state.last_external_message_at,
                     "last_tell_dfc_at": state.last_tell_dfc_at,
                     "tell_dfc_count": state.tell_dfc_count,
+                    "self_pause_until": state.self_pause_until,
+                    "self_pause_started_at": state.self_pause_started_at,
+                    "self_pause_reason": state.self_pause_reason,
+                    "self_pause_duration_minutes": state.self_pause_duration_minutes,
                     "chatter_context_cursors": state.chatter_context_cursors or {},
                     "chatter_thought_cursors": state.chatter_thought_cursors or {},
                     "last_chatter_think_by_stream": state.last_chatter_think_by_stream or {},
@@ -387,6 +391,12 @@ class StatePersistence:
             state.last_external_message_at = state_raw.get("last_external_message_at")
             state.last_tell_dfc_at = state_raw.get("last_tell_dfc_at")
             state.tell_dfc_count = int(state_raw.get("tell_dfc_count") or 0)
+            state.self_pause_until = state_raw.get("self_pause_until")
+            state.self_pause_started_at = state_raw.get("self_pause_started_at")
+            state.self_pause_reason = state_raw.get("self_pause_reason")
+            state.self_pause_duration_minutes = int(
+                state_raw.get("self_pause_duration_minutes") or 0
+            )
             raw_cursors = state_raw.get("chatter_context_cursors")
             if isinstance(raw_cursors, dict):
                 cursors: dict[str, int] = {}

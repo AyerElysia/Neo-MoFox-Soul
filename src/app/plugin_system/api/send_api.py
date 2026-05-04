@@ -112,7 +112,7 @@ async def send_voice(
     voice_data: str,
     stream_id: str,
     platform: str | None = None,
-    processed_plain_text = "[语音]",
+    processed_plain_text: str = "[语音]",
 ) -> bool:
     """发送语音消息
 
@@ -120,6 +120,7 @@ async def send_voice(
         voice_data: 语音数据（base64 或 URL）
         stream_id: 聊天流 ID
         platform: 平台名称（可选）
+        processed_plain_text: 写入聊天历史的可读文本
 
     Returns:
         是否发送成功

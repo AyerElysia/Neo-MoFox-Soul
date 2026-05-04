@@ -101,21 +101,29 @@ class SendHandler:
         else:
             logger.error("无法识别的消息类型")
             return
-        logger.debug(
-            f"准备发送到napcat的消息体: action='{action}', {id_name}='{target_id}', "
-            f"message={str(processed_message)[:500]}"
-        )
-        response = await self.send_message_to_napcat(
-            action or "",
-            {
-                id_name or "target_id": target_id,
-                "message": processed_message,
-            },
-        )
-        if response.get("status") == "ok":
-            logger.info("消息发送成功")
-        else:
-            raise RuntimeError(f"Napcat 消息发送失败: {response!s}")
+        outbound_messages = self._split_processed_message_by_newline(processed_message)
+        if len(outbound_messages) > 1:
+            logger.info(
+                "检测到换行，NapCat 出站消息将拆分发送: "
+                f"count={len(outbound_messages)} action={action} target={target_id}"
+            )
+
+        for index, outbound_message in enumerate(outbound_messages, start=1):
+            logger.debug(
+                f"准备发送到napcat的消息体: action='{action}', {id_name}='{target_id}', "
+                f"part={index}/{len(outbound_messages)}, message={str(outbound_message)[:500]}"
+            )
+            response = await self.send_message_to_napcat(
+                action or "",
+                {
+                    id_name or "target_id": target_id,
+                    "message": outbound_message,
+                },
+            )
+            if response.get("status") != "ok":
+                raise RuntimeError(f"Napcat 消息发送失败: {response!s}")
+
+        logger.info("消息发送成功")
 
     async def send_command(self, envelope: MessageEnvelope) -> None:
         """
@@ -367,6 +375,73 @@ class SendHandler:
     def handle_text_message(self, message: str) -> dict:
         """处理文本消息"""
         return {"type": "text", "data": {"text": message}}
+
+    @staticmethod
+    def _segment_has_body(seg: dict[str, Any]) -> bool:
+        """判断一个消息段是否可视为正文内容。"""
+        seg_type = str(seg.get("type") or "")
+        return seg_type not in {"", "reply", "at"}
+
+    def _split_processed_message_by_newline(
+        self,
+        processed_message: list[dict[str, Any]],
+    ) -> list[list[dict[str, Any]]]:
+        """将包含换行的文本拆分成多条 NapCat 消息。
+
+        只作用于 NapCat 出站层，不改动上游 MessageEnvelope。
+        """
+        if not processed_message:
+            return [processed_message]
+
+        split_messages: list[list[dict[str, Any]]] = []
+        current_message: list[dict[str, Any]] = []
+        saw_newline = False
+
+        for seg in processed_message:
+            if not isinstance(seg, dict):
+                continue
+
+            if seg.get("type") != "text":
+                current_message.append(seg)
+                continue
+
+            seg_data = seg.get("data", {})
+            if not isinstance(seg_data, dict):
+                current_message.append(seg)
+                continue
+
+            text = seg_data.get("text")
+            if not isinstance(text, str):
+                current_message.append(seg)
+                continue
+
+            normalized_text = text.replace("\r\n", "\n").replace("\r", "\n")
+            if "\n" not in normalized_text:
+                current_message.append(seg)
+                continue
+
+            saw_newline = True
+            parts = normalized_text.split("\n")
+            for index, part in enumerate(parts):
+                if part:
+                    current_message.append({"type": "text", "data": {"text": part}})
+
+                if index >= len(parts) - 1:
+                    continue
+
+                if current_message and any(
+                    self._segment_has_body(item) for item in current_message
+                ):
+                    split_messages.append(current_message)
+                    current_message = []
+
+        if current_message:
+            split_messages.append(current_message)
+
+        if not saw_newline or not split_messages:
+            return [processed_message]
+
+        return split_messages
 
     def handle_at_message(self, at_data: str) -> list[dict]:
         """处理显式 @ 消息段。"""

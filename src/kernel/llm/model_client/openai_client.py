@@ -124,7 +124,8 @@ def _image_to_data_url(value: str) -> str:
     """
     if value.startswith("base64|"):
         b64 = value.split("|", 1)[1]
-        return f"data:image/png;base64,{b64}"
+        mime = _detect_image_mime_from_base64(b64) or "image/png"
+        return f"data:{mime};base64,{b64}"
 
     if _is_data_url(value):
         return value
@@ -132,7 +133,8 @@ def _image_to_data_url(value: str) -> str:
     # 尝试作为纯 base64 字符串处理（Image.value 规范化后为纯 base64）
     try:
         base64.b64decode(value, validate=True)
-        return f"data:image/png;base64,{value}"
+        mime = _detect_image_mime_from_base64(value) or "image/png"
+        return f"data:{mime};base64,{value}"
     except Exception:
         pass
 
@@ -141,11 +143,35 @@ def _image_to_data_url(value: str) -> str:
         if path.exists() and path.is_file():
             data = path.read_bytes()
             b64 = base64.b64encode(data).decode("ascii")
-            return f"data:image/png;base64,{b64}"
+            mime = _detect_image_mime_from_bytes(data) or "image/png"
+            return f"data:{mime};base64,{b64}"
     except OSError:
         pass
 
     raise FileNotFoundError(f"Image file not found: {value}")
+
+
+def _detect_image_mime_from_base64(value: str) -> str | None:
+    try:
+        cleaned = value.replace("\n", "").replace("\r", "").replace(" ", "")
+        raw = base64.b64decode(cleaned, validate=True)
+    except Exception:
+        return None
+    return _detect_image_mime_from_bytes(raw)
+
+
+def _detect_image_mime_from_bytes(raw: bytes) -> str | None:
+    if raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if raw.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if raw.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if raw.startswith(b"BM"):
+        return "image/bmp"
+    if len(raw) >= 12 and raw.startswith(b"RIFF") and raw[8:12] == b"WEBP":
+        return "image/webp"
+    return None
 
 
 _AUDIO_MIME_TO_FORMAT: dict[str, str] = {

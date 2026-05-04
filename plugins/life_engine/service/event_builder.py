@@ -82,6 +82,11 @@ class LifeEngineState:
     tell_dfc_count: int = 0  # 本次运行期间传话总次数
     # 空闲心跳追踪：连续没有工具调用的心跳数
     idle_heartbeat_count: int = 0
+    # 主动休息锁：由 life_engine 自己决定暂停 LLM 心跳一段时间
+    self_pause_until: str | None = None
+    self_pause_started_at: str | None = None
+    self_pause_reason: str | None = None
+    self_pause_duration_minutes: int = 0
     # 每个聊天流已经给 life_chatter 注入过的事件序列高水位
     # NOTE: 老字段，新代码实际上把它当作 chatter_event_cursors 使用。
     # 加载老 state 时直接复用；写出时仍写入此字段以保持兼容。

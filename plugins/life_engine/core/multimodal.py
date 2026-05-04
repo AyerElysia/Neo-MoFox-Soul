@@ -19,7 +19,9 @@
 
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from src.kernel.llm import Audio, Content, Image, Text, Video
@@ -46,6 +48,16 @@ _SUPPORTED_AUDIO_MIMES: frozenset[str] = frozenset(
 
 _VOICE_TYPES: frozenset[str] = frozenset({"voice", "record", "audio"})
 _IMAGE_TYPES: frozenset[str] = frozenset({"image", "emoji"})
+_SUPPORTED_IMAGE_MIMES: frozenset[str] = frozenset(
+    {
+        "image/bmp",
+        "image/gif",
+        "image/jpeg",
+        "image/jpg",
+        "image/png",
+        "image/webp",
+    }
+)
 
 
 @dataclass
@@ -182,11 +194,17 @@ def build_multimodal_content(
 
     for item in media_items:
         if item.media_type == "emoji":
-            content_list.append(Text("[表情包]"))
-            content_list.append(Image(item.raw_data))
+            if _is_supported_image_data(item.raw_data):
+                content_list.append(Text(_media_label(item, "表情包")))
+                content_list.append(Image(item.raw_data))
+            else:
+                content_list.append(Text(_media_label(item, "表情包:格式不支持，已跳过原生视觉输入")))
         elif item.media_type == "image":
-            content_list.append(Text("[图片]"))
-            content_list.append(Image(item.raw_data))
+            if _is_supported_image_data(item.raw_data):
+                content_list.append(Text(_media_label(item, "图片")))
+                content_list.append(Image(item.raw_data))
+            else:
+                content_list.append(Text(_media_label(item, "图片:格式不支持，已跳过原生视觉输入")))
         elif item.media_type == "video":
             mime = item.mime_type or "video/mp4"
             content_list.append(Text("[视频]"))
@@ -246,9 +264,16 @@ def get_media_list(msg: "Message") -> list[dict[str, Any]]:
     msg_type = getattr(msg, "message_type", None)
     if (
         msg_type is not None
-        and str(msg_type).lower() == "emoji"
+        and _message_type_value(msg_type) == "image"
         and isinstance(content, str)
-        and len(content) > 100
+    ):
+        data = content if content.startswith(("base64|", "data:")) else f"base64|{content}"
+        return [{"type": "image", "data": data}]
+
+    if (
+        msg_type is not None
+        and _message_type_value(msg_type) == "emoji"
+        and isinstance(content, str)
     ):
         data = content if content.startswith("base64|") else f"base64|{content}"
         return [{"type": "emoji", "data": data}]
@@ -348,10 +373,77 @@ def _normalize_multimodal_media_data(value: str) -> str:
     return value
 
 
+def _message_type_value(msg_type: Any) -> str:
+    value = getattr(msg_type, "value", msg_type)
+    return str(value or "").strip().lower()
+
+
+def _media_label(item: MediaItem, label: str) -> str:
+    source = str(item.source_message_id or "").strip()
+    if not source:
+        return f"[{label}]"
+    return f"[{label}:{source}]"
+
+
+def _is_supported_image_data(value: str) -> bool:
+    """判断图片输入是否是模型明确支持的 bmp/gif/png/jpeg/webp。"""
+    data = str(value or "").strip()
+    if not data:
+        return False
+
+    raw_bytes: bytes | None = None
+    if data.startswith("data:"):
+        if ";base64," not in data:
+            return False
+        mime = data[5:].split(";", 1)[0].lower()
+        if mime not in _SUPPORTED_IMAGE_MIMES:
+            return False
+        payload = data.split("base64,", 1)[1].strip()
+        raw_bytes = _decode_base64(payload)
+    elif data.startswith("base64|"):
+        raw_bytes = _decode_base64(data.split("|", 1)[1].strip())
+    else:
+        raw_bytes = _decode_base64(data)
+        if raw_bytes is None:
+            try:
+                path = Path(data)
+                if path.exists() and path.is_file():
+                    raw_bytes = path.read_bytes()
+            except OSError:
+                raw_bytes = None
+
+    if not raw_bytes:
+        return False
+    return _detect_supported_image_mime(raw_bytes) in _SUPPORTED_IMAGE_MIMES
+
+
+def _decode_base64(value: str) -> bytes | None:
+    try:
+        cleaned = value.replace("\n", "").replace("\r", "").replace(" ", "")
+        return base64.b64decode(cleaned, validate=True)
+    except Exception:
+        return None
+
+
+def _detect_supported_image_mime(raw: bytes) -> str | None:
+    if raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if raw.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if raw.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if raw.startswith(b"BM"):
+        return "image/bmp"
+    if len(raw) >= 12 and raw.startswith(b"RIFF") and raw[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
 __all__ = [
     "MediaItem",
     "MediaBudget",
     "extract_media_from_messages",
     "build_multimodal_content",
     "get_media_list",
+    "_is_supported_image_data",
 ]

@@ -72,7 +72,7 @@ $$
 （见 Figure F8 调质衰减曲线）
 
 
-![Figure F8 · 五调质 ODE 衰减曲线（不同 τ 动力学）](../figures/F8_modulator_decay.svg)
+![Figure F8 · 五调质 ODE 衰减曲线（不同 τ 动力学）](/root/Elysia/Neo-MoFox/Report/04_figures/F8_modulator_decay.svg)
 
 *Figure F8 · 五调质 ODE 衰减曲线（不同 τ 动力学）*
 
@@ -244,7 +244,7 @@ $$
 （见 Figure F9 昼夜节律双峰）
 
 
-![Figure F9 · 昼夜节律双峰（energy / sociability / curiosity）](../figures/F9_circadian.svg)
+![Figure F9 · 昼夜节律双峰（energy / sociability / curiosity）](/root/Elysia/Neo-MoFox/Report/04_figures/F9_circadian.svg)
 
 *Figure F9 · 昼夜节律双峰（energy / sociability / curiosity）*
 

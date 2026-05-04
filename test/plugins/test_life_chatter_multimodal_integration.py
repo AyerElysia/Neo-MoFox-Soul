@@ -16,6 +16,7 @@ from typing import Any
 
 from plugins.life_engine.core.chatter import LifeChatter, _Phase, _WorkflowRuntime
 from plugins.life_engine.core.config import LifeEngineConfig
+from src.core.models.message import MessageType
 from src.kernel.llm import Audio, Image, LLMPayload, ROLE, Text, Video
 from src.kernel.llm.model_client.openai_client import _payloads_to_openai_messages
 
@@ -24,6 +25,13 @@ import base64
 
 def _b64(s: str) -> str:
     return base64.b64encode(s.encode()).decode()
+
+
+def _png_b64() -> str:
+    return (
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8"
+        "/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
+    )
 
 
 def _msg(message_id: str, **kwargs: Any) -> SimpleNamespace:
@@ -72,11 +80,25 @@ def test_compose_disabled_returns_text_only() -> None:
     assert len(out) == 1 and isinstance(out[0], Text)
 
 
-def test_compose_injects_image_voice_video() -> None:
+def test_compose_defaults_to_native_image_only() -> None:
     chatter = _make_chatter()
     rt = _new_runtime()
     msgs = [
-        _msg("m1", media=[{"type": "image", "data": _b64("img")}]),
+        _msg("m1", media=[{"type": "image", "data": _png_b64()}]),
+        _msg("m2", media=[{"type": "voice", "data": _b64("vo"), "format": "wav"}]),
+        _msg("m3", media=[{"type": "video", "data": _b64("vid"), "mime_type": "video/mp4"}]),
+    ]
+    out = chatter._compose_unread_user_content(rt, msgs, "hi")
+    assert any(isinstance(p, Image) for p in out)
+    assert all(not isinstance(p, Audio) for p in out)
+    assert all(not isinstance(p, Video) for p in out)
+
+
+def test_compose_can_enable_voice_video_explicitly() -> None:
+    chatter = _make_chatter(native_audio=True, native_video=True)
+    rt = _new_runtime()
+    msgs = [
+        _msg("m1", media=[{"type": "image", "data": _png_b64()}]),
         _msg("m2", media=[{"type": "voice", "data": _b64("vo"), "format": "wav"}]),
         _msg("m3", media=[{"type": "video", "data": _b64("vid"), "mime_type": "video/mp4"}]),
     ]
@@ -98,7 +120,7 @@ def test_compose_skips_emoji_by_default() -> None:
 def test_compose_can_enable_emoji_explicitly() -> None:
     chatter = _make_chatter(native_emoji=True)
     rt = _new_runtime()
-    msgs = [_msg("m1", media=[{"type": "emoji", "data": _b64("emo")}])]
+    msgs = [_msg("m1", media=[{"type": "emoji", "data": _png_b64()}])]
     out = chatter._compose_unread_user_content(rt, msgs, "hi")
     assert any(isinstance(p, Image) for p in out)
 
@@ -107,7 +129,7 @@ def test_compose_dedup_across_retries() -> None:
     """失败重试场景：相同 unread 二次 compose 不重复发出媒体。"""
     chatter = _make_chatter()
     rt = _new_runtime()
-    msgs = [_msg("m1", media=[{"type": "image", "data": _b64("img")}])]
+    msgs = [_msg("m1", media=[{"type": "image", "data": _png_b64()}])]
 
     first = chatter._compose_unread_user_content(rt, msgs, "p1")
     second = chatter._compose_unread_user_content(rt, msgs, "p2")
@@ -118,8 +140,43 @@ def test_compose_dedup_across_retries() -> None:
     assert all(isinstance(p, Text) for p in second)
 
 
-def test_compose_silk_audio_downgraded_to_text_placeholder() -> None:
+def test_compose_skips_invalid_image_payload() -> None:
     chatter = _make_chatter()
+    rt = _new_runtime()
+    msgs = [_msg("m1", media=[{"type": "image", "data": _b64("not an image")}])]
+    out = chatter._compose_unread_user_content(rt, msgs, "hi")
+    assert all(not isinstance(p, Image) for p in out)
+    assert any(
+        isinstance(p, Text) and "格式不支持" in p.text
+        for p in out
+    )
+
+
+def test_compose_can_include_recent_history_image() -> None:
+    chatter = _make_chatter(include_history_media=True)
+    rt = _new_runtime()
+    history_image = _msg(
+        "drawn-1",
+        content=_png_b64(),
+        processed_plain_text="[内部：已发送画作]",
+        message_type=MessageType.IMAGE,
+    )
+    stream = SimpleNamespace(context=SimpleNamespace(history_messages=[history_image]))
+    out = chatter._compose_unread_user_content(
+        rt,
+        [_msg("m2", content="刚才那张图你自己看看")],
+        "hi",
+        stream,
+    )
+    assert any(isinstance(p, Image) for p in out)
+    assert any(
+        isinstance(p, Text) and "drawn-1" in p.text
+        for p in out
+    )
+
+
+def test_compose_silk_audio_downgraded_to_text_placeholder() -> None:
+    chatter = _make_chatter(native_audio=True)
     rt = _new_runtime()
     msgs = [_msg("m1", media=[{"type": "voice", "data": _b64("v"), "mime_type": "audio/silk"}])]
     out = chatter._compose_unread_user_content(rt, msgs, "hi")
@@ -198,7 +255,7 @@ def test_strip_transient_context_removes_only_trailing_wrapper() -> None:
 
 
 def test_user_payload_serializes_audio_with_correct_format() -> None:
-    chatter = _make_chatter()
+    chatter = _make_chatter(native_audio=True)
     rt = _new_runtime()
     msgs = [_msg("m1", media=[{"type": "voice", "data": _b64("au"), "format": "wav"}])]
     content = chatter._compose_unread_user_content(rt, msgs, "请听这条语音")
@@ -211,10 +268,10 @@ def test_user_payload_serializes_audio_with_correct_format() -> None:
 
 
 def test_user_payload_serializes_image_and_video() -> None:
-    chatter = _make_chatter()
+    chatter = _make_chatter(native_video=True)
     rt = _new_runtime()
     msgs = [
-        _msg("m1", media=[{"type": "image", "data": _b64("im")}]),
+        _msg("m1", media=[{"type": "image", "data": _png_b64()}]),
         _msg("m2", media=[{"type": "video", "data": _b64("vi"), "mime_type": "video/webm"}]),
     ]
     payload = LLMPayload(ROLE.USER, chatter._compose_unread_user_content(rt, msgs, "看看"))

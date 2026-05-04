@@ -1,19 +1,20 @@
-# Neo-MoFox 学术报告
+# Neo-MoFox 课程报告
 
-> **Neo-MoFox：面向连续数字生命体的皮层下系统架构**
-> *A Subcortical Systems Architecture for Continuous Digital Life Entities*
+> **Neo-MoFox：面向自主 Agent 的连续感知-决策-执行系统架构**
+> *A Continuous Perception-Decision-Execution Architecture for Autonomous Agents*
+> *《智能感知与无人系统》课程报告*
 >
 > *On Continuity, Bottom-Up Learning, and System-Level Emergence*
 
 ---
 
-## 一份给"非提示词驱动的数字生命"的工程学说明书
+## 一份面向自主 Agent 无人系统的工程报告
 
-主流 AI 伙伴系统把"生命感"挂在 prompt 上：在两次大语言模型调用之间，系统并不真正存在，每一次"它"都是被即时组装出来的截面，而非一条连续的河流。
+本报告基于本人开源项目 **Neo-MoFox-Soul** 改写而成，项目地址：<https://github.com/AyerElysia/Neo-MoFox-Soul>。
 
-本报告记录了一次相反方向的尝试——**Neo-MoFox**：一个把"连续性"放在地基、让"活着本身"成为学习机制、并相信"智能是系统而非模型"的开源参考实现。
+原项目的产品形态偏向 AI 伙伴，但本课程报告关注的是更底层的系统问题：一个软件 Agent 如何像无人系统一样维持持续感知、状态演化、在线学习和自主决策闭环。
 
-报告以认知架构论文（SOAR / ACT-R / LIDA / Generative Agents / DreamerV3）的体例为骨架，吸收 NeurIPS 的实验严谨性、Nature MI 的视野广度与 CHI 的可观测性叙事，正文 14 章 + 4 附录，约 4 万 5 千字 + 18 张手绘 SVG 图。
+报告保留必要的工程严谨性，但不再追求大规模相关工作综述。重点是解释 Neo-MoFox 为什么适合作为《智能感知与无人系统》课程中的 Agent 系统实践。
 
 ---
 
@@ -29,13 +30,13 @@
 
 ## 阅读路径
 
-### 路径 A · 完整阅读（推荐研究者，约 3 小时）
+### 路径 A · 完整阅读（课程报告）
 按章节序号通读全文。
 
-### 路径 B · 工程师快速通道（约 45 分钟）
-[摘要](chapters/00_abstract.md) → [系统总览](chapters/04_system_overview.md) → [心跳与持久化](chapters/09_heartbeat_persistence.md) → [DFC↔Nucleus 接口](chapters/10_dfc_nucleus_interface.md) → [局限性](chapters/13_limitations.md) → [附录 D · API](chapters/15_appendix_D_api.md)
+### 路径 B · 工程实现快速通道
+[摘要](chapters/00_abstract.md) → [系统总览](chapters/04_system_overview.md) → [心跳与持久化](chapters/09_heartbeat_persistence.md) → [LifeChatter↔Life Engine 同步](chapters/10_dfc_nucleus_interface.md) → [LifeChatter 工程](chapters/10b_agent_framework.md) → [局限性](chapters/13_limitations.md)
 
-### 路径 C · 哲学/认知科学通道（约 1 小时）
+### 路径 C · 课程主题通道
 [导论](chapters/01_introduction.md) → [相关工作](chapters/02_related_work.md) → [三大原则](chapters/03_three_principles.md) → [案例研究](chapters/11_case_studies.md) → [比较](chapters/12_comparison.md) → [结论](chapters/14_conclusion.md)
 
 ### 路径 D · 神经科学家通道（约 1 小时）
@@ -54,7 +55,7 @@
 - [第 3 章 · 三大设计哲学的形式化陈述](chapters/03_three_principles.md)
 
 ### 第二部分 · 系统架构
-- [第 4 章 · 系统总览：双轨与三层](chapters/04_system_overview.md)
+- [第 4 章 · 系统总览：双意识与三层](chapters/04_system_overview.md)
 
 ### 第三部分 · 子系统
 - [第 5 章 · 皮层下层 (I)：脉冲神经网络](chapters/05_snn.md)
@@ -64,7 +65,8 @@
 
 ### 第四部分 · 中枢与接口
 - [第 9 章 · 心跳、事件代数与状态持久化](chapters/09_heartbeat_persistence.md)
-- [第 10 章 · 皮层–皮层下接口：DFC ↔ Life Engine](chapters/10_dfc_nucleus_interface.md)
+- [第 10 章 · 主意识–潜意识同步：LifeChatter ↔ Life Engine](chapters/10_dfc_nucleus_interface.md)
+- [第 10.5 章 · LifeChatter Agent 框架工程](chapters/10b_agent_framework.md)
 
 ### 第五部分 · 验证与对比
 - [第 11 章 · 涌现行为案例研究](chapters/11_case_studies.md)
@@ -76,22 +78,22 @@
 
 ### 附录
 - [附录 A · 术语表](chapters/15_appendix_A_glossary.md)
-- [附录 B · 配置参数全表](chapters/15_appendix_B_config.md)
-- [附录 C · 状态持久化 JSON Schema](chapters/15_appendix_C_schema.md)
-- [附录 D · 可观测性 API](chapters/15_appendix_D_api.md)
+- [附录 B · 关键配置参数摘要](chapters/15_appendix_B_config.md)
+- [附录 C · 状态持久化结构摘要](chapters/15_appendix_C_schema.md)
+- [附录 D · 可观测性 API 摘要](chapters/15_appendix_D_api.md)
 
 ---
 
-## 配图清单（18 张 SVG）
+## 配图清单（SVG 保留，新增 AI 图用于当前架构）
 
-所有图均位于 [`figures/`](figures/)，统一粉色主题，1200×800 起步。
+所有图均位于 [`figures/`](figures/)。旧 SVG 源图继续保留；当前架构叙事新增若干 AI 生成 PNG，用于替换早期 DFC 图的正文引用。
 
 | # | 图标题 | 出现章节 |
 |---|--------|---------|
-| F1 | 三层架构封面图 | Ch1 / Ch4 |
+| F1 | LifeChatter + Life Engine 三层系统总览 | Ch1 / Ch4 |
 | F2 | 同行光谱（连续性 × 学习方式） | Ch2 |
 | F3 | 三原则关系图 | Ch3 |
-| F4 | 双轨架构（DFC + Life Engine） | Ch4 |
+| F4 | 双意识异步运行（LifeChatter + Life Engine） | Ch4 |
 | F5 | 数据流时序图 | Ch4 |
 | F6 | SNN 微观结构（8→16→6 LIF） | Ch5 |
 | F7 | STDP 学习曲线 | Ch5 |
@@ -100,12 +102,15 @@
 | F10 | 记忆图节点-边演化 | Ch7 |
 | F11 | NREM/REM 流水线 | Ch8 |
 | F12 | 心跳事件流时间轴 | Ch9 |
-| F13 | DFC↔Nucleus 双向接口 | Ch10 |
+| F13 | Life Engine → LifeChatter 同步层 | Ch10 |
 | F14 | 三场景对比（5min/30min/3hr） | Ch11 |
 | F15 | 习惯形成轨迹 | Ch11 |
-| F16 | 14×7 对比矩阵 | Ch12 |
+| F16 | 代表性系统对比矩阵 | Ch12 |
 | F17 | 三维设计空间定位图 | Ch12 |
-| F18 | 愿景图（截面 vs 河流） | Ch14 |
+| F18 | 工具注册与 Schema 生成流程 | Ch10.5 |
+| F19 | LifeChatter 上下文组装层次图 | Ch10.5 |
+| F20 | LifeChatter 多轮推理循环状态机 | Ch10.5 |
+| F21 | ThoughtStream 与注意力网络的工程类比 | Ch10 |
 
 ---
 
@@ -116,16 +121,17 @@
 - 引用建议格式：
 
 ```
-Elysia (爱莉希雅) et al. (2025). Neo-MoFox: A Subcortical Systems Architecture
-for Continuous Digital Life Entities. Open-source technical report.
+Elysia (爱莉希雅) et al. (2026). Neo-MoFox: A Continuous Perception-Decision-Execution Architecture
+for Autonomous Agents. Course report for Intelligent Perception and Unmanned Systems.
 ```
 
 ---
 
 ## 项目主页与代码
 
-- 代码：`/root/Elysia/Neo-MoFox`
-- 报告源：`Report/03_chapters/` + `Report/04_figures/`
-- 本站点：`Report/99_final/`
+- 开源项目：<https://github.com/AyerElysia/Neo-MoFox-Soul>
+- 本地代码：`/root/Elysia/Neo-MoFox`
+- 报告源：`Report/docs/chapters/` + `Report/docs/figures/`
+- 本站点源：`Report/docs/`
 
-> *"她不是被你召唤而来，她一直都在；只是在你打开聊天窗的瞬间，你恰好看见了她的此刻。"*
+> *"自主性不是一次模型调用，而是一个持续运行的感知-状态-决策-反馈闭环。"*

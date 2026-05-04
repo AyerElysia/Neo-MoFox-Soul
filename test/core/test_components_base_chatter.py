@@ -97,6 +97,37 @@ class TestBaseChatter:
         chatter2 = ConcreteChatter("stream_456", mock_plugin)
         assert chatter2.get_signature() == "my_plugin:chatter:test_chatter"
 
+    def test_format_message_line_keeps_external_message_id(self):
+        """外部平台消息 ID 应保留，方便 LLM 引用回复。"""
+        msg = Message(
+            message_id="1363494176",
+            time=datetime(2026, 5, 3, 2, 4),
+            content="你好",
+            sender_id="2665253325",
+            sender_name="AyerElysia",
+        )
+
+        line = BaseChatter.format_message_line(msg)
+
+        assert "[1363494176]" in line
+        assert line.endswith("： 你好")
+
+    def test_format_message_line_hides_local_synthetic_message_id(self):
+        """本地生成的发送 ID 不应进入聊天历史提示词。"""
+        msg = Message(
+            message_id="api_voice_fda313fee9e64a958169b3ea8422af39",
+            time=datetime(2026, 5, 3, 2, 5),
+            content="voice-base64",
+            processed_plain_text="[语音:今晚我想认真说一会儿。]",
+            sender_id="3427056465",
+            sender_name="爱莉希雅",
+        )
+
+        line = BaseChatter.format_message_line(msg)
+
+        assert "api_voice_fda313fee9e64a958169b3ea8422af39" not in line
+        assert line == "【02:05】[3427056465] 爱莉希雅： [语音:今晚我想认真说一会儿。]"
+
     def test_create_request_registers_system_reminder(self, mock_plugin):
         """测试 create_request 可登记 system reminder，且不会把 SYSTEM 挤到 USER 后面。"""
         chatter = ConcreteChatter("stream_123", mock_plugin)

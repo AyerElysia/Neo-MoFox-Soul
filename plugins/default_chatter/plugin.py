@@ -211,6 +211,8 @@ tool_call: [send_text, send_emoji]
 <extra_info>
 {extra_info}
 </extra_info>
+
+{skill_catalog}
 """
 
 user_prompt = """你当前正在名为"{stream_name}"的对话中。
@@ -1431,6 +1433,7 @@ class DefaultChatterPlugin(BasePlugin):
                 "safety_guidelines": optional("\n".join(personality.safety_guidelines)),
                 "negative_behaviors": optional("\n".join(personality.negative_behaviors)),
                 "extra_info": optional(""),
+                "skill_catalog": optional(""),
             },
         )
 

@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import traceback
 from dataclasses import asdict
-from datetime import datetime, time as dtime, timezone
+from datetime import datetime, time as dtime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -83,6 +83,9 @@ if TYPE_CHECKING:
 
 
 logger = get_logger("life_engine", display="life_engine")
+
+_SELF_PAUSE_MINUTES_MIN = 5
+_SELF_PAUSE_MINUTES_MAX = 480
 
 
 class LifeEngineService(BaseService):
@@ -302,6 +305,117 @@ class LifeEngineService(BaseService):
         """返回外界静默暂停状态，供其它插件复用。"""
         return self._should_pause_llm_heartbeat_for_external_silence()
 
+    def _parse_self_pause_until(self) -> datetime | None:
+        """解析主动休息锁的结束时间。"""
+        raw = self._state.self_pause_until
+        if not raw:
+            return None
+        try:
+            paused_until = datetime.fromisoformat(raw)
+        except Exception:
+            return None
+        if paused_until.tzinfo is None:
+            paused_until = paused_until.replace(tzinfo=timezone.utc).astimezone()
+        return paused_until
+
+    def _self_pause_status(self) -> tuple[bool, int | None, str | None, str | None]:
+        """返回主动休息锁状态。"""
+        paused_until = self._parse_self_pause_until()
+        if paused_until is None:
+            return False, None, None, self._state.self_pause_reason
+
+        now = datetime.now(paused_until.tzinfo or timezone.utc)
+        remaining_seconds = (paused_until - now).total_seconds()
+        if remaining_seconds <= 0:
+            return False, 0, paused_until.isoformat(), self._state.self_pause_reason
+
+        remaining_minutes = max(1, int((remaining_seconds + 59) // 60))
+        return (
+            True,
+            remaining_minutes,
+            paused_until.isoformat(),
+            self._state.self_pause_reason,
+        )
+
+    def get_self_pause_status(self) -> dict[str, Any]:
+        """返回主动休息锁状态，供工具、监控面板或调试命令复用。"""
+        paused, remaining_minutes, paused_until, reason = self._self_pause_status()
+        return {
+            "paused": paused,
+            "remaining_minutes": remaining_minutes,
+            "paused_until": paused_until,
+            "reason": reason,
+            "started_at": self._state.self_pause_started_at,
+            "duration_minutes": self._state.self_pause_duration_minutes,
+            "will_wake_on_external_message": True,
+        }
+
+    def _clear_self_pause_state(self) -> bool:
+        """清除主动休息锁。调用方负责持锁和保存。"""
+        changed = any(
+            (
+                self._state.self_pause_until,
+                self._state.self_pause_started_at,
+                self._state.self_pause_reason,
+                self._state.self_pause_duration_minutes,
+            )
+        )
+        if changed:
+            self._state.self_pause_until = None
+            self._state.self_pause_started_at = None
+            self._state.self_pause_reason = None
+            self._state.self_pause_duration_minutes = 0
+        return changed
+
+    async def clear_self_pause(self, *, source: str = "manual") -> bool:
+        """清除主动休息锁。"""
+        async with self._get_lock():
+            changed = self._clear_self_pause_state()
+        if changed:
+            await self._save_runtime_context()
+            logger.info(f"life_engine 主动休息锁已解除: source={source}")
+        return changed
+
+    async def request_self_pause(
+        self,
+        *,
+        duration_minutes: int,
+        reason: str = "",
+    ) -> dict[str, Any]:
+        """设置主动休息锁，让 LLM 心跳暂停一段时间。"""
+        requested_minutes = int(duration_minutes or 0)
+        clamped_minutes = max(
+            _SELF_PAUSE_MINUTES_MIN,
+            min(_SELF_PAUSE_MINUTES_MAX, requested_minutes),
+        )
+        started_at = datetime.now(timezone.utc).astimezone()
+        paused_until = started_at + timedelta(minutes=clamped_minutes)
+        cleaned_reason = " ".join(str(reason or "").split())
+
+        async with self._get_lock():
+            self._state.self_pause_started_at = started_at.isoformat()
+            self._state.self_pause_until = paused_until.isoformat()
+            self._state.self_pause_reason = cleaned_reason
+            self._state.self_pause_duration_minutes = clamped_minutes
+
+        await self._save_runtime_context()
+        logger.info(
+            "life_engine 进入主动休息: "
+            f"duration={clamped_minutes}min requested={requested_minutes}min "
+            f"until={paused_until.isoformat()} reason={cleaned_reason or '-'}"
+        )
+
+        return {
+            "paused": True,
+            "duration_minutes": clamped_minutes,
+            "requested_minutes": requested_minutes,
+            "paused_until": paused_until.isoformat(),
+            "reason": cleaned_reason,
+            "min_minutes": _SELF_PAUSE_MINUTES_MIN,
+            "max_minutes": _SELF_PAUSE_MINUTES_MAX,
+            "will_wake_on_external_message": True,
+        }
+
     def record_tell_dfc(self) -> None:
         """记录一次传话给 DFC 的时间。"""
         self._state.last_tell_dfc_at = _now_iso()
@@ -330,6 +444,12 @@ class LifeEngineService(BaseService):
         data["llm_heartbeat_paused_by_external_silence"] = paused
         data["external_silence_minutes"] = silence_minutes
         data["external_silence_pause_threshold_minutes"] = pause_threshold
+        self_paused, self_pause_remaining, self_pause_until, self_pause_reason = self._self_pause_status()
+        data["llm_heartbeat_paused_by_self"] = self_paused
+        data["self_pause_remaining_minutes"] = self_pause_remaining
+        data["self_pause_until"] = self_pause_until
+        data["self_pause_reason"] = self_pause_reason
+        data["self_pause_duration_minutes"] = self._state.self_pause_duration_minutes
         data["model_task_name"] = self._cfg().model.task_name
         data["pending_event_count"] = len(self._pending_events)
         data["history_event_count"] = len(self._event_history)
@@ -680,12 +800,19 @@ class LifeEngineService(BaseService):
             direction = "received"
 
         event = self._event_builder.build_message_event(message, direction=direction)
+        unlocked_self_pause = False
         async with self._get_lock():
             self._pending_events.append(event)
             self._state.pending_event_count = len(self._pending_events)
             if direction == "received":
                 self._state.last_external_message_at = event.timestamp
+                unlocked_self_pause = self._clear_self_pause_state()
         await self._save_runtime_context()
+        if unlocked_self_pause:
+            logger.info(
+                "life_engine 收到外界消息，主动休息锁已解除: "
+                f"stream_id={event.stream_id or ''} sender={event.sender or 'unknown'}"
+            )
 
         log_message_received(
             received_at=event.timestamp,
@@ -1783,7 +1910,9 @@ class LifeEngineService(BaseService):
             "4. **直接开口** — 如果你自己就想说一句，直接在聊天里发出去（`nucleus_initiate_topic`）",
             "5. **记录** — 写下感悟（`nucleus_write_file`）、管理待办（`nucleus_manage_todo`）",
             "6. **新建思考流** — 开始琢磨一个新话题（`nucleus_manage_thought_stream` action=create）",
-            "7. **什么都不做** — 休息也是可以的", "",
+            "7. **主动休息** — 如果你觉得需要安静下来，可以用 `nucleus_rest_heartbeat` 暂停心跳一段时间；外界有新消息会自动醒来",
+            "8. **看见屏幕** — 如果你需要了解 Ayer 电脑上正在发生什么，可以用 `nucleus_view_screen` 截屏并观察",
+            "9. **什么都不做** — 休息也是可以的", "",
             "### `nucleus_tell_dfc` — 给表达层补充信息差", "",
             "这个工具用于补充背景，不用于指导表达层怎么说、怎么做。", "",
             "你应该用它：",
@@ -1799,7 +1928,12 @@ class LifeEngineService(BaseService):
             "- `nucleus_search_memory` 是历史检索，不要反复重搜同一主题",
             "- 本地文件路径优先用 `nucleus_read_file` / `nucleus_grep_file`",
             "- `nucleus_browser_fetch` 只适合公开 http/https 页面",
+            "- `nucleus_view_screen` 会观察当前电脑屏幕；只在确实需要屏幕上下文时使用，不要无意义频繁调用",
             "- `nucleus_manage_thought_stream` 是内心独白的核心——围绕你在意的事情深入思考", "",
+            "### `nucleus_rest_heartbeat` — 主动休息一段时间", "",
+            "当你感觉自己只是在惯性地心跳、需要安静、整理、沉淀，或者暂时没有真正想推进的事，可以调用它。",
+            "调用后，普通 LLM 心跳会暂停到你指定的时间；这不是消失，只是休息。",
+            "如果外界有新消息，系统会立刻解除休息锁，你不会错过对方。", "",
             "### 子智能体（nucleus_run_agent）", "",
             "你可以分派子智能体处理复杂任务。选择合适的类型：", "",
             "- **explore** — 只读搜索：在记忆/文件/网页中快速定位信息（5轮）",
@@ -2425,6 +2559,20 @@ class LifeEngineService(BaseService):
                         f"window={sleep_window_desc}"
                     )
                     self._sleep_state_active = False
+
+                paused_by_self, remaining_minutes, paused_until, pause_reason = (
+                    self._self_pause_status()
+                )
+                if paused_by_self:
+                    if should_log_heartbeat:
+                        logger.info(
+                            "life_engine heartbeat LLM 已因主动休息暂停: "
+                            f"remaining={remaining_minutes}min until={paused_until} "
+                            f"reason={pause_reason or '-'}"
+                        )
+                    continue
+                if self._state.self_pause_until:
+                    await self.clear_self_pause(source="expired")
 
                 self._state.heartbeat_count += 1
                 self._state.last_heartbeat_at = _now_iso()

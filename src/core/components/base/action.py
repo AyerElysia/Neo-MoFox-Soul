@@ -11,13 +11,13 @@ from uuid import uuid4
 
 from src.core.components.types import ChatType
 from src.core.components.utils import parse_function_signature
-from src.kernel.llm import LLMUsable, LLMUsableExecution
+from src.kernel.llm.payload.tooling import LLMUsable, LLMUsableExecution
 from src.core.models.message import Message, MessageType
 
 if TYPE_CHECKING:
     from src.core.components.base.plugin import BasePlugin
     from src.core.models.stream import ChatStream
-    from src.kernel.llm import LLMUsable
+    from src.kernel.llm.payload.tooling import LLMUsable
 
 
 class BaseAction(ABC, LLMUsable):
