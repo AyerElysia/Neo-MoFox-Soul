@@ -102,4 +102,8 @@ plugins/*
 !plugins/life_engine/
 !plugins/perm_plugin/
 !plugins/proactive_message_plugin/
+!plugins/skill_manager/
 !plugins/webui_backend/
+
+# Runtime/local skills are discovered by plugins/skill_manager.
+skill/*

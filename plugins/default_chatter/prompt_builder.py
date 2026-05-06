@@ -179,7 +179,6 @@ class DefaultChatterPromptBuilder:
             .set("reply_style", reply_style)
             .set("identity", identity)
             .set("background_story", background_story)
-            .set("skill_catalog", "")
             .build()
         )
 
