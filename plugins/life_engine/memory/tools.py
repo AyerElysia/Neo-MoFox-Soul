@@ -16,9 +16,52 @@ from src.app.plugin_system.api import log_api
 
 from .service import LifeMemoryService
 from .edges import EdgeType
-from .search import SearchResult
+from .lineage import MemoryBundle
 
 logger = log_api.get_logger("life_engine.memory_tools")
+
+
+def _bundle_to_payload(bundle: MemoryBundle) -> dict[str, Any]:
+    """将可追溯记忆包压成工具返回结构。"""
+    return {
+        "primary_path": bundle.primary_path,
+        "current_understanding": bundle.current_understanding,
+        "evidence_files": [
+            {
+                "file_path": item.file_path,
+                "title": item.title,
+                "snippet": item.snippet,
+                "relevance": round(item.relevance, 3),
+                "source": item.source,
+                "relation": item.relation,
+                "relation_reason": item.relation_reason,
+                "exists": item.exists,
+            }
+            for item in bundle.evidence
+        ],
+        "history_trace": [
+            {
+                "direction": item.direction,
+                "relation": item.relation,
+                "file_path": item.file_path,
+                "title": item.title,
+                "snippet": item.snippet,
+                "reason": item.reason,
+                "exists": item.exists,
+            }
+            for item in bundle.history_trace
+        ],
+        "corrections": [
+            {
+                "topic": item.topic,
+                "message": item.message,
+                "source": item.source,
+                "created_at": item.created_at,
+            }
+            for item in bundle.corrections
+        ],
+        "uncertainty": bundle.uncertainty,
+    }
 
 
 # ============================================================
@@ -44,6 +87,7 @@ class LifeEngineSearchMemoryTool(BaseTool):
         "**💡 联想结果怎么看：**\n"
         "- source='direct'：直接命中的记忆\n"
         "- source='associated'：通过关联路径联想到的，association_path 显示联想路线\n"
+        "- memory_bundles：当前理解 + 历史轨迹 + 修正记录；旧记忆不会被删除，会作为演化证据保留\n"
         "\n"
         "**注意：** 搜索会自动增强命中记忆的激活强度，长期不访问的记忆会自然衰减。"
     )
@@ -102,11 +146,18 @@ class LifeEngineSearchMemoryTool(BaseTool):
                     item["association_reason"] = r.association_reason
                     associated_results.append(item)
 
+            bundles = await service.build_memory_bundles(
+                query=query.strip(),
+                results=results,
+                top_k=top_k,
+            )
+
             return True, {
                 "action": "search_memory",
                 "query": query,
                 "direct_results": direct_results,
                 "associated_results": associated_results,
+                "memory_bundles": [_bundle_to_payload(bundle) for bundle in bundles],
                 "total_found": len(results)
             }
 
@@ -142,6 +193,7 @@ class LifeEngineRelateFileTool(BaseTool):
         "- causes：因果，A 直接催生了 B（'那篇反思日记让我下定决心创建这个目标'）\n"
         "- continues：延续，B 是 A 的后续故事（'三月的日记是二月那篇的续集'）\n"
         "- contrasts：对比，A 和 B 有有趣的张力（'一年前我觉得...现在我觉得...'）\n"
+        "- refines/corrects/renames/reinterprets：记忆演化链。用于记录旧理解后来如何被整理、修正、迁移或重新解释\n"
         "\n"
         "**reason 怎么写：**\n"
         "❌ 错误：reason='可能有关系' 或 '都是日记'\n"
@@ -171,7 +223,7 @@ class LifeEngineRelateFileTool(BaseTool):
         self,
         source_path: Annotated[str, "源文件路径"],
         target_path: Annotated[str, "目标文件路径"],
-        relation_type: Annotated[str, "关联类型: relates/causes/continues/contrasts"],
+        relation_type: Annotated[str, "关联类型: relates/causes/continues/contrasts/refines/corrects/renames/reinterprets"],
         reason: Annotated[str, "关联原因（必填，请具体描述）"],
         strength: Annotated[float, "关联强度 0.1-1.0"] = 0.5,
     ) -> tuple[bool, dict[str, Any]]:
@@ -189,7 +241,16 @@ class LifeEngineRelateFileTool(BaseTool):
             return False, {"error": f"reason 不够具体，避免使用模糊词汇：{vague_patterns}"}
 
         # 验证关联类型
-        valid_types = ["relates", "causes", "continues", "contrasts"]
+        valid_types = [
+            "relates",
+            "causes",
+            "continues",
+            "contrasts",
+            "refines",
+            "corrects",
+            "renames",
+            "reinterprets",
+        ]
         if relation_type not in valid_types:
             return False, {"error": f"relation_type 必须是 {valid_types} 之一"}
 
@@ -211,7 +272,7 @@ class LifeEngineRelateFileTool(BaseTool):
                 edge_type=edge_type,
                 reason=reason.strip(),
                 strength=strength,
-                bidirectional=(relation_type == "relates")
+                bidirectional=(relation_type in {"relates", "contrasts"})
             )
 
             logger.info(f"建立关联: {source_path} --[{relation_type}]--> {target_path}")

@@ -18,13 +18,13 @@
 
 ---
 
-## 三条贯穿全文的设计原则
+## 三条贯穿全文的工程约束
 
-1. **连续性 (Continuity, C1–C4)**——两次外部输入之间状态仍在演化；崩溃-重启对外部观察者几乎处处连续；"重启不是重生"。
-2. **自下而上的学习 (Bottom-Up Learning, $\mathcal{L}$-locality)**——可塑性只用局部时序信息（软 STDP / Hebbian / streak），不依赖反向传播；"活着本身就是学习"。
-3. **系统涌现智能 (System-Level Emergence)**——异质子系统协作产生超过部分之和的行为：$I(\mathcal{S}) > \sum_i I(s_i)$；"智能是系统不是模型"。
+1. **连续性**——外部输入之间状态仍在演化，重启后状态可以恢复。
+2. **自下而上的学习**——软 STDP、Hebbian 边强化、习惯 streak 等机制随交互本地更新。
+3. **系统涌现智能**——LLM、LifeChatter、Life Engine、记忆、做梦、SNN、调质和 ThoughtStream 协作形成闭环。
 
-> 详见 [第 3 章 · 三大设计哲学的形式化陈述](chapters/03_three_principles.md)
+> 详见 [第 3 章 · 三条工程约束](chapters/03_three_principles.md)
 
 ---
 
@@ -34,10 +34,10 @@
 按章节序号通读全文。
 
 ### 路径 B · 工程实现快速通道
-[摘要](chapters/00_abstract.md) → [系统总览](chapters/04_system_overview.md) → [心跳与持久化](chapters/09_heartbeat_persistence.md) → [LifeChatter↔Life Engine 同步](chapters/10_dfc_nucleus_interface.md) → [LifeChatter 工程](chapters/10b_agent_framework.md) → [局限性](chapters/13_limitations.md)
+[摘要](chapters/00_abstract.md) → [导论](chapters/01_introduction.md) → [工程系统总览](chapters/04_system_overview.md) → [心跳与持久化](chapters/09_heartbeat_persistence.md) → [LifeChatter↔Life Engine 同步](chapters/10_dfc_nucleus_interface.md) → [LifeChatter 工程](chapters/10b_agent_framework.md)
 
 ### 路径 C · 课程主题通道
-[导论](chapters/01_introduction.md) → [相关工作](chapters/02_related_work.md) → [三大原则](chapters/03_three_principles.md) → [案例研究](chapters/11_case_studies.md) → [比较](chapters/12_comparison.md) → [结论](chapters/14_conclusion.md)
+[导论](chapters/01_introduction.md) → [相关工作](chapters/02_related_work.md) → [三条工程约束](chapters/03_three_principles.md) → [案例研究](chapters/11_case_studies.md) → [比较](chapters/12_comparison.md) → [结论](chapters/14_conclusion.md)
 
 ### 路径 D · 神经科学家通道（约 1 小时）
 [SNN](chapters/05_snn.md) → [调质与昼夜节律](chapters/06_neuromodulation.md) → [记忆](chapters/07_memory.md) → [睡眠与做梦](chapters/08_sleep_and_dreams.md)
@@ -50,12 +50,12 @@
 - [Abstract · 摘要（中英双语）](chapters/00_abstract.md)
 
 ### 第一部分 · 立场与背景
-- [第 1 章 · 导论：当对话被切片](chapters/01_introduction.md)
+- [第 1 章 · 导论：从课程题目到工程系统](chapters/01_introduction.md)
 - [第 2 章 · 背景与相关工作](chapters/02_related_work.md)
-- [第 3 章 · 三大设计哲学的形式化陈述](chapters/03_three_principles.md)
+- [第 3 章 · 三条工程约束](chapters/03_three_principles.md)
 
 ### 第二部分 · 系统架构
-- [第 4 章 · 系统总览：双意识与三层](chapters/04_system_overview.md)
+- [第 4 章 · 工程系统总览：app/core/kernel 与 life_engine 插件](chapters/04_system_overview.md)
 
 ### 第三部分 · 子系统
 - [第 5 章 · 皮层下层 (I)：脉冲神经网络](chapters/05_snn.md)
@@ -90,11 +90,12 @@
 
 | # | 图标题 | 出现章节 |
 |---|--------|---------|
-| F1 | LifeChatter + Life Engine 三层系统总览 | Ch1 / Ch4 |
+| F0 | Neo-MoFox 工程总览架构 | Ch1 |
+| F1 | LifeChatter + Life Engine 三层系统总览 | Ch4 |
 | F2 | 同行光谱（连续性 × 学习方式） | Ch2 |
 | F3 | 三原则关系图 | Ch3 |
 | F4 | 双意识异步运行（LifeChatter + Life Engine） | Ch4 |
-| F5 | 数据流时序图 | Ch4 |
+| F5 | 数据流时序图（消息 → 状态 → 回复） | Ch4 |
 | F6 | SNN 微观结构（8→16→6 LIF） | Ch5 |
 | F7 | STDP 学习曲线 | Ch5 |
 | F8 | 调质 ODE 衰减曲线 | Ch6 |

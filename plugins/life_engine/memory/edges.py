@@ -32,12 +32,27 @@ class EdgeType(Enum):
     CAUSES = "causes"  # 因果（A导致B）
     CONTINUES = "continues"  # 延续（A是B的后续）
     CONTRASTS = "contrasts"  # 对比（A和B观点不同）
+    REFINES = "refines"  # 精炼（B 是 A 的后来整理）
+    CORRECTS = "corrects"  # 修正（B 修正 A 的过时理解）
+    RENAMES = "renames"  # 路径/命名迁移（A 后来变成 B）
+    REINTERPRETS = "reinterprets"  # 重新解释（B 给 A 新语境）
 
     # 文件 → 概念（自动/半自动）
     MENTIONS = "mentions"  # 文件提及某概念
 
     # 任意节点间（动态增强）
     ASSOCIATES = "associates"  # 联想边（检索时共同激活产生）
+
+
+DIRECTIONAL_EDGE_TYPES = {
+    EdgeType.CAUSES,
+    EdgeType.CONTINUES,
+    EdgeType.MENTIONS,
+    EdgeType.REFINES,
+    EdgeType.CORRECTS,
+    EdgeType.RENAMES,
+    EdgeType.REINTERPRETS,
+}
 
 
 @dataclass
@@ -185,7 +200,7 @@ async def create_or_update_edge(
         )
 
         # 如果是双向边，也创建反向边
-        if bidirectional and edge_type not in (EdgeType.CAUSES, EdgeType.CONTINUES, EdgeType.MENTIONS):
+        if bidirectional and edge_type not in DIRECTIONAL_EDGE_TYPES:
             reverse_edge_id = str(uuid.uuid4())[:8]
             cursor.execute(
                 """

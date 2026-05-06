@@ -54,7 +54,7 @@ tau = self.tau if self.tau is not None else TAU_TABLE[self.name]
 
 ### 13.1.6 EventBus 无持久化
 
-事件总线（`src/core/event_bus.py`）目前是**纯内存** ring buffer，进程崩溃时未消费的事件会丢失。对于 SNN 而言这无大碍（SNN 状态本身已持久化），但对于"用户消息恰巧在崩溃瞬间到达"这一窄窗口，事件会丢。短期解决方案是把 EventBus 包一层轻量 SQLite WAL；长期方案是把整个事件代数纳入持久化协议（第 9 章 §9.7）。
+事件总线的底层实现位于 `src/kernel/event/core.py`，core 层的 `src/core/managers/event_manager.py` 负责把插件事件处理器注册到 EventBus。当前事件发布与订阅链路是**纯内存**机制，进程崩溃时尚未处理完成的事件不会自动恢复。对于 SNN 而言这无大碍（SNN 状态本身已持久化），但对于"用户消息恰巧在崩溃瞬间到达"这一窄窗口，事件会丢。短期解决方案是把关键事件写入轻量 SQLite WAL；长期方案是把整个事件代数纳入持久化协议（第 9 章 §9.7）。
 
 ## 13.2 科学局限
 

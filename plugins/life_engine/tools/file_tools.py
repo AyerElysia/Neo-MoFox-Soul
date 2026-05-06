@@ -863,6 +863,8 @@ class FetchLifeMemoryTool(BaseTool):
         files_data: list[dict] = []
         successful = 0
         failed = 0
+        life_service = _get_life_engine_service(self.plugin)
+        memory_service = getattr(life_service, "_memory_service", None) if life_service else None
 
         for file_path_str in file_paths:
             file_path_str = str(file_path_str or "").strip()
@@ -870,6 +872,8 @@ class FetchLifeMemoryTool(BaseTool):
                 files_data.append({"path": "", "error": "路径为空"})
                 failed += 1
                 continue
+            requested_path_str = file_path_str
+            path_resolution: dict[str, Any] | None = None
 
             # 验证路径安全性
             ok, resolved = _resolve_path(self.plugin, file_path_str)
@@ -879,6 +883,37 @@ class FetchLifeMemoryTool(BaseTool):
                 continue
 
             target_path = resolved
+            if not target_path.exists():
+                if memory_service is not None and hasattr(memory_service, "resolve_canonical_path"):
+                    try:
+                        resolution = await memory_service.resolve_canonical_path(file_path_str)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug(f"解析记忆旧路径失败 {file_path_str}: {exc}")
+                        resolution = None
+                    if resolution and resolution.get("resolved"):
+                        resolved_path_str = str(resolution.get("resolved_path") or "").strip()
+                        ok, resolved_target = _resolve_path(self.plugin, resolved_path_str)
+                        if ok and resolved_target.exists() and resolved_target.is_file():
+                            target_path = resolved_target
+                            file_path_str = resolved_path_str
+                            path_resolution = resolution
+
+                if not target_path.exists():
+                    error_data = {"path": requested_path_str, "error": "文件不存在"}
+                    if path_resolution:
+                        error_data["path_resolution"] = path_resolution
+                    files_data.append(error_data)
+                    failed += 1
+                    continue
+
+            if requested_path_str != file_path_str and path_resolution is None:
+                path_resolution = {
+                    "requested_path": requested_path_str,
+                    "resolved_path": file_path_str,
+                    "resolved": True,
+                    "note": "请求路径已解析到当前文件",
+                }
+
             if not target_path.exists():
                 files_data.append({"path": file_path_str, "error": "文件不存在"})
                 failed += 1
@@ -919,6 +954,10 @@ class FetchLifeMemoryTool(BaseTool):
                     "content": content,
                     "truncated": truncated,
                 }
+                if requested_path_str != file_path_str:
+                    file_data["requested_path"] = requested_path_str
+                if path_resolution:
+                    file_data["path_resolution"] = path_resolution
 
                 # 添加元数据
                 if include_metadata:

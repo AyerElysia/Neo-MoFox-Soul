@@ -1,6 +1,6 @@
 # Neo-MoFox 学术报告图表汇总
 
-本目录包含 Neo-MoFox 学术报告所需的全部 18 张精美 SVG 图表，严格遵循粉色主题风格规范。
+本目录包含 Neo-MoFox 学术报告所需的 SVG 源图与当前正文使用的 AI 生成 PNG 图。旧 SVG 继续保留，新增 PNG 用于当前 LifeChatter / Life Engine / 工程框架叙事。
 
 ## 风格规范
 
@@ -12,6 +12,9 @@
 ## 图表清单
 
 ### 第 1-2 章：引言与相关工作
+
+0. **F0_engineering_architecture_overview.png**  
+   当前主图：Neo-MoFox 工程总览，展示 `app` / `core` / `kernel` 三层框架与 `life_engine` 插件域。
 
 1. **F1_lifechatter_three_layer.png** (1536×1024)  
    当前主图：LifeChatter 主意识 + Life Engine 潜意识 + SNN/调质/记忆/梦/ThoughtStream。旧 `F1_three_layer_architecture.svg` 保留为历史 SVG。
@@ -28,7 +31,7 @@
    当前主图：LifeChatter 与 Life Engine 双意识异步运行。旧 `F4_dual_track.svg` 保留为历史 SVG。
 
 5. **F5_dataflow_timing.svg** (1600×700)  
-   UML 序列图：User → Adapter → DFC → Nucleus → SNN → Neuromod 数据流
+   UML 序列图：User → Adapter → Core → LifeChatter → Life Engine → Kernel 数据流
 
 6. **F6_snn_structure.svg** (1400×800)  
    SNN 微观结构：8 输入 → 16 隐藏 LIF → 6 drives，突触粗细代表权重
@@ -84,7 +87,7 @@
 ## 创建记录
 
 - **原有 SVG 图表**：继续保留，便于回溯与二次编辑。
-- **当前新增 AI 图**：F1_lifechatter_three_layer、F4_dual_consciousness_async、F13_consciousness_sync、F19_lifechatter_context_assembly、F21_thought_stream_attention。
+- **当前新增 AI 图**：F0_engineering_architecture_overview、F1_lifechatter_three_layer、F4_dual_consciousness_async、F13_consciousness_sync、F19_lifechatter_context_assembly、F21_thought_stream_attention。
 - **创建时间**：2025-04-27
 - **创建者**：爱莉希雅 ♪
 

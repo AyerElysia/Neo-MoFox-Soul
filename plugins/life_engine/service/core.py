@@ -737,6 +737,76 @@ class LifeEngineService(BaseService):
             )
             return ""
 
+        try:
+            bundles = await memory_service.build_memory_bundles(
+                query=query_text,
+                results=results,
+                top_k=max(1, int(top_k)),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[search_actor_memory] 构建可追溯记忆包失败，将使用普通摘要: {exc}")
+            bundles = []
+
+        if bundles:
+            workspace = self._workspace_dir()
+            bundle_lines: list[str] = []
+            for bundle in bundles[: max(1, int(top_k))]:
+                file_meta = get_file_metadata(workspace / bundle.primary_path)
+                meta_str = f"{file_meta['ext']} | {file_meta['time_ago']} | {file_meta['size']}"
+
+                evidence_lines: list[str] = []
+                for item in bundle.evidence[:4]:
+                    label = "当前文件" if item.file_path == bundle.primary_path else "历史证据"
+                    if item.relation:
+                        label += f"/{item.relation}"
+                    exists_note = "" if item.exists else "（当前路径不存在，仅作历史轨迹）"
+                    snippet = _shorten_text(" ".join((item.snippet or "").split()), max_length=160)
+                    evidence_lines.append(
+                        f"  - {label}: {item.title or Path(item.file_path).name} "
+                        f"[{item.file_path}]{exists_note}\n"
+                        f"    摘要：{snippet or '无摘要'}"
+                    )
+
+                trace_lines: list[str] = []
+                for trace in bundle.history_trace[:4]:
+                    direction = "后来" if trace.direction == "later" else "早期"
+                    reason = _shorten_text(" ".join((trace.reason or "").split()), max_length=120)
+                    trace_lines.append(
+                        f"  - {direction}/{trace.relation}: [{trace.file_path}]"
+                        + (f" - {reason}" if reason else "")
+                    )
+
+                correction_lines = [
+                    f"  - {item.source}: {_shorten_text(' '.join(item.message.split()), max_length=180)}"
+                    for item in bundle.corrections[:3]
+                ]
+
+                line_parts = [
+                    f"- 主要文件：{bundle.primary_path} ({meta_str})",
+                    f"  当前理解：{_shorten_text(bundle.current_understanding, max_length=260)}",
+                ]
+                if evidence_lines:
+                    line_parts.append("  证据：\n" + "\n".join(evidence_lines))
+                if trace_lines:
+                    line_parts.append("  演化轨迹：\n" + "\n".join(trace_lines))
+                if correction_lines:
+                    line_parts.append("  显式修正：\n" + "\n".join(correction_lines))
+                if bundle.uncertainty:
+                    line_parts.append(
+                        f"  注意：{_shorten_text(bundle.uncertainty, max_length=220)}"
+                    )
+                bundle_lines.append("\n".join(line_parts))
+
+            footer = "\n\n提示：以上是可追溯记忆包；旧记忆作为历史证据保留，当前理解优先参考后续整理和显式修正。如需查看完整内容，可使用 fetch_life_memory 工具读取文件。"
+            final_result = "【可追溯记忆包】\n" + "\n\n".join(bundle_lines) + footer
+
+            logger.info(
+                f"[search_actor_memory] 可追溯记忆检索完成:\n"
+                f"  query: {query_text}\n  top_k: {top_k}\n"
+                f"  bundles: {len(bundles)}"
+            )
+            return final_result
+
         workspace = self._workspace_dir()
         direct_lines: list[str] = []
         associated_lines: list[str] = []

@@ -93,6 +93,10 @@ ThoughtStream 是潜意识管理、主意识可见的中期注意力结构。它
 
 相关脑科学资料可参考 Corbetta & Shulman (2002) 的综述、Petersen & Posner 的注意网络理论，以及 Vossel、Geng 与 Fink 对背侧/腹侧注意系统的综述。本文只采用这些理论的功能启发，不把 ThoughtStream 宣称为神经科学模型。
 
+![Figure F21 · ThoughtStream 与注意力网络的工程类比](/root/Elysia/Neo-MoFox/Report/04_figures/F21_thought_stream_attention.png)
+
+*Figure F21 · ThoughtStream 借用背侧/腹侧注意网络的功能划分来组织“当前焦点 / 背景在意 / 重定向”。图为工程隐喻，不是医学或神经科学等价断言。*
+
 ## 10.7 上下文同步的边界
 
 同步层有意避免两种极端。
