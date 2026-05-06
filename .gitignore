@@ -35,6 +35,7 @@ env.bak/
 .idea/
 *.sublime-workspace
 *.sublime-project
+.github/prompts/*
 
 # OS files
 .DS_Store

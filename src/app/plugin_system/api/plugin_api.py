@@ -6,7 +6,7 @@ Plugin API 模块。
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from src.app.plugin_system.api._utils import _validate_non_empty
 
@@ -142,6 +142,25 @@ def is_plugin_loaded(plugin_name: str) -> bool:
     return _get_plugin_manager().is_plugin_loaded(plugin_name)
 
 
+def get_plugin_path(plugin_name: str) -> str | None:
+    """获取插件路径。
+
+    Args:
+        plugin_name: 插件名称
+
+    Returns:
+        插件路径，未找到则返回 None
+    """
+    _validate_non_empty(plugin_name, "plugin_name")
+    return _get_plugin_manager().get_plugin_path(plugin_name)
+
+
+async def list_unloaded_plugins() -> dict[str, dict[str, Any]]:
+    """列出 plugins 目录下所有未加载或加载失败的插件信息。"""
+
+    return await _get_plugin_manager().get_unloaded_plugins_info()
+
+
 __all__ = [
     "load_plugin_from_manifest",
     "load_plugin",
@@ -152,4 +171,6 @@ __all__ = [
     "list_loaded_plugins",
     "get_manifest",
     "is_plugin_loaded",
+    "get_plugin_path",
+    "list_unloaded_plugins",
 ]

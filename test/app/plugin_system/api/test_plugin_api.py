@@ -112,3 +112,32 @@ class TestPluginAPI:
             result = plugin_api.get_manifest("test_plugin")
             
             assert result == mock_manifest
+
+    def test_get_plugin_path(self) -> None:
+        """测试获取插件路径。"""
+        with patch('src.app.plugin_system.api.plugin_api._get_plugin_manager') as mock_get_mgr:
+            mock_manager = MagicMock()
+            mock_manager.get_plugin_path.return_value = "plugins/test_plugin"
+            mock_get_mgr.return_value = mock_manager
+
+            result = plugin_api.get_plugin_path("test_plugin")
+
+            assert result == "plugins/test_plugin"
+
+    @pytest.mark.asyncio
+    async def test_list_unloaded_plugins(self) -> None:
+        """测试列出未加载插件。"""
+        with patch('src.app.plugin_system.api.plugin_api._get_plugin_manager') as mock_get_mgr:
+            mock_manager = MagicMock()
+            unloaded = {
+                "test_plugin": {
+                    "name": "test_plugin",
+                    "status": "not_loaded",
+                }
+            }
+            mock_manager.get_unloaded_plugins_info = AsyncMock(return_value=unloaded)
+            mock_get_mgr.return_value = mock_manager
+
+            result = await plugin_api.list_unloaded_plugins()
+
+            assert result == unloaded

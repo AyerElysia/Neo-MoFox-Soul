@@ -25,7 +25,7 @@ class StreamContext:
     Attributes:
         stream_id: 聊天流唯一标识符
         chat_type: 聊天类型（private/group/discuss）
-        max_context_size: 最大上下文大小
+        max_history_messages: 最大历史消息保留数量
         unread_messages: 未读消息列表
         history_messages: 历史消息列表
         is_active: 是否活跃
@@ -78,8 +78,18 @@ class StreamContext:
         """
         self.history_messages.append(message)
         # 限制历史消息大小
-        if len(self.history_messages) > self.max_context_size:
+        if self.max_context_size > 0 and len(self.history_messages) > self.max_context_size:
             self.history_messages = self.history_messages[-self.max_context_size :]
+
+    @property
+    def max_history_messages(self) -> int:
+        """兼容新命名，返回历史消息保留上限。"""
+        return self.max_context_size
+
+    @max_history_messages.setter
+    def max_history_messages(self, value: int) -> None:
+        """兼容新命名写入，更新历史消息保留上限。"""
+        self.max_context_size = value
 
     def check_types(self, types: list[str]) -> bool:
         """检查当前消息是否支持指定的类型。

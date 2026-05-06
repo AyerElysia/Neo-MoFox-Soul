@@ -28,6 +28,16 @@ class RegisteredReminder:
 
 
 @dataclass(slots=True)
+class RegisteredReminderSource:
+    """登记到上下文管理器中的动态 reminder 源。"""
+
+    bucket: str
+    names: tuple[str, ...] | None
+    wrap_with_system_tag: bool
+    last_rendered_texts: tuple[str, ...] = ()
+
+
+@dataclass(slots=True)
 class LLMContextManager:
     """上下文管理器。
 
@@ -44,6 +54,7 @@ class LLMContextManager:
     max_payloads: int | None = None
     compression_hook: CompressionHook | None = None
     _reminders: list[RegisteredReminder] | None = None
+    _reminder_sources: list[RegisteredReminderSource] | None = None
 
     def validate_for_send(self, payloads: list[LLMPayload]) -> None:
         """在发起 LLM 请求前校验上下文结构。
@@ -254,14 +265,48 @@ class LLMContextManager:
         self._reminders = []
         self.reminder(content, wrap_with_system_tag=wrap_with_system_tag)
 
+    def reminder_bucket(
+        self,
+        bucket: str,
+        *,
+        names: Sequence[str] | None = None,
+        wrap_with_system_tag: bool = False,
+    ) -> None:
+        """登记一个从 system reminder store 动态读取的 reminder bucket。"""
+
+        normalized_bucket = str(bucket).strip()
+        if not normalized_bucket:
+            raise ValueError("bucket 不能为空")
+
+        normalized_names: tuple[str, ...] | None = None
+        if names is not None:
+            normalized_list: list[str] = []
+            for name in names:
+                normalized_name = str(name).strip()
+                if not normalized_name:
+                    raise ValueError("names 中包含空 name")
+                normalized_list.append(normalized_name)
+            normalized_names = tuple(normalized_list)
+
+        if self._reminder_sources is None:
+            self._reminder_sources = []
+
+        self._reminder_sources.append(
+            RegisteredReminderSource(
+                bucket=normalized_bucket,
+                names=normalized_names,
+                wrap_with_system_tag=wrap_with_system_tag,
+            )
+        )
+
     def _apply_reminders(self, payloads: list[LLMPayload]) -> list[LLMPayload]:
         """根据插入类型将 reminder 注入目标 USER 消息首段。"""
 
-        if not self._reminders:
+        resolved_reminders, reminder_texts_for_stripping = self._resolve_reminders()
+        if not resolved_reminders:
             return payloads
 
         updated = list(payloads)
-        cleaned_payloads: list[LLMPayload] = []
 
         user_indices = [idx for idx, payload in enumerate(updated) if payload.role == ROLE.USER]
         if not user_indices:
@@ -269,10 +314,10 @@ class LLMContextManager:
 
         first_user_index = user_indices[0]
         last_user_index = user_indices[-1]
-        all_reminder_parts = [Text(item.text) for item in self._reminders]
+        all_reminder_parts = [Text(text) for text in reminder_texts_for_stripping]
         target_parts: dict[int, list[Content | LLMUsable]] = {}
 
-        for reminder in self._reminders:
+        for reminder in resolved_reminders:
             target_index = (
                 first_user_index
                 if reminder.insert_type == SystemReminderInsertType.FIXED
@@ -287,6 +332,44 @@ class LLMContextManager:
             updated[user_index] = LLMPayload(ROLE.USER, rebuilt)
 
         return updated
+
+    def _resolve_reminders(self) -> tuple[list[RegisteredReminder], list[str]]:
+        """将直接登记和 bucket-backed reminder 解析为当前可注入文本。"""
+
+        resolved: list[RegisteredReminder] = []
+        strip_texts: list[str] = []
+
+        if self._reminders:
+            resolved.extend(self._reminders)
+            strip_texts.extend(item.text for item in self._reminders)
+
+        if self._reminder_sources:
+            from src.core.prompt import get_system_reminder_store
+
+            store = get_system_reminder_store()
+            for source in self._reminder_sources:
+                strip_texts.extend(source.last_rendered_texts)
+                items = store.get_items(source.bucket, names=source.names)
+                current_texts: list[str] = []
+                for item in items:
+                    text = item.render()
+                    if source.wrap_with_system_tag:
+                        text = (
+                            "<system_reminder>\n"
+                            f"{text}\n"
+                            "</system_reminder>"
+                        )
+                    current_texts.append(text)
+                    resolved.append(
+                        RegisteredReminder(
+                            text=text,
+                            insert_type=item.insert_type,
+                        )
+                    )
+                source.last_rendered_texts = tuple(current_texts)
+                strip_texts.extend(current_texts)
+
+        return resolved, list(dict.fromkeys(strip_texts))
 
     def _strip_registered_reminders(
         self,

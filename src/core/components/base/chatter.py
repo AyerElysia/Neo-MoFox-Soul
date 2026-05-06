@@ -9,7 +9,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from datetime import datetime
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, AsyncGenerator, cast
+from typing import TYPE_CHECKING, Any, AsyncGenerator, Literal, cast
 
 from src.core.components.types import ChatType
 from src.core.components.base.action import BaseAction
@@ -36,10 +36,20 @@ class Wait:
     表示 Chatter 需要等待一段时间。
 
     Attributes:
-        time: 等待时间（秒），如果为 None 则表示无限等待直到有新消息
+        time: 等待时间（秒），如果为 None 则表示无限等待直到有新消息；
+            如果为数字，则表示到期后由框架主动恢复生成器，不依赖新消息
     """
 
     time: float | int | None = None
+
+
+@dataclass(frozen=True)
+class WaitResumeEvent:
+    """Wait/Stop 结束后由框架送回生成器的恢复事件。"""
+
+    source: Literal["message", "timer"]
+    wait_time: float | int | None = None
+    unread_count: int = 0
 
 
 @dataclass
@@ -87,6 +97,38 @@ class Stop:
 
 # 类型别名
 ChatterResult = Wait | Success | Failure | Stop
+
+
+def get_stream_manager():
+    """延迟获取 StreamManager，保留测试和旧扩展可 patch 的模块入口。"""
+
+    from src.core.managers import get_stream_manager as _get_stream_manager
+
+    return _get_stream_manager()
+
+
+def get_plugin_manager():
+    """延迟获取 PluginManager，避免组件导入期循环依赖。"""
+
+    from src.core.managers import get_plugin_manager as _get_plugin_manager
+
+    return _get_plugin_manager()
+
+
+def get_tool_use():
+    """延迟获取 ToolUse，保留旧测试/扩展 patch 入口。"""
+
+    from src.core.managers import get_tool_use as _get_tool_use
+
+    return _get_tool_use()
+
+
+def get_action_manager():
+    """延迟获取 ActionManager，保留旧测试/扩展 patch 入口。"""
+
+    from src.core.managers import get_action_manager as _get_action_manager
+
+    return _get_action_manager()
 
 
 class BaseChatter(ABC):
@@ -160,7 +202,7 @@ class BaseChatter(ABC):
     @abstractmethod
     async def execute(
         self
-    ) -> AsyncGenerator[ChatterResult, None]:
+    ) -> AsyncGenerator[ChatterResult, WaitResumeEvent | None]:
         """执行聊天器的主要逻辑。
 
         使用生成器模式，通过 yield 返回执行结果。
@@ -171,7 +213,7 @@ class BaseChatter(ABC):
         Examples:
             >>> async for result in my_chatter.execute():
             ...     if isinstance(result, Wait):
-            ...         print(f"等待: {result.reason}")
+            ...         print(f"等待: {result.time}")
             ...     elif isinstance(result, Success):
             ...         print(f"成功: {result.message}")
             ...     elif isinstance(result, Failure):
@@ -237,8 +279,6 @@ class BaseChatter(ABC):
             list[type[LLMUsable]]: 修改后的组件列表
         """
 
-        from src.core.managers import get_stream_manager
-        
         logger = get_logger("chatter", display="聊天器", color=COLOR.MAGENTA)
         chat_stream = await get_stream_manager().get_or_create_stream(
             stream_id=self.stream_id
@@ -370,7 +410,6 @@ class BaseChatter(ABC):
 
         try:
             from src.core.components.types import parse_signature
-            from src.core.managers import get_plugin_manager
 
             plugin_name = parse_signature(signature)["plugin_name"]
         except Exception:
@@ -450,7 +489,7 @@ class BaseChatter(ABC):
         Args:
             task: 模型任务名称（对应 config/model.toml 中的 task key），默认 "actor"
             request_name: LLM 请求名称，默认使用 chatter_name
-            max_context: 上下文最大 payload 数，None 时从 core config 读取
+            max_context: 上下文最大 payload 数，None 时从 core config 读取；0 表示不限制
             with_reminder: 可选的 system reminder bucket；传入后会自动登记到上下文管理器
 
         Returns:
@@ -464,7 +503,11 @@ class BaseChatter(ABC):
         from src.kernel.llm.context import LLMContextManager
 
         model_set = get_model_config().get_task(task)
-        max_payloads = max_context if max_context is not None else get_core_config().chat.max_context_size
+        chat_config = get_core_config().chat
+        default_max_payloads = getattr(chat_config, "max_llm_messages", None)
+        if not isinstance(default_max_payloads, int):
+            default_max_payloads = getattr(chat_config, "max_context_size", 20)
+        max_payloads = max_context if max_context is not None else default_max_payloads
         context_manager = LLMContextManager(
             max_payloads=max_payloads,
         )
@@ -485,15 +528,7 @@ class BaseChatter(ABC):
         )
 
         if with_reminder is not None:
-            from src.core.prompt import get_system_reminder_store
-
-            reminder_items = get_system_reminder_store().get_items(with_reminder)
-            for reminder_item in reminder_items:
-                context_manager.reminder(
-                    reminder_item.render(),
-                    insert_type=reminder_item.insert_type,
-                    wrap_with_system_tag=True,
-                )
+            context_manager.reminder_bucket(str(with_reminder), wrap_with_system_tag=True)
 
         return request
 
@@ -682,8 +717,6 @@ class BaseChatter(ABC):
         Returns:
             tuple[str, list[Message]]: (格式化后的未读消息文本，每条消息占一行, 未读消息列表)
         """
-        from src.core.managers import get_stream_manager
-        
         logger = get_logger("chatter")
 
         sm = get_stream_manager()
@@ -715,8 +748,6 @@ class BaseChatter(ABC):
         Returns:
             int: 实际 flush 的消息数量
         """
-        from src.core.managers import get_stream_manager
-        
         logger = get_logger("chatter")
 
         if not unread_messages:

@@ -5,6 +5,8 @@
 
 from typing import Literal
 
+from pydantic import model_validator
+
 from src.kernel.config import ConfigBase, SectionBase, config_section, Field
 
 CORE_VERSION = "1.1.0-alpha"
@@ -78,6 +80,13 @@ class CoreConfig(ConfigBase):
             default=300.0,
             description="流循环重启阈值（秒），距上次心跳超过此值时尝试重启",
         )
+        stream_step_timeout: float = Field(
+            default=90.0,
+            description=(
+                "单次聊天流步进超时时间（秒），用于保护 chatter 内部工具调用或外部 await 卡死；"
+                "设为 0 或负数可禁用该保护。"
+            ),
+        )
         message_buffer_window: float = Field(
             default=8.0,
             description=(
@@ -107,14 +116,41 @@ class CoreConfig(ConfigBase):
             default="normal",
             description="默认聊天模式：focus/normal/proactive/priority",
         )
-        max_context_size: int = Field(
+        max_history_messages: int = Field(
             default=20,
-            description="每个聊天流的最大上下文消息数",
+            description="每个聊天流在内存中保留的最大历史消息数",
+        )
+        max_llm_messages: int = Field(
+            default=20,
+            ge=0,
+            description="单次 LLM 请求允许携带的最大消息数，设为 0 表示不限制",
         )
         image_recognition_prompt: str = Field(
             default="",
             description="自定义识图提示词，留空则使用内置默认提示词",
         )
+
+        @model_validator(mode="before")
+        @classmethod
+        def _migrate_legacy_max_context_size(cls, data):
+            """兼容旧字段 max_context_size。"""
+            if isinstance(data, dict) and "max_context_size" in data:
+                data = dict(data)
+                legacy_value = data.pop("max_context_size")
+                data.setdefault("max_history_messages", legacy_value)
+                data.setdefault("max_llm_messages", legacy_value)
+            return data
+
+        @property
+        def max_context_size(self) -> int:
+            """兼容旧代码读取，返回历史消息保留上限。"""
+            return self.max_history_messages
+
+        @max_context_size.setter
+        def max_context_size(self, value: int) -> None:
+            """兼容旧代码写入，更新历史消息保留上限。"""
+            self.max_history_messages = value
+
     chat: ChatSection = Field(default_factory=ChatSection)
 
     @config_section("llm")
@@ -419,6 +455,37 @@ def _inject_kernel_llm_policy(config: CoreConfig) -> None:
     set_default_policy_factory(lambda: create_policy(config.llm.default_policy))
 
 
+def _migrate_legacy_chat_context_config(config_path: "Path") -> None:
+    """迁移旧的 chat.max_context_size 到拆分后的配置字段。"""
+    import tomllib
+
+    if not config_path.exists():
+        return
+
+    try:
+        with config_path.open("rb") as file:
+            raw_config = tomllib.load(file)
+    except Exception:
+        return
+
+    chat_config = raw_config.get("chat")
+    if not isinstance(chat_config, dict) or "max_context_size" not in chat_config:
+        return
+
+    legacy_value = chat_config.pop("max_context_size")
+    chat_config.setdefault("max_history_messages", legacy_value)
+    chat_config.setdefault("max_llm_messages", legacy_value)
+
+    from src.kernel.config.core import (
+        _merge_with_model_defaults,
+        _render_toml_with_signature,
+    )
+
+    migrated_config = _merge_with_model_defaults(CoreConfig, raw_config)
+    toml_content = _render_toml_with_signature(CoreConfig, migrated_config)
+    config_path.write_text(toml_content, encoding="utf-8")
+
+
 def get_core_config() -> CoreConfig:
     """获取全局 Core 配置实例
 
@@ -476,6 +543,8 @@ def init_core_config(config_path: str) -> CoreConfig:
         from src.kernel.config.core import _render_toml_with_signature
         toml_content = _render_toml_with_signature(CoreConfig, default_config)
         path.write_text(toml_content, encoding="utf-8")
+
+    _migrate_legacy_chat_context_config(path)
 
     _global_config = CoreConfig.load(config_path, auto_update=True)
     _inject_kernel_llm_policy(_global_config)

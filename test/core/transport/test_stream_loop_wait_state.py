@@ -25,6 +25,10 @@ def test_wait_state_check_requires_new_message_after_stop() -> None:
     context_new = StreamContext(stream_id=stream_id)
     context_new.unread_messages = cast(list, [1, 2, 3])
     assert manager._wait_state_check(stream_id, context_new) is True
+    resume_event = manager.take_wait_resume_event(stream_id)
+    assert resume_event is not None
+    assert resume_event.source == "message"
+    assert resume_event.unread_count == 1
 
 
 def test_wait_state_check_stop_direct_message_wake_disabled() -> None:
@@ -73,6 +77,10 @@ def test_wait_state_check_stop_direct_message_wakes_private(
     context.unread_messages = [Message(content="hello", chat_type="private")]
 
     assert manager._wait_state_check(stream_id, context) is True
+    resume_event = manager.take_wait_resume_event(stream_id)
+    assert resume_event is not None
+    assert resume_event.source == "message"
+    assert resume_event.unread_count == 1
 
 
 def test_wait_state_check_stop_direct_message_wakes_bot_mention(
@@ -150,6 +158,11 @@ def test_wait_state_check_wait_for_messages_only() -> None:
     context_non_empty = StreamContext(stream_id=stream_id)
     context_non_empty.unread_messages = cast(list, ["m1"])
     assert manager._wait_state_check(stream_id, context_non_empty) is True
+    resume_event = manager.take_wait_resume_event(stream_id)
+    assert resume_event is not None
+    assert resume_event.source == "message"
+    assert resume_event.wait_time is None
+    assert resume_event.unread_count == 1
 
 
 def test_wait_state_check_wait_for_time_only() -> None:
@@ -164,3 +177,9 @@ def test_wait_state_check_wait_for_time_only() -> None:
 
     manager._wait_states[stream_id] = (Wait(time=0.0), time.time(), 0)
     assert manager._wait_state_check(stream_id, context_any) is True
+    resume_event = manager.take_wait_resume_event(stream_id)
+    assert resume_event is not None
+    assert resume_event.source == "timer"
+    assert resume_event.wait_time == 0.0
+    assert resume_event.unread_count == 0
+    assert manager.take_wait_resume_event(stream_id) is None

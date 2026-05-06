@@ -145,13 +145,15 @@ class BaseAgent(ABC, LLMUsable):
         Returns:
             list[type[LLMUsable]]: Agent 私有组件类列表
         """
-        from src.core.components.registry import get_global_registry
-
         resolved_usables: list[type[LLMUsable]] = []
-        registry = get_global_registry()
+        registry = None
 
         for usable_ref in cls.usables:
             if isinstance(usable_ref, str):
+                if registry is None:
+                    from src.core.components.registry import get_global_registry
+
+                    registry = get_global_registry()
                 # 字符串签名：从注册表解析
                 component_cls = registry.get(usable_ref)
                 if component_cls is None:
@@ -208,15 +210,7 @@ class BaseAgent(ABC, LLMUsable):
         )
 
         if with_reminder is not None and request.context_manager is not None:
-            from src.core.prompt import get_system_reminder_store
-
-            reminder_items = get_system_reminder_store().get_items(with_reminder)
-            for reminder_item in reminder_items:
-                request.context_manager.reminder(
-                    reminder_item.render(),
-                    insert_type=reminder_item.insert_type,
-                    wrap_with_system_tag=True,
-                )
+            request.context_manager.reminder_bucket(str(with_reminder), wrap_with_system_tag=True)
 
         if with_usables:
             request.add_payload(LLMPayload(ROLE.TOOL, cast(list[Any], self.get_local_usables())))

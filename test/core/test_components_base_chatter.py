@@ -1,6 +1,5 @@
 """测试 src.core.components.base.chatter 模块。"""
 
-import json
 from datetime import datetime
 from typing import AsyncGenerator, Generator, cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -328,6 +327,11 @@ class TestBaseChatter:
             tool_description = "cross tool"
             _signature_ = "plugin_b:tool:cross_tool"
 
+            def __init__(self, plugin):
+                super().__init__(plugin)
+                if getattr(plugin, "plugin_name", "") != "plugin_b":
+                    raise ValueError("plugin mismatch")
+
             async def execute(self, *args, **kwargs):
                 return True, "ok"
 
@@ -347,21 +351,13 @@ class TestBaseChatter:
 
         chatter = CrossPluginChatter("stream_123", chatter_plugin)
 
-        with patch("src.core.components.base.chatter.get_plugin_manager") as mock_pm, patch(
-            "src.core.components.base.chatter.get_tool_use"
-        ) as mock_tool_use:
+        with patch("src.core.components.base.chatter.get_plugin_manager") as mock_pm:
             mock_pm.return_value.get_plugin.return_value = owner_plugin
-            mock_tool_use.return_value.execute_tool = AsyncMock(return_value=(True, "ok"))
 
             ok, payload = await chatter.exec_llm_usable(CrossPluginTool, message)
 
         assert ok is True
         assert payload == "ok"
-        mock_tool_use.return_value.execute_tool.assert_awaited_once_with(
-            "plugin_b:tool:cross_tool",
-            owner_plugin,
-            message,
-        )
 
     @pytest.mark.asyncio
     async def test_exec_llm_usable_agent_without_global_managers(self):
@@ -560,8 +556,9 @@ class TestUnreadsFlow:
 
             text, messages = await chatter.fetch_unreads()
 
-            payload = json.loads(text)
-            assert len(payload) == 1
+            assert "Test" in text
+            assert "[msg_1]" in text
+            assert text.endswith("： 测试")
             assert len(messages) == 1
             assert len(mock_stream.context.unread_messages) == 1
             mock_stream.context.add_history_message.assert_not_called()
@@ -629,11 +626,9 @@ class TestUnreadsFlow:
             text, messages = await chatter.fetch_unreads()
             flushed = await chatter.flush_unreads(messages)
 
-            payload = json.loads(text)
-            assert len(payload) == 1
-            assert payload[0]["sender_name"] == "Alice"
-            assert payload[0]["message_id"] == "msg_1"
-            assert payload[0]["message_type"] == "text"
+            assert "Alice" in text
+            assert "[msg_1]" in text
+            assert text.endswith("： 你好")
             assert len(messages) == 1
             assert flushed == 1
             mock_stream.context.add_history_message.assert_called_once_with(msg)
@@ -661,15 +656,14 @@ class TestUnreadsFlow:
             mock_stream.context.add_history_message = MagicMock()
             mock_sm.return_value._streams = {"stream_123": mock_stream}
 
-            text, fetched = await chatter.fetch_unreads(format_as_group=True)
+            text, fetched = await chatter.fetch_unreads()
             flushed = await chatter.flush_unreads(fetched)
 
-            # 验证 JSON 格式
-            payload = json.loads(text)
-            assert len(payload) == 3
-            assert payload[0]["sender_name"] == "User0"
-            assert payload[0]["message_id"] == "msg_0"
-            assert payload[0]["message_type"] == "text"
+            lines = text.splitlines()
+            assert len(lines) == 3
+            assert "User0" in lines[0]
+            assert "[msg_0]" in lines[0]
+            assert lines[0].endswith("： 消息0")
 
             # 验证flush
             assert len(fetched) == 3
@@ -678,8 +672,8 @@ class TestUnreadsFlow:
             assert len(mock_stream.context.unread_messages) == 0
 
     @pytest.mark.asyncio
-    async def test_fetch_non_grouped(self, mock_plugin):
-        """测试非分组模式。"""
+    async def test_fetch_unreads_returns_readable_lines(self, mock_plugin):
+        """测试未读消息返回 LLM 可读的消息行。"""
         chatter = ConcreteChatter("stream_123", mock_plugin)
 
         msg = Message(
@@ -696,10 +690,11 @@ class TestUnreadsFlow:
             mock_stream.context.add_history_message = MagicMock()
             mock_sm.return_value._streams = {"stream_123": mock_stream}
 
-            text, messages = await chatter.fetch_unreads(format_as_group=False)
+            text, messages = await chatter.fetch_unreads()
             flushed = await chatter.flush_unreads(messages)
 
-            assert text == ""  # 非分组模式不返回格式化文本
+            assert "Test" in text
+            assert text.endswith("： 测试")
             assert len(messages) == 1
             assert flushed == 1
 
@@ -739,5 +734,5 @@ class TestUnreadsFlow:
             text, messages = await chatter.fetch_unreads(time_format="%Y-%m-%d %H:%M")
             await chatter.flush_unreads(messages)
 
-            payload = json.loads(text)
-            assert payload[0]["time"] == "2024-01-01 14:30"
+            assert text.startswith("【2024-01-01 14:30】")
+            assert text.endswith("： 测试")

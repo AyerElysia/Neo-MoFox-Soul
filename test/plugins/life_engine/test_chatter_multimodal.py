@@ -31,6 +31,13 @@ def _b64(s: str = "hello") -> str:
     return base64.b64encode(s.encode()).decode()
 
 
+def _png_b64() -> str:
+    return (
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8"
+        "/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
+    )
+
+
 def _msg(message_id: str, *, content: Any = None, extra: Any = None, media: Any = None,
          message_type: Any = None) -> SimpleNamespace:
     return SimpleNamespace(
@@ -161,8 +168,8 @@ class TestExtract:
 class TestBuild:
     def test_image_emoji_video_audio_mixed(self) -> None:
         items = [
-            MediaItem("image", _b64("i"), "m1"),
-            MediaItem("emoji", _b64("e"), "m2"),
+            MediaItem("image", _png_b64(), "m1"),
+            MediaItem("emoji", _png_b64(), "m2"),
             MediaItem("video", _b64("v"), "m3", mime_type="video/mp4"),
             MediaItem("audio", _b64("a"), "m4", mime_type="audio/wav"),
         ]
@@ -172,7 +179,7 @@ class TestBuild:
         assert types == ["Text", "Text", "Image", "Text", "Image", "Text", "Video", "Text", "Audio"]
 
     def test_empty_text_omitted(self) -> None:
-        items = [MediaItem("image", _b64(), "m1")]
+        items = [MediaItem("image", _png_b64(), "m1")]
         out = build_multimodal_content("", items)
         assert not any(isinstance(p, Text) and p.text == "" for p in out)
         assert any(isinstance(p, Image) for p in out)

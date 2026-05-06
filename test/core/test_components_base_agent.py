@@ -105,7 +105,7 @@ class TestBaseAgent:
         """测试 schema 生成。"""
         schema = ConcreteAgent.to_schema()
         assert schema["type"] == "function"
-        assert schema["function"]["name"] == "agent:task_agent"
+        assert schema["function"]["name"] == "agent-task_agent"
         assert schema["function"]["description"] == "Task agent for tests"
         assert "task" in schema["function"]["parameters"]["properties"]
 
@@ -118,7 +118,7 @@ class TestBaseAgent:
         """测试获取私有 usable schema。"""
         schemas = ConcreteAgent.get_local_usable_schemas()
         assert len(schemas) == 1
-        assert schemas[0]["function"]["name"] == "private_lookup"
+        assert schemas[0]["function"]["name"] == "tool-private_lookup"
 
     def test_create_llm_request(self, mock_plugin):
         """测试创建 LLMRequest。"""
